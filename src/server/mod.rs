@@ -37,11 +37,35 @@ pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("server listening on {}", addr);
 
+    // Write server PID file
+    let pid_path = data_dir.join("server.pid");
+    std::fs::write(&pid_path, std::process::id().to_string())?;
+
+    // Graceful shutdown: wait for SIGTERM, broadcast drain, then exit
+    let drain_state = state.clone();
+    let shutdown = async move {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        sigterm.recv().await;
+        tracing::info!("SIGTERM received, draining connections");
+        drain_state
+            .stream_clients
+            .broadcast_all(stream::messages::ServerMessage::ServerDraining)
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown)
     .await?;
+
+    // Clean up PID file
+    let _ = std::fs::remove_file(&pid_path);
+    tracing::info!("server stopped");
 
     Ok(())
 }

@@ -1,9 +1,12 @@
 use clap::{Parser, Subcommand};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
 use tracing_subscriber::EnvFilter;
 
 mod daemon;
 mod error;
+pub mod pid;
 mod server;
 
 pub mod auth;
@@ -56,8 +59,13 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Ensure data directory exists
+    // Ensure data directory exists with owner-only permissions
     std::fs::create_dir_all(&cli.data_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli.data_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
 
     let command = cli.command.clone().unwrap_or(Command::Start);
 
@@ -80,15 +88,41 @@ async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
 
     tracing::info!("abot starting (daemon + server)");
 
-    // Spawn daemon in background task
-    let daemon_data_dir = data_dir.clone();
-    let daemon_handle = tokio::spawn(async move {
-        if let Err(e) = daemon::run(&daemon_data_dir).await {
-            tracing::error!("daemon error: {}", e);
-        }
-    });
+    // Check if daemon is already running via PID file
+    if !pid::daemon_is_running(&data_dir) {
+        tracing::info!("spawning daemon as separate process");
 
-    // Wait for daemon socket to appear
+        let exe = std::env::current_exe()?;
+        let log_path = data_dir.join("daemon.log");
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        let stderr_file = log_file.try_clone()?;
+
+        // Use pre_exec with setsid() to fully detach the daemon so it
+        // doesn't become a zombie when the parent (server) exits.
+        unsafe {
+            ProcessCommand::new(&exe)
+                .arg("--data-dir")
+                .arg(&data_dir)
+                .arg("daemon")
+                .stdout(log_file)
+                .stderr(stderr_file)
+                .stdin(std::process::Stdio::null())
+                .pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                })
+                .spawn()?;
+        }
+    } else {
+        tracing::info!("daemon already running, reusing");
+    }
+
+    // Wait for daemon socket to appear (5s timeout: 50 x 100ms)
     let sock_path = data_dir.join("daemon.sock");
     for _ in 0..50 {
         if sock_path.exists() {
@@ -103,16 +137,64 @@ async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
 
     tracing::info!("daemon ready, starting server");
 
-    // Run server in foreground
-    let server_result = server::run(&addr, &data_dir).await;
-
-    // If server exits, also stop daemon
-    daemon_handle.abort();
-
-    server_result
+    // Run server in foreground — daemon continues independently
+    server::run(&addr, &data_dir).await
 }
 
-async fn cmd_update(_cli: &Cli) -> anyhow::Result<()> {
-    tracing::info!("update not yet implemented");
-    Ok(())
+async fn cmd_update(cli: &Cli) -> anyhow::Result<()> {
+    let data_dir = cli.data_dir.clone();
+    let addr = format!("{}:{}", cli.bind, cli.port);
+
+    tracing::info!("abot rolling update");
+
+    // Step 1: Check daemon is running
+    if !pid::daemon_is_running(&data_dir) {
+        tracing::info!("daemon not running, falling back to full start");
+        return cmd_start(cli).await;
+    }
+
+    // Step 2: Check for running server
+    let server_pid_path = data_dir.join("server.pid");
+    if let Some(old_pid) = pid::read_live_pid(&server_pid_path) {
+        // Verify this PID is actually an abot process before signaling
+        if !pid::is_abot_process(old_pid) {
+            tracing::warn!(
+                "PID {} is not an abot process (possible PID reuse), skipping signal",
+                old_pid
+            );
+        } else {
+            tracing::info!("sending SIGTERM to old server (pid {})", old_pid);
+
+            // Step 3: Send SIGTERM
+            unsafe {
+                libc::kill(old_pid, libc::SIGTERM);
+            }
+
+            // Step 4: Wait for old server to exit (100ms intervals, 10s timeout)
+            let mut exited = false;
+            for _ in 0..100 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if !pid::process_alive(old_pid) {
+                    exited = true;
+                    break;
+                }
+            }
+
+            if !exited {
+                tracing::warn!("old server didn't exit gracefully, sending SIGKILL");
+                unsafe {
+                    libc::kill(old_pid, libc::SIGKILL);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            tracing::info!("old server stopped");
+        }
+    } else {
+        tracing::info!("no running server found, starting fresh");
+    }
+
+    // Step 5: Start new server
+    tracing::info!("starting new server");
+    server::run(&addr, &data_dir).await
 }

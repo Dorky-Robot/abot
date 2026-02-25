@@ -25,6 +25,7 @@ rust-embed = { version = "8", features = ["compression"] }
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 webauthn-rs-proto = "0.5"
 argon2 = "0.5"
+openssl = { version = "0.10", features = ["vendored"] }
 
 # PTY
 portable-pty = "0.8"
@@ -51,6 +52,7 @@ hex = "0.4"
 futures-util = "0.3"
 dirs = "5"
 url = "2"
+libc = "0.2"
 
 # WebRTC
 webrtc = "0.17"

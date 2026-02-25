@@ -43,6 +43,7 @@ impl RingBuffer {
         out
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.items.clear();
         self.current_bytes = 0;
