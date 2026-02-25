@@ -1,0 +1,56 @@
+[package]
+name = "abot"
+description = "AI-native spatial interface"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+# HTTP + WebSocket
+axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+hyper = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Embedded assets
+rust-embed = { version = "8", features = ["compression"] }
+
+# Auth
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+webauthn-rs-proto = "0.5"
+argon2 = "0.5"
+
+# PTY
+portable-pty = "0.8"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+rand = "0.8"
+mime_guess = "2"
+cookie = "0.18"
+sha2 = "0.10"
+hex = "0.4"
+futures-util = "0.3"
+dirs = "5"
+url = "2"
+
+# WebRTC
+webrtc = "0.17"
