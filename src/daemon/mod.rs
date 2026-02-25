@@ -16,7 +16,7 @@ use self::session::Session;
 
 pub struct DaemonState {
     pub sessions: Mutex<HashMap<String, Session>>,
-    pub data_dir: PathBuf,
+    pub _data_dir: PathBuf,
     /// Broadcast channel for session output events (sent to all connected servers)
     pub output_tx: broadcast::Sender<ipc::OutputEvent>,
 }
@@ -24,6 +24,22 @@ pub struct DaemonState {
 pub async fn run(data_dir: &Path) -> Result<()> {
     let sock_path = data_dir.join("daemon.sock");
     let pid_path = data_dir.join("daemon.pid");
+
+    // Check if another daemon is already running
+    if pid_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = contents.trim().parse::<i32>() {
+                // kill(pid, 0) checks if process exists without sending a signal
+                if unsafe { libc::kill(pid, 0) } == 0 {
+                    anyhow::bail!(
+                        "daemon already running (pid {}). Remove {:?} if stale.",
+                        pid,
+                        pid_path
+                    );
+                }
+            }
+        }
+    }
 
     // Clean up stale socket
     if sock_path.exists() {
@@ -48,7 +64,7 @@ pub async fn run(data_dir: &Path) -> Result<()> {
 
     let state = Arc::new(DaemonState {
         sessions: Mutex::new(HashMap::new()),
-        data_dir: data_dir.to_path_buf(),
+        _data_dir: data_dir.to_path_buf(),
         output_tx,
     });
 

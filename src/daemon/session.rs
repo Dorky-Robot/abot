@@ -1,7 +1,6 @@
 use super::pty::PtyHandle;
 use super::ring_buffer::RingBuffer;
 use anyhow::Result;
-use tokio::sync::mpsc;
 
 const DEFAULT_MAX_BUFFER_ITEMS: usize = 5000;
 const DEFAULT_MAX_BUFFER_BYTES: usize = 5 * 1024 * 1024; // 5MB
@@ -40,6 +39,7 @@ impl Session {
         self.buffer.to_string()
     }
 
+    #[allow(dead_code)]
     pub fn mark_exited(&mut self, code: u32) {
         self.alive = false;
         self.exit_code = Some(code);

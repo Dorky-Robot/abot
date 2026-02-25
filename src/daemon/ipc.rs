@@ -8,6 +8,7 @@ use super::DaemonState;
 /// Messages from server to daemon
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 pub enum DaemonRequest {
     /// RPC: list all sessions
     #[serde(rename = "list-sessions")]
@@ -120,6 +121,7 @@ pub enum DaemonResponse {
 /// Broadcast events from daemon (no id, sent to all connected servers)
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
+#[allow(dead_code)]
 pub enum OutputEvent {
     #[serde(rename = "output")]
     Output { session: String, data: String },
