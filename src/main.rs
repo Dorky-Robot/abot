@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use tracing_subscriber::EnvFilter;
 
 mod daemon;
 mod error;
+pub mod pid;
 mod server;
 
 pub mod auth;
@@ -57,8 +59,13 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Ensure data directory exists
+    // Ensure data directory exists with owner-only permissions
     std::fs::create_dir_all(&cli.data_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli.data_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
 
     let command = cli.command.clone().unwrap_or(Command::Start);
 
@@ -75,41 +82,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check if a process with the given PID is alive
-fn process_alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
-/// Check if daemon is already running by trying to connect to the socket
-fn daemon_is_running(data_dir: &PathBuf) -> bool {
-    let pid_path = data_dir.join("daemon.pid");
-    if let Ok(contents) = std::fs::read_to_string(&pid_path) {
-        if let Ok(pid) = contents.trim().parse::<i32>() {
-            return process_alive(pid);
-        }
-    }
-    false
-}
-
-/// Read a PID from a file, returning None if file missing or PID is dead
-fn read_live_pid(path: &PathBuf) -> Option<i32> {
-    let contents = std::fs::read_to_string(path).ok()?;
-    let pid = contents.trim().parse::<i32>().ok()?;
-    if process_alive(pid) {
-        Some(pid)
-    } else {
-        None
-    }
-}
-
 async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
     let data_dir = cli.data_dir.clone();
     let addr = format!("{}:{}", cli.bind, cli.port);
 
     tracing::info!("abot starting (daemon + server)");
 
-    // Check if daemon is already running
-    if !daemon_is_running(&data_dir) {
+    // Check if daemon is already running via PID file
+    if !pid::daemon_is_running(&data_dir) {
         tracing::info!("spawning daemon as separate process");
 
         let exe = std::env::current_exe()?;
@@ -120,19 +100,27 @@ async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
             .open(&log_path)?;
         let stderr_file = log_file.try_clone()?;
 
-        ProcessCommand::new(&exe)
-            .arg("--data-dir")
-            .arg(&data_dir)
-            .arg("daemon")
-            .stdout(log_file)
-            .stderr(stderr_file)
-            .stdin(std::process::Stdio::null())
-            .spawn()?;
+        // Use pre_exec with setsid() to fully detach the daemon so it
+        // doesn't become a zombie when the parent (server) exits.
+        unsafe {
+            ProcessCommand::new(&exe)
+                .arg("--data-dir")
+                .arg(&data_dir)
+                .arg("daemon")
+                .stdout(log_file)
+                .stderr(stderr_file)
+                .stdin(std::process::Stdio::null())
+                .pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                })
+                .spawn()?;
+        }
     } else {
         tracing::info!("daemon already running, reusing");
     }
 
-    // Wait for daemon socket to appear
+    // Wait for daemon socket to appear (5s timeout: 50 x 100ms)
     let sock_path = data_dir.join("daemon.sock");
     for _ in 0..50 {
         if sock_path.exists() {
@@ -158,40 +146,48 @@ async fn cmd_update(cli: &Cli) -> anyhow::Result<()> {
     tracing::info!("abot rolling update");
 
     // Step 1: Check daemon is running
-    if !daemon_is_running(&data_dir) {
+    if !pid::daemon_is_running(&data_dir) {
         tracing::info!("daemon not running, falling back to full start");
         return cmd_start(cli).await;
     }
 
     // Step 2: Check for running server
     let server_pid_path = data_dir.join("server.pid");
-    if let Some(old_pid) = read_live_pid(&server_pid_path) {
-        tracing::info!("sending SIGTERM to old server (pid {})", old_pid);
+    if let Some(old_pid) = pid::read_live_pid(&server_pid_path) {
+        // Verify this PID is actually an abot process before signaling
+        if !pid::is_abot_process(old_pid) {
+            tracing::warn!(
+                "PID {} is not an abot process (possible PID reuse), skipping signal",
+                old_pid
+            );
+        } else {
+            tracing::info!("sending SIGTERM to old server (pid {})", old_pid);
 
-        // Step 3: Send SIGTERM
-        unsafe {
-            libc::kill(old_pid, libc::SIGTERM);
-        }
-
-        // Step 4: Wait for old server to exit (100ms intervals, 10s timeout)
-        let mut exited = false;
-        for _ in 0..100 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if !process_alive(old_pid) {
-                exited = true;
-                break;
-            }
-        }
-
-        if !exited {
-            tracing::warn!("old server didn't exit gracefully, sending SIGKILL");
+            // Step 3: Send SIGTERM
             unsafe {
-                libc::kill(old_pid, libc::SIGKILL);
+                libc::kill(old_pid, libc::SIGTERM);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
 
-        tracing::info!("old server stopped");
+            // Step 4: Wait for old server to exit (100ms intervals, 10s timeout)
+            let mut exited = false;
+            for _ in 0..100 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if !pid::process_alive(old_pid) {
+                    exited = true;
+                    break;
+                }
+            }
+
+            if !exited {
+                tracing::warn!("old server didn't exit gracefully, sending SIGKILL");
+                unsafe {
+                    libc::kill(old_pid, libc::SIGKILL);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            tracing::info!("old server stopped");
+        }
     } else {
         tracing::info!("no running server found, starting fresh");
     }

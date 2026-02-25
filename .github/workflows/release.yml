@@ -87,12 +87,15 @@ jobs:
           SHA_X86_64=$(cat "abot-${GITHUB_REF_NAME}-x86_64-apple-darwin.tar.gz.sha256")
 
           cd homebrew-tap
-          sed -e "s/VERSION/${VERSION}/g" \
-              -e "s/SHA256_ARM64/${SHA_ARM64}/g" \
-              -e "s/SHA256_X86_64/${SHA_X86_64}/g" \
-              ../homebrew/abot.rb > Formula/abot.rb 2>/dev/null || true
+          mkdir -p Formula
+          if [ -f ../homebrew/abot.rb ]; then
+            sed -e "s/VERSION/${VERSION}/g" \
+                -e "s/SHA256_ARM64/${SHA_ARM64}/g" \
+                -e "s/SHA256_X86_64/${SHA_X86_64}/g" \
+                ../homebrew/abot.rb > Formula/abot.rb
+          fi
 
-          # If template wasn't bundled, build from scratch
+          # If template wasn't available, build from scratch
           if [ ! -f Formula/abot.rb ]; then
             mkdir -p Formula
             cat > Formula/abot.rb << FORMULA
