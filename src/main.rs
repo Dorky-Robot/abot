@@ -111,7 +111,9 @@ async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
                 .stderr(stderr_file)
                 .stdin(std::process::Stdio::null())
                 .pre_exec(|| {
-                    libc::setsid();
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     Ok(())
                 })
                 .spawn()?;
