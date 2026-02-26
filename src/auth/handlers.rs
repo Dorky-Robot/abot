@@ -116,8 +116,9 @@ pub async fn register_options(
         .start_passkey_registration(user_unique_id, &user_name, &user_name, exclude_creds)
         .map_err(|e| AppError::Internal(format!("webauthn error: {}", e)))?;
 
-    // Store challenge state (async, but db lock is already dropped)
-    let challenge_key = format!("reg:{}", user_id);
+    // Store challenge state with per-attempt key (async, db lock is already dropped)
+    let challenge_id = uuid::Uuid::new_v4().to_string();
+    let challenge_key = format!("reg:{}", challenge_id);
     let state_json = serde_json::to_value(&reg_state)
         .map_err(|e| AppError::Internal(format!("serialize error: {}", e)))?;
     app.auth.challenges.store(challenge_key, state_json).await;
@@ -125,6 +126,7 @@ pub async fn register_options(
     Ok(Json(json!({
         "options": ccr,
         "userId": user_id,
+        "challengeId": challenge_id,
     })))
 }
 
@@ -147,8 +149,12 @@ pub async fn register_verify(
     )
     .map_err(|e| AppError::BadRequest(format!("invalid credential: {}", e)))?;
 
-    // Consume challenge (async, before db lock)
-    let challenge_key = format!("reg:{}", user_id);
+    // Consume per-attempt challenge (async, before db lock)
+    let challenge_id = body
+        .get("challengeId")
+        .and_then(|v| v.as_str())
+        .ok_or(AppError::BadRequest("missing challengeId".into()))?;
+    let challenge_key = format!("reg:{}", challenge_id);
     let state_json = app
         .auth
         .challenges
@@ -198,12 +204,7 @@ pub async fn register_verify(
     }
 
     let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let is_secure = host
-        .map(|h| {
-            let h = h.split(':').next().unwrap_or(h);
-            !middleware::is_localhost_host(h)
-        })
-        .unwrap_or(false);
+    let is_secure = middleware::is_secure_host(host);
     let cookie = middleware::session_cookie(&session_token, 30 * 24 * 60 * 60, is_secure);
 
     Ok((
@@ -300,12 +301,7 @@ pub async fn login_verify(
     }
 
     let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let is_secure = host
-        .map(|h| {
-            let h = h.split(':').next().unwrap_or(h);
-            !middleware::is_localhost_host(h)
-        })
-        .unwrap_or(false);
+    let is_secure = middleware::is_secure_host(host);
     let cookie = middleware::session_cookie(&session_token, 30 * 24 * 60 * 60, is_secure);
 
     Ok((
@@ -336,39 +332,13 @@ pub async fn logout(
     ))
 }
 
-/// Verify that a request is either local or carries a valid session cookie.
-fn require_auth(
-    app: &AppState,
-    addr: &SocketAddr,
-    headers: &HeaderMap,
-) -> Result<(), AppError> {
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    let is_local = middleware::is_local_request(addr, host, origin);
-
-    if !is_local {
-        let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
-        let authenticated = if let Some(token) = middleware::get_session_token(cookie) {
-            let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
-            state::validate_session(&db, &token)?
-        } else {
-            false
-        };
-        if !authenticated {
-            return Err(AppError::Unauthorized);
-        }
-    }
-
-    Ok(())
-}
-
 /// GET /auth/tokens — list setup tokens
 pub async fn list_tokens(
     State(app): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_auth(&app, &addr, &headers)?;
+    middleware::require_auth(&app, &addr, &headers)?;
     let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     let token_rows = state::get_setup_tokens(&db)?;
     Ok(Json(json!({ "tokens": token_rows })))
@@ -381,7 +351,7 @@ pub async fn create_token(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_auth(&app, &addr, &headers)?;
+    middleware::require_auth(&app, &addr, &headers)?;
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -409,7 +379,7 @@ pub async fn delete_token(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_auth(&app, &addr, &headers)?;
+    middleware::require_auth(&app, &addr, &headers)?;
     let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
     state::delete_setup_token(&db, &id)?;
     Ok(Json(json!({ "success": true })))

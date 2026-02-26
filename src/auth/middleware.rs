@@ -1,4 +1,9 @@
+use axum::http::HeaderMap;
 use std::net::SocketAddr;
+
+use super::state;
+use crate::error::AppError;
+use crate::server::AppState;
 
 /// Check if a request originates from localhost.
 /// Must validate socket addr + Host header + Origin header (if present).
@@ -36,6 +41,41 @@ pub fn is_local_request(
 
 pub(crate) fn is_localhost_host(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+}
+
+/// True when the Host header indicates a non-localhost origin (cookies need Secure flag).
+pub(crate) fn is_secure_host(host: Option<&str>) -> bool {
+    host.map(|h| {
+        let h = h.split(':').next().unwrap_or(h);
+        !is_localhost_host(h)
+    })
+    .unwrap_or(false)
+}
+
+/// Verify that a request is either local or carries a valid session cookie.
+pub(crate) fn require_auth(
+    app: &AppState,
+    addr: &SocketAddr,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+    let is_local = is_local_request(addr, host, origin);
+
+    if !is_local {
+        let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
+        let authenticated = if let Some(token) = get_session_token(cookie) {
+            let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+            state::validate_session(&db, &token)?
+        } else {
+            false
+        };
+        if !authenticated {
+            return Err(AppError::Unauthorized);
+        }
+    }
+
+    Ok(())
 }
 
 fn extract_host_from_origin(origin: &str) -> Option<&str> {
