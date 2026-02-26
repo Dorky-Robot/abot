@@ -1,8 +1,8 @@
-Review PR $ARGUMENTS from multiple expert perspectives, fix all issues found, and repeat until clean.
+Review PR $ARGUMENTS for abot from multiple expert perspectives, fix all issues found, and repeat until clean.
 
 ## Instructions
 
-You are orchestrating a review-fix loop. You will review the PR, post findings, fix every issue, then re-review until all agents return LGTM.
+You are orchestrating a review-fix loop for the abot project. You will review the PR, post findings, fix every issue, then re-review until all agents return LGTM.
 
 ### Step 1: Gather the diff
 
@@ -117,7 +117,7 @@ Push the commit to the PR branch.
 
 Go back to Step 1: gather the fresh diff, identify changed files, launch all 5 review agents again in parallel, compile the new review, and post it as a new comment on the PR.
 
-**Keep looping Steps 1–6 until the verdict is APPROVE** (all agents return LGTM or only have findings that are intentional/acknowledged).
+**Keep looping Steps 1-6 until the verdict is APPROVE** (all agents return LGTM or only have findings that are intentional/acknowledged).
 
 To prevent infinite loops: if the same issue appears in 3 consecutive review rounds, stop the loop, post a comment explaining the unresolved issue, and ask the user for guidance.
 

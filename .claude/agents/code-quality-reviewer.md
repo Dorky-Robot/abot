@@ -1,4 +1,6 @@
 ---
+name: code-quality-reviewer
+description: Code quality review agent for abot. Evaluates naming, complexity, duplication, dead code, and adherence to abot's Rust/vanilla-JS conventions. Use when reviewing PRs for maintainability.
 tools:
   - Read
   - Grep

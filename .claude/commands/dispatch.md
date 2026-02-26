@@ -1,4 +1,4 @@
-Create a well-scoped PR and dispatch it to an isolated Docker worker for implementation.
+Create a well-scoped PR for abot and dispatch it to an isolated Docker worker for implementation.
 
 ## Step 1: Analyze open issues
 

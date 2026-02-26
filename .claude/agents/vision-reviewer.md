@@ -1,4 +1,6 @@
 ---
+name: vision-reviewer
+description: Vision alignment review agent for abot. Checks for feature creep, scope deviation, unnecessary dependencies, and violations of abot's core principles (single-binary, canvas UI, session-centric, touch-first). Use when reviewing PRs for product alignment.
 tools:
   - Read
   - Grep

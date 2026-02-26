@@ -1,4 +1,6 @@
 ---
+name: security-reviewer
+description: Security review agent for abot. Performs STRIDE threat modeling and OWASP checks against abot's attack surfaces (WebAuthn, PTY access, WebSocket, WebRTC, daemon IPC). Use when reviewing PRs or code changes for security issues.
 tools:
   - Read
   - Grep

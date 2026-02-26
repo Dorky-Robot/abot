@@ -1,4 +1,6 @@
 ---
+name: correctness-reviewer
+description: Correctness review agent for abot. Checks logic errors, async/tokio bugs, race conditions, resource leaks, NDJSON protocol correctness, and WebRTC lifecycle. Use when reviewing PRs that touch stateful or concurrent logic.
 tools:
   - Read
   - Grep

@@ -1,4 +1,6 @@
 ---
+name: architecture-reviewer
+description: Architecture review agent for abot. Checks daemon/server boundaries, module responsibilities, IPC protocol, wire protocol conventions, and facet/session separation. Use when reviewing PRs that touch cross-cutting concerns or add new modules.
 tools:
   - Read
   - Grep
@@ -47,7 +49,7 @@ client/         Vanilla JS canvas-rendered frontend
 - **Server module boundaries** — Auth logic belongs in `src/auth/`. Stream/WebSocket logic belongs in `src/stream/`. HTTP route handlers belong in `src/server/`. Don't scatter concerns across modules.
 - **Client independence** — The browser client is a self-contained SPA with assets embedded via rust-embed. All vendor dependencies are bundled. No CDN, no external runtime dependencies.
 - **IPC protocol** — Daemon communication uses NDJSON over Unix socket. New message types must follow the existing envelope format (`type`, `id` for RPC, `session` for routing). The server is the only daemon client.
-- **Wire protocol** — Browser ↔ server messages use dot-notation tags (`session.attach`, `p2p.signal`). New message types must follow this convention in both `ClientMessage`/`ServerMessage` enums and the JS handlers.
+- **Wire protocol** — Browser-server messages use dot-notation tags (`session.attach`, `p2p.signal`). New message types must follow this convention in both `ClientMessage`/`ServerMessage` enums and the JS handlers.
 - **Facet/session separation** — The server knows about sessions (PTY processes). The client knows about facets (visual panels). This boundary must not be crossed — the server should never know about facet positioning, z-order, or focus.
 - **Ripple effects** — Based on the related files, will this change break anything that imports or calls into the changed code? Are there callers that need updating but weren't touched?
 - **API contracts** — Are `pub` exports clean? Does a module expose something it shouldn't, or fail to expose something callers need? Prefer `pub(crate)` for internal helpers.
