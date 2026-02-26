@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1e1e2e">
+  <title>abot — sign in</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>></text></svg>">
+  <link rel="stylesheet" href="/assets/design-tokens.css">
+  <link rel="stylesheet" href="/assets/vendor/fonts/fonts.css">
+  <style>
+    :root {
+      --font-mono: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+      --bg: #1e1e2e;
+      --bg-surface: #313244;
+      --border: #45475a;
+      --text: #cdd6f4;
+      --text-muted: #a6adc8;
+      --text-dim: #6c7086;
+      --accent-active: #cba6f7;
+      --warning: #f9e2af;
+      --danger: #f38ba8;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-mono);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg, 0.75rem);
+      padding: 2rem;
+      max-width: 400px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .card h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+
+    .card p {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 1.5rem;
+    }
+
+    .card p:last-child {
+      margin-bottom: 0;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      font-weight: 500;
+      padding: 0.75rem 1.5rem;
+      border: 1px solid var(--accent-active);
+      border-radius: var(--radius-md, 0.5rem);
+      background: transparent;
+      color: var(--accent-active);
+      cursor: pointer;
+      transition: background 150ms, color 150ms;
+      width: 100%;
+    }
+
+    .btn:hover {
+      background: var(--accent-active);
+      color: var(--bg);
+    }
+
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .btn:disabled:hover {
+      background: transparent;
+      color: var(--accent-active);
+    }
+
+    .error {
+      color: var(--danger);
+      font-size: 0.8rem;
+      margin-top: 1rem;
+    }
+
+    .warning {
+      color: var(--warning);
+      font-size: 0.8rem;
+    }
+
+    .hidden { display: none; }
+
+    .spinner {
+      display: inline-block;
+      width: 1em;
+      height: 1em;
+      border: 2px solid var(--text-dim);
+      border-top-color: var(--accent-active);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>abot</h1>
+
+    <!-- Loading state -->
+    <div id="state-loading">
+      <p><span class="spinner"></span> Checking...</p>
+    </div>
+
+    <!-- Needs setup state -->
+    <div id="state-setup" class="hidden">
+      <p>No passkeys registered. Open <strong>localhost:6969</strong> on the host machine to set up your first passkey.</p>
+    </div>
+
+    <!-- Login state (secure context) -->
+    <div id="state-login" class="hidden">
+      <p>Authenticate to access the terminal.</p>
+      <button id="btn-login" class="btn">Sign in with Passkey</button>
+      <div id="login-error" class="error hidden"></div>
+    </div>
+
+    <!-- Insecure context state -->
+    <div id="state-insecure" class="hidden">
+      <p class="warning">Passkey authentication requires a secure connection (HTTPS or localhost).</p>
+      <p>Access <strong>localhost:6969</strong> on the host machine, or set up HTTPS for remote access.</p>
+    </div>
+
+    <!-- Network error state -->
+    <div id="state-error" class="hidden">
+      <p class="error">Could not reach the server. Is abot running?</p>
+    </div>
+  </div>
+
+  <script type="module" src="/assets/login.js"></script>
+</body>
+</html>

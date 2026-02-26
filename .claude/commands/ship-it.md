@@ -1,8 +1,8 @@
-Push changes, create a PR, review-fix until clean, and merge. End-to-end ship.
+Push changes, create a PR, review-fix until clean, and merge for abot.
 
 ## Instructions
 
-You are orchestrating the full ship workflow: push → PR → review-fix loop → merge. The argument $ARGUMENTS is optional context (e.g., a PR title hint or branch name).
+You are orchestrating the full ship workflow: push, PR, review-fix loop, merge. The argument $ARGUMENTS is optional context (e.g., a PR title hint or branch name).
 
 ### Step 1: Ensure we're on a feature branch
 
@@ -155,7 +155,7 @@ Push the commit to the PR branch.
 
 Go back to Step 3a: gather the fresh diff, identify changed files, launch all 5 review agents again in parallel, compile the new review, and post it as a new comment on the PR.
 
-**Keep looping Steps 3a–3f until the verdict is APPROVE** (all agents return LGTM or only have findings that are intentional/acknowledged).
+**Keep looping Steps 3a-3f until the verdict is APPROVE** (all agents return LGTM or only have findings that are intentional/acknowledged).
 
 To prevent infinite loops: if the same issue appears in 3 consecutive review rounds, stop the loop, post a comment explaining the unresolved issue, and ask the user for guidance.
 

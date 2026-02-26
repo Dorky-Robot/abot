@@ -11,6 +11,7 @@ pub fn build(state: Arc<AppState>) -> Router {
     Router::new()
         // Asset serving
         .route("/", get(assets::index))
+        .route("/login", get(assets::login))
         .route("/assets/{*path}", get(assets::serve_asset))
         // Auth endpoints
         .route("/auth/status", get(auth_handlers::status))

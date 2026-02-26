@@ -11,7 +11,7 @@
  */
 export async function openDeviceDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('katulong', 1);
+    const request = indexedDB.open('abot', 1);
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
     request.onupgradeneeded = (e) => {
@@ -70,21 +70,21 @@ export async function saveToIndexedDB(key, value) {
  */
 export async function getOrCreateDeviceId() {
   // Try localStorage first (fastest)
-  let deviceId = localStorage.getItem('katulong_device_id');
+  let deviceId = localStorage.getItem('abot_device_id');
 
   // Fallback to IndexedDB
   if (!deviceId) {
     deviceId = await getFromIndexedDB('deviceId');
     if (deviceId) {
       // Sync back to localStorage
-      localStorage.setItem('katulong_device_id', deviceId);
+      localStorage.setItem('abot_device_id', deviceId);
     }
   }
 
   // Generate new ID if not found anywhere
   if (!deviceId) {
     deviceId = crypto.randomUUID();
-    localStorage.setItem('katulong_device_id', deviceId);
+    localStorage.setItem('abot_device_id', deviceId);
     await saveToIndexedDB('deviceId', deviceId);
   }
 
