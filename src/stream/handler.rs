@@ -43,18 +43,20 @@ pub async fn ws_upgrade(
         return axum::http::StatusCode::UNAUTHORIZED.into_response();
     }
 
-    // Origin check for non-localhost
+    // Origin check for non-localhost — reject missing Origin to prevent CSWSH
     if !is_local {
-        if let Some(origin) = origin {
-            let allowed = host.map(|h| {
-                let expected = format!("https://{}", h);
-                let expected_http = format!("http://{}", h);
-                origin == expected || origin == expected_http
-            }).unwrap_or(false);
+        let origin = match origin {
+            Some(o) => o,
+            None => return axum::http::StatusCode::FORBIDDEN.into_response(),
+        };
+        let allowed = host.map(|h| {
+            let expected = format!("https://{}", h);
+            let expected_http = format!("http://{}", h);
+            origin == expected || origin == expected_http
+        }).unwrap_or(false);
 
-            if !allowed {
-                return axum::http::StatusCode::FORBIDDEN.into_response();
-            }
+        if !allowed {
+            return axum::http::StatusCode::FORBIDDEN.into_response();
         }
     }
 

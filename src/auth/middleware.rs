@@ -34,7 +34,7 @@ pub fn is_local_request(
     true
 }
 
-fn is_localhost_host(host: &str) -> bool {
+pub(crate) fn is_localhost_host(host: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
 }
 
