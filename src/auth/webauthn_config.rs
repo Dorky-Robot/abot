@@ -11,7 +11,7 @@ pub fn build_webauthn(addr: &str) -> Result<Webauthn> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(6969);
 
-    let (rp_id, rp_origin) = if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+    let (rp_id, rp_origin) = if matches!(host, "127.0.0.1" | "localhost" | "::1" | "0.0.0.0") {
         (
             "localhost".to_string(),
             format!("http://localhost:{}", port),

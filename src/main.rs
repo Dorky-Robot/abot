@@ -24,7 +24,7 @@ struct Cli {
     port: u16,
 
     /// Bind address
-    #[arg(short, long, default_value = "127.0.0.1")]
+    #[arg(short, long, default_value = "0.0.0.0")]
     bind: String,
 
     #[command(subcommand)]
