@@ -12,7 +12,6 @@ use tokio::sync::{mpsc, Mutex};
 use super::messages::{ClientMessage, ServerMessage};
 use super::p2p::{P2pEvent, ServerPeer};
 use crate::auth::middleware;
-use crate::auth::state;
 use crate::server::AppState;
 
 /// WebSocket upgrade handler with auth + origin check
@@ -26,35 +25,26 @@ pub async fn ws_upgrade(
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
     let is_local = middleware::is_local_request(&addr, host, origin);
 
-    // Auth check
-    let authenticated = if is_local {
-        true
-    } else {
-        let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
-        if let Some(token) = middleware::get_session_token(cookie) {
-            let db = app.auth.db.lock().unwrap();
-            state::validate_session(&db, &token).unwrap_or(false)
-        } else {
-            false
-        }
-    };
-
-    if !authenticated {
-        return axum::http::StatusCode::UNAUTHORIZED.into_response();
+    // Auth check — delegate to centralized middleware helper
+    if let Err(e) = middleware::require_auth(&app, &addr, &headers) {
+        return e.into_response();
     }
 
-    // Origin check for non-localhost
+    // Origin check for non-localhost — reject missing Origin to prevent CSWSH
     if !is_local {
-        if let Some(origin) = origin {
-            let allowed = host.map(|h| {
-                let expected = format!("https://{}", h);
-                let expected_http = format!("http://{}", h);
-                origin == expected || origin == expected_http
-            }).unwrap_or(false);
+        let origin = match origin {
+            Some(o) => o,
+            None => return axum::http::StatusCode::FORBIDDEN.into_response(),
+        };
+        let allowed = host.map(|h| {
+            let host_without_port = h.split(':').next().unwrap_or(h);
+            let expected = format!("https://{}", host_without_port);
+            let expected_http = format!("http://{}", host_without_port);
+            origin == expected || origin == expected_http
+        }).unwrap_or(false);
 
-            if !allowed {
-                return axum::http::StatusCode::FORBIDDEN.into_response();
-            }
+        if !allowed {
+            return axum::http::StatusCode::FORBIDDEN.into_response();
         }
     }
 
