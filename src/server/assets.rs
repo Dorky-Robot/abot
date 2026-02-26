@@ -17,25 +17,19 @@ pub async fn index(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    let is_local = middleware::is_local_request(&addr, host, origin);
-
-    if !is_local {
-        if middleware::require_auth(&app, &addr, &headers).is_err() {
-            return Redirect::to("/login").into_response();
-        }
+    if middleware::require_auth(&app, &addr, &headers).is_err() {
+        return Redirect::to("/login").into_response();
     }
 
     match ClientAssets::get("index.html") {
-        Some(file) => Html(String::from_utf8_lossy(&file.data).to_string()).into_response(),
+        Some(file) => Html(String::from_utf8_lossy(&file.data).into_owned()).into_response(),
         None => Html("<h1>abot: client not found</h1>".to_string()).into_response(),
     }
 }
 
 pub async fn login() -> Response {
     match ClientAssets::get("login.html") {
-        Some(file) => Html(String::from_utf8_lossy(&file.data).to_string()).into_response(),
+        Some(file) => Html(String::from_utf8_lossy(&file.data).into_owned()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

@@ -60,6 +60,13 @@ async function login() {
     // 2. Ask browser for passkey assertion
     const credential = await navigator.credentials.get({ publicKey: options.publicKey });
 
+    if (!credential) {
+      showError('Authentication was cancelled. Please try again.');
+      btn.disabled = false;
+      btn.textContent = 'Sign in with Passkey';
+      return;
+    }
+
     // 3. Send assertion to server
     const deviceId = await getOrCreateDeviceId();
     const deviceName = generateDeviceName();
@@ -85,6 +92,10 @@ async function login() {
 
     if (result.success) {
       window.location.replace('/');
+    } else {
+      showError('Authentication failed. Please try again.');
+      btn.disabled = false;
+      btn.textContent = 'Sign in with Passkey';
     }
   } catch (err) {
     showError(getWebAuthnErrorMessage(err));

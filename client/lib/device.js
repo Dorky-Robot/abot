@@ -72,6 +72,15 @@ export async function getOrCreateDeviceId() {
   // Try localStorage first (fastest)
   let deviceId = localStorage.getItem('abot_device_id');
 
+  // Migrate from legacy 'katulong' key
+  if (!deviceId) {
+    deviceId = localStorage.getItem('katulong_device_id');
+    if (deviceId) {
+      localStorage.setItem('abot_device_id', deviceId);
+      localStorage.removeItem('katulong_device_id');
+    }
+  }
+
   // Fallback to IndexedDB
   if (!deviceId) {
     deviceId = await getFromIndexedDB('deviceId');
