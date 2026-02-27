@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Messages from browser client to server
 /// Supports both abot's namespaced protocol (session.input) and
-/// katulong's flat protocol (input, attach, resize)
+/// legacy flat's flat protocol (input, attach, resize)
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
@@ -40,9 +40,9 @@ pub enum ClientMessage {
     #[serde(rename = "p2p.signal")]
     P2pSignal { data: serde_json::Value },
 
-    // --- Flat protocol (katulong compatibility) ---
+    // --- Flat protocol (legacy flat compatibility) ---
 
-    /// katulong sends { type: "input", data: "..." }
+    /// legacy flat sends { type: "input", data: "..." }
     #[serde(rename = "input")]
     FlatInput {
         data: String,
@@ -51,7 +51,7 @@ pub enum ClientMessage {
         session: Option<String>,
     },
 
-    /// katulong sends { type: "attach", session: "name", cols: N, rows: N }
+    /// legacy flat sends { type: "attach", session: "name", cols: N, rows: N }
     #[serde(rename = "attach")]
     FlatAttach {
         session: String,
@@ -61,7 +61,7 @@ pub enum ClientMessage {
         rows: u16,
     },
 
-    /// katulong sends { type: "resize", cols: N, rows: N }
+    /// legacy flat sends { type: "resize", cols: N, rows: N }
     #[serde(rename = "resize")]
     FlatResize {
         #[serde(default = "default_cols")]
@@ -137,13 +137,13 @@ pub enum ServerMessage {
     #[serde(rename = "p2p.unavailable")]
     P2pUnavailable,
 
-    #[serde(rename = "server.draining")]
+    #[serde(rename = "server-draining")]
     ServerDraining,
 
     #[serde(rename = "error")]
     Error { message: String },
 
-    // --- Flat protocol (katulong compatibility) ---
+    // --- Flat protocol (legacy flat compatibility) ---
 
     #[serde(rename = "attached")]
     FlatAttached {

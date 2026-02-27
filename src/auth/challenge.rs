@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 const CHALLENGE_TTL_MS: u64 = 5 * 60 * 1000; // 5 minutes
 
 /// In-memory challenge store with automatic TTL expiry.
-/// Matches katulong's createChallengeStore pattern.
+/// Single-use challenge store.
 pub struct ChallengeStore {
     inner: Arc<Mutex<HashMap<String, (serde_json::Value, u64)>>>,
 }

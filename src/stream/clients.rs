@@ -66,16 +66,6 @@ impl ClientTracker {
         }
     }
 
-    /// Send a message to all clients attached to a specific session
-    pub async fn broadcast_to_session(&self, session_id: &str, msg: ServerMessage) {
-        let clients = self.clients.read().await;
-        for info in clients.values() {
-            if info.attached_sessions.contains(session_id) {
-                let _ = info.tx.send(msg.clone()).await;
-            }
-        }
-    }
-
     /// Send a message to all connected clients
     pub async fn broadcast_all(&self, msg: ServerMessage) {
         let clients = self.clients.read().await;
@@ -131,36 +121,4 @@ impl ClientTracker {
         }
     }
 
-    /// Send output to all clients on a session, preferring DataChannel when available
-    pub async fn broadcast_to_session_prefer_p2p(&self, session_id: &str, msg: ServerMessage) {
-        let json = serde_json::to_string(&msg).unwrap_or_default();
-        let clients = self.clients.read().await;
-        for info in clients.values() {
-            if info.attached_sessions.contains(session_id) {
-                // Try DataChannel first
-                if let Some(ref dc) = info.p2p_sender {
-                    if dc.send_text(&json).await.is_ok() {
-                        continue;
-                    }
-                }
-                // Fall back to WebSocket
-                let _ = info.tx.send(msg.clone()).await;
-            }
-        }
-    }
-
-    /// Send a message to all OTHER clients attached to the same session as the sender
-    pub async fn relay_to_session_peers(
-        &self,
-        sender_id: &str,
-        session_id: &str,
-        msg: ServerMessage,
-    ) {
-        let clients = self.clients.read().await;
-        for (id, info) in clients.iter() {
-            if id != sender_id && info.attached_sessions.contains(session_id) {
-                let _ = info.tx.send(msg.clone()).await;
-            }
-        }
-    }
 }

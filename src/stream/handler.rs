@@ -220,7 +220,7 @@ async fn handle_client_message(
     tracing::debug!("client {} message: {:?}", client_id, msg);
 
     match msg {
-        // --- Flat protocol handlers (katulong) ---
+        // --- Flat protocol handlers ---
 
         ClientMessage::FlatAttach { session, cols, rows } => {
             // Mark this client as using flat protocol
@@ -444,8 +444,8 @@ async fn handle_client_message(
                 .await?;
         }
 
-        ClientMessage::SessionDetach { id: _ } => {
-            app.stream_clients.detach(client_id).await;
+        ClientMessage::SessionDetach { id } => {
+            app.stream_clients.detach_session(client_id, &id).await;
             app.daemon_client
                 .send(&json!({
                     "type": "detach",
@@ -554,11 +554,16 @@ async fn handle_client_message(
                                                         .get("data")
                                                         .and_then(|v| v.as_str())
                                                     {
+                                                        let session = parsed
+                                                            .get("session")
+                                                            .or_else(|| parsed.get("id"))
+                                                            .and_then(|v| v.as_str());
                                                         let _ = app_clone
                                                             .daemon_client
                                                             .send(&json!({
                                                                 "type": "input",
                                                                 "clientId": cid,
+                                                                "session": session,
                                                                 "data": input_data,
                                                             }))
                                                             .await;
@@ -575,11 +580,16 @@ async fn handle_client_message(
                                                         .and_then(|v| v.as_u64())
                                                         .unwrap_or(40)
                                                         as u16;
+                                                    let session = parsed
+                                                        .get("session")
+                                                        .or_else(|| parsed.get("id"))
+                                                        .and_then(|v| v.as_str());
                                                     let _ = app_clone
                                                         .daemon_client
                                                         .send(&json!({
                                                             "type": "resize",
                                                             "clientId": cid,
+                                                            "session": session,
                                                             "cols": cols,
                                                             "rows": rows,
                                                         }))

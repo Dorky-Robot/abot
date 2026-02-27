@@ -300,7 +300,7 @@ pub async fn login_verify(
         auth_result.cred_id().as_ref(),
     );
 
-    app.auth.lockout.record_success(&cred_id).await;
+    app.auth.lockout.record_success("_global").await;
 
     let session_token = tokens::generate_token();
     let csrf_token = tokens::generate_token();
@@ -383,7 +383,7 @@ pub async fn create_token(
     })))
 }
 
-/// GET /api/credentials — list all credentials (for katulong client compatibility)
+/// GET /api/credentials — list all credentials
 pub async fn list_credentials(
     State(app): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,

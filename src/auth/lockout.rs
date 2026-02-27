@@ -7,7 +7,7 @@ const WINDOW_MS: u64 = 15 * 60 * 1000; // 15 minutes
 const LOCKOUT_MS: u64 = 15 * 60 * 1000; // 15 minutes
 
 /// Brute-force protection: 5 failures in 15 min → 15 min lockout.
-/// Matches katulong's CredentialLockout.
+/// Brute-force lockout tracker.
 pub struct LockoutTracker {
     failures: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     lockouts: Arc<Mutex<HashMap<String, u64>>>,

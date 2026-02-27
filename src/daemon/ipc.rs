@@ -138,6 +138,16 @@ pub enum OutputEvent {
     SessionRemoved { session: String },
 }
 
+/// Resolve session name: use explicit name if provided, otherwise fall back to client attachment.
+async fn resolve_session(state: &Arc<DaemonState>, client_id: &str, explicit: Option<String>) -> Option<String> {
+    if let Some(s) = explicit {
+        Some(s)
+    } else {
+        let attachments = state.client_attachments.lock().await;
+        attachments.get(client_id).cloned()
+    }
+}
+
 pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Option<DaemonResponse> {
     match req {
         DaemonRequest::ListSessions { id } => {
@@ -290,13 +300,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
 
         // Fire-and-forget messages — no response
         DaemonRequest::Input { client_id, session, data } => {
-            // Use explicit session name if provided, otherwise fall back to attachment
-            let session_name = if let Some(s) = session {
-                Some(s)
-            } else {
-                let attachments = state.client_attachments.lock().await;
-                attachments.get(&client_id).cloned()
-            };
+            let session_name = resolve_session(state, &client_id, session).await;
 
             if let Some(session_name) = session_name {
                 let mut sessions = state.sessions.lock().await;
@@ -328,13 +332,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
             cols,
             rows,
         } => {
-            // Use explicit session name if provided, otherwise fall back to attachment
-            let session_name = if let Some(s) = session {
-                Some(s)
-            } else {
-                let attachments = state.client_attachments.lock().await;
-                attachments.get(&client_id).cloned()
-            };
+            let session_name = resolve_session(state, &client_id, session).await;
 
             if let Some(session_name) = session_name {
                 let mut sessions = state.sessions.lock().await;

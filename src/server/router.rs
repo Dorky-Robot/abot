@@ -34,7 +34,7 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/auth/tokens/{id}", delete(auth_handlers::delete_token))
         // WebSocket stream
         .route("/stream", get(stream_handler::ws_upgrade))
-        // Session CRUD (katulong client compatibility)
+        // Session CRUD (legacy client compatibility)
         .route("/sessions", get(sessions::list_sessions))
         .route("/sessions", post(sessions::create_session))
         .route("/sessions/{name}", get(sessions::get_session))
@@ -48,7 +48,7 @@ pub fn build(state: Arc<AppState>) -> Router {
         // Config
         .route("/api/config", get(config_routes::get_config))
         .route("/api/config/instance-name", put(config_routes::set_instance_name))
-        // Token/credential API aliases (katulong client uses /api/tokens, /api/credentials)
+        // Token/credential API aliases (legacy client uses /api/tokens, /api/credentials)
         .route("/api/tokens", get(auth_handlers::list_tokens))
         .route("/api/credentials", get(auth_handlers::list_credentials))
         // Stub endpoint for client compatibility

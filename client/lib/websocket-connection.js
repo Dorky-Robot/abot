@@ -65,21 +65,6 @@ export function createWebSocketConnection(deps = {}) {
       effects: [{ type: 'terminalWrite', data: '\r\n[session deleted]\r\n' }]
     }),
 
-    'session-renamed': (msg) => ({
-      stateUpdates: { 'session.name': msg.name },
-      effects: [{ type: 'updateSessionUI', name: msg.name }]
-    }),
-
-    'credential-registered': () => ({
-      stateUpdates: {},
-      effects: [{ type: 'refreshTokensAfterRegistration' }]
-    }),
-
-    'credential-removed': () => ({
-      stateUpdates: {},
-      effects: []
-    }),
-
     'p2p-signal': (msg, currentState) => ({
       stateUpdates: {},
       effects: currentState.p2p?.peer
@@ -196,8 +181,17 @@ export function createWebSocketConnection(deps = {}) {
     state.connection.ws.onopen = () => {
       isConnecting = false;
       state.connection.reconnectDelay = 1000;
-      state.connection.ws.send(JSON.stringify({ type: "attach", session: state.session.name, cols: term.cols, rows: term.rows }));
-      state.connection.ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+      // Re-attach all facets (multi-session support)
+      if (facetManager) {
+        for (const f of facetManager.getAll()) {
+          state.connection.ws.send(JSON.stringify({
+            type: "attach", session: f.sessionName,
+            cols: f.term.cols, rows: f.term.rows
+          }));
+        }
+      } else {
+        state.connection.ws.send(JSON.stringify({ type: "attach", session: state.session.name, cols: term.cols, rows: term.rows }));
+      }
     };
 
     state.connection.ws.onmessage = (e) => {
