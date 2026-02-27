@@ -17,7 +17,7 @@
     import { createPullToRefreshManager } from "/lib/pull-to-refresh.js";
     import { createThemeManager, DARK_THEME, LIGHT_THEME } from "/lib/theme-manager.js";
     import { createTabManager } from "/lib/tab-manager.js";
-    import { isAtBottom, scrollToBottom, withPreservedScroll } from "/lib/scroll-utils.js";
+    import { scrollToBottom, withPreservedScroll } from "/lib/scroll-utils.js";
     import { keysToSequence, sendSequence, displayKey, keysLabel, keysString, VALID_KEYS, normalizeKey } from "/lib/key-mapping.js";
     import { createShortcutBar } from "/lib/shortcut-bar.js";
     import { createPasteHandler } from "/lib/paste-handler.js";
@@ -322,7 +322,7 @@
     // --- Pull-to-refresh (composable gesture handler) ---
     const pullToRefresh = createPullToRefreshManager({
       container: facetLayer,
-      isAtBottom,
+      getFocusedTerm,
       onRefresh: () => {
         if (state.connection.ws && state.connection.ws.readyState === WebSocket.OPEN && state.connection.attached) {
           rawSend("\x0C"); // Ctrl-L: refresh screen
@@ -607,7 +607,6 @@
       p2pManager,
       updateP2PIndicator,
       loadTokens,
-      isAtBottom,
       renderBar,
       facetManager
     });

@@ -2,24 +2,17 @@
  * Scroll State Utilities
  *
  * Composable scroll management helpers for terminal.
+ * Uses xterm's buffer API (not DOM viewport queries) for scroll detection.
  */
 
 /**
- * Get the viewport element for a specific terminal (or fall back to first found)
+ * Check if terminal is scrolled to the bottom.
+ * Uses xterm buffer API: viewportY >= baseY means at bottom.
  */
-function getViewport(term) {
-  if (term?.element) return term.element.querySelector(".xterm-viewport");
-  return document.querySelector(".xterm-viewport");
-}
-
-/**
- * Check if viewport is at bottom
- */
-export function isAtBottom(viewport = document.querySelector(".xterm-viewport")) {
-  if (!viewport) return true;
-  // Dynamic threshold: 10px minimum or 2% of viewport height (better for high-DPI)
-  const threshold = Math.max(10, viewport.clientHeight * 0.02);
-  return viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - threshold;
+export function isAtBottom(term) {
+  if (!term?.buffer?.active) return true;
+  const buf = term.buffer.active;
+  return buf.viewportY >= buf.baseY;
 }
 
 /**
@@ -35,8 +28,7 @@ export const scrollToBottom = (term) => {
  * Preserve scroll position during operation (composable)
  */
 export const withPreservedScroll = (term, operation) => {
-  const viewport = getViewport(term);
-  const wasAtBottom = isAtBottom(viewport);
+  const wasAtBottom = isAtBottom(term);
   operation();
   if (wasAtBottom) scrollToBottom(term);
 };
@@ -45,8 +37,7 @@ export const withPreservedScroll = (term, operation) => {
  * Terminal write with preserved scroll (composable)
  */
 export const terminalWriteWithScroll = (term, data, onComplete) => {
-  const viewport = getViewport(term);
-  const wasAtBottom = isAtBottom(viewport);
+  const wasAtBottom = isAtBottom(term);
   term.write(data, () => {
     if (wasAtBottom) scrollToBottom(term);
     if (onComplete) onComplete();
