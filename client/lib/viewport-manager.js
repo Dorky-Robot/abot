@@ -4,6 +4,8 @@
  * Handles viewport resizing, scroll button UI, and terminal gesture handlers.
  */
 
+import { isAtBottom } from "/lib/scroll-utils.js";
+
 /**
  * Create viewport manager for responsive terminal layout
  */
@@ -61,10 +63,8 @@ export function createViewportManager(options = {}) {
         scrollRaf = requestAnimationFrame(() => {
           scrollRaf = 0;
           const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
-          const vp = focusedTerm?.element?.querySelector(".xterm-viewport");
-          if (!vp) return;
-          const atBottom = vp.scrollTop >= vp.scrollHeight - vp.clientHeight - 10;
-          scrollBtn.style.display = atBottom ? "none" : "flex";
+          if (!focusedTerm) return;
+          scrollBtn.style.display = isAtBottom(focusedTerm) ? "none" : "flex";
         });
       }
     }, { passive: true, capture: true });

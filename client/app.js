@@ -322,6 +322,7 @@
     // --- Pull-to-refresh (composable gesture handler) ---
     const pullToRefresh = createPullToRefreshManager({
       container: facetLayer,
+      getFocusedTerm,
       isAtBottom,
       onRefresh: () => {
         if (state.connection.ws && state.connection.ws.readyState === WebSocket.OPEN && state.connection.attached) {

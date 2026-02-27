@@ -5,7 +5,7 @@
  */
 
 export function createPullToRefreshManager(options = {}) {
-  const { container, isAtBottom, onRefresh } = options;
+  const { container, getFocusedTerm, isAtBottom, onRefresh } = options;
   const indicator = document.getElementById("pull-refresh-indicator");
 
   let pullStartY = 0;
@@ -17,9 +17,9 @@ export function createPullToRefreshManager(options = {}) {
       if (!container || !indicator) return;
 
       container.addEventListener("touchstart", (e) => {
-        const viewport = document.querySelector(".xterm-viewport");
+        const term = getFocusedTerm ? getFocusedTerm() : null;
         // Only allow pull-up if at bottom of scrollback
-        if (isAtBottom && isAtBottom(viewport)) {
+        if (isAtBottom && isAtBottom(term)) {
           pullStartY = e.touches[0].clientY;
           isPulling = false;
         }
