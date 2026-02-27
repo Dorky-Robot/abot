@@ -221,7 +221,9 @@ export function createWebSocketConnection(deps = {}) {
       }
 
       // Normal disconnect - attempt reconnection with exponential backoff
-      const viewport = document.querySelector(".xterm-viewport");
+      const activeTerm = facetManager?.getFocused()?.term || term;
+      const viewport = activeTerm?.element?.querySelector(".xterm-viewport")
+        || document.querySelector(".xterm-viewport");
       state.scroll.userScrolledUpBeforeDisconnect = !isAtBottom(viewport);
       state.connection.attached = false;
       if (p2pManager) p2pManager.destroy();

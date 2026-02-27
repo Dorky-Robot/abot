@@ -27,7 +27,7 @@ export function createTerminalKeyboard(options = {}) {
       const active = document.activeElement;
       const inTerminal = active && (
         active.classList.contains("xterm-helper-textarea") ||
-        active.closest("#terminal-container")
+        active.closest("#facet-layer")
       );
 
       if (!inTerminal) return;

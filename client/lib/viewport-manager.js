@@ -4,18 +4,14 @@
  * Handles viewport resizing, scroll button UI, and terminal gesture handlers.
  */
 
-import { withPreservedScroll } from "/lib/scroll-utils.js";
-
 /**
  * Create viewport manager for responsive terminal layout
  */
 export function createViewportManager(options = {}) {
   const {
     term,
-    fit,
     termContainer,
     bar,
-    onWebSocketResize,
     onDictationOpen
   } = options;
 
@@ -55,18 +51,6 @@ export function createViewportManager(options = {}) {
     window.addEventListener("load", resizeToViewport);
   }
 
-  // Initialize terminal ResizeObserver for WebSocket resize events
-  function initTerminalResizeObserver() {
-    const ro = new ResizeObserver(() => {
-      withPreservedScroll(term, () => fit.fit());
-      if (onWebSocketResize) {
-        onWebSocketResize(term.cols, term.rows);
-      }
-    });
-    ro.observe(termContainer);
-    return ro;
-  }
-
   // Initialize scroll-to-bottom button
   function initScrollButton() {
     if (!viewport || !scrollBtn) return;
@@ -83,7 +67,7 @@ export function createViewportManager(options = {}) {
     }, { passive: true });
 
     scrollBtn.addEventListener("click", () => {
-      term.scrollToBottom(term);
+      term.scrollToBottom();
       scrollBtn.style.display = "none";
     });
   }
@@ -154,17 +138,14 @@ export function createViewportManager(options = {}) {
   // Initialize all viewport features
   function init() {
     initViewportResize();
-    const resizeObserver = initTerminalResizeObserver();
     initScrollButton();
     initTerminalGestures();
-    return resizeObserver;
   }
 
   return {
     init,
     resizeToViewport,
     initViewportResize,
-    initTerminalResizeObserver,
     initScrollButton,
     initTerminalGestures
   };

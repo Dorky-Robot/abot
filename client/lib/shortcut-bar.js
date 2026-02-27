@@ -17,7 +17,6 @@ export function createShortcutBar(options = {}) {
       { label: "Esc", keys: "esc" },
       { label: "Tab", keys: "tab" }
     ],
-    onSessionClick,
     onShortcutsClick,
     onSettingsClick,
     onNewFacet,

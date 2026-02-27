@@ -293,37 +293,13 @@
     });
     terminalKeyboard.init();
 
-    // Wire keyboard handlers for additional facets
+    // Wire keyboard handlers for additional facets (reuses createTerminalKeyboard)
     function wireNewFacetTerminal(facet) {
-      const fterm = facet.term;
-      import("/lib/terminal-input-filter.js").then(({ filterTerminalResponses, registerResponseSuppressors }) => {
-        fterm.onData((data) => {
-          const filtered = filterTerminalResponses(data);
-          if (filtered) rawSend(filtered);
-        });
-        fterm.attachCustomKeyEventHandler((ev) => {
-          if (ev.metaKey && ev.key === "c" && fterm.hasSelection()) return false;
-          if ((ev.metaKey || ev.ctrlKey) && ev.key === "v") return false;
-          if (ev.ctrlKey && ev.key === "c" && !fterm.hasSelection()) return true;
-          if (ev.key === "Tab") return false;
-          if (ev.shiftKey && ev.key === "Enter" && ev.type === "keydown") {
-            rawSend("\x16\x0a");
-            return false;
-          }
-          if (ev.metaKey && ev.type === "keydown") {
-            if (ev.key === "f") { ev.preventDefault(); toggleSearchBar(); return false; }
-            if (ev.key === "k") { fterm.clear(); return false; }
-            const metaSeq = { Backspace: "\x15", ArrowLeft: "\x01", ArrowRight: "\x05" }[ev.key];
-            if (metaSeq) { rawSend(metaSeq); return false; }
-          }
-          if (ev.altKey && ev.type === "keydown") {
-            const altSeq = { ArrowLeft: "\x1bb", ArrowRight: "\x1bf" }[ev.key];
-            if (altSeq) { rawSend(altSeq); return false; }
-          }
-          return true;
-        });
-        registerResponseSuppressors(fterm);
-      });
+      createTerminalKeyboard({
+        term: facet.term,
+        onSend: rawSend,
+        onToggleSearch: toggleSearchBar
+      }).init();
     }
 
     // WebSocket connection setup moved to after all dependencies are initialized (see before Boot section)
@@ -520,16 +496,8 @@
 
     const viewportManager = createViewportManager({
       term,
-      fit,
       termContainer: facetLayer,
       bar,
-      onWebSocketResize: (cols, rows) => {
-        if (state.connection.ws?.readyState === 1) {
-          const focused = facetManager.getFocused();
-          const session = focused ? focused.sessionName : state.session.name;
-          state.connection.ws.send(JSON.stringify({ type: "resize", cols, rows, session }));
-        }
-      },
       onDictationOpen: () => openDictationModal()
     });
     viewportManager.init();

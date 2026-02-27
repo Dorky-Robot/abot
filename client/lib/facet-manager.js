@@ -38,7 +38,6 @@ export function createFacetManager(options = {}) {
     onFocusChange,      // (facet) => void — called when focused facet changes
     onResize,           // (facetId, cols, rows) => void — send resize to server
     onClose,            // (facetId, sessionName) => void — facet closed
-    onNewFacet,         // () => void — request new facet from app.js
   } = options;
 
   /** @type {Map<string, Facet>} */
@@ -48,6 +47,8 @@ export function createFacetManager(options = {}) {
   // --- Windowing state ---
   /** Ordered list of facet IDs in the tile grid */
   const tiledOrder = [];
+  /** Set mirror of tiledOrder for O(1) membership checks */
+  const tiledSet = new Set();
   /** Set of facet IDs currently floating */
   const floatingSet = new Set();
 
@@ -105,10 +106,11 @@ export function createFacetManager(options = {}) {
     window.addEventListener("mouseup", onEnd);
     window.addEventListener("touchmove", (e) => {
       if (activeDrag || activeResize) {
+        e.preventDefault();
         const t = e.touches[0];
         onMove(t.clientX, t.clientY);
       }
-    }, { passive: true });
+    }, { passive: false });
     window.addEventListener("touchend", onEnd, { passive: true });
   }
 
@@ -369,12 +371,14 @@ export function createFacetManager(options = {}) {
       termContainer,
       resizeHandle,
       resizeObserver: null,
+      mutationObserver: null,
     };
 
     facets.set(id, facet);
 
     // Add to tiled order
     tiledOrder.push(id);
+    tiledSet.add(id);
 
     // ResizeObserver for terminal fit
     const ro = new ResizeObserver(() => {
@@ -412,7 +416,7 @@ export function createFacetManager(options = {}) {
     focus(id);
 
     // Patch textarea for mobile
-    patchTerminalTextarea(termContainer);
+    facet.mutationObserver = patchTerminalTextarea(termContainer);
 
     return facet;
   }
@@ -424,12 +428,13 @@ export function createFacetManager(options = {}) {
 
     function onStart(clientX, clientY) {
       const rect = el.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
       activeDrag = {
         facetId: id,
         startX: clientX,
         startY: clientY,
-        startLeft: rect.left,
-        startTop: rect.top,
+        startLeft: rect.left - containerRect.left,
+        startTop: rect.top - containerRect.top,
         committed: false,
       };
 
@@ -523,10 +528,12 @@ export function createFacetManager(options = {}) {
 
     // Snapshot current rect before removing from grid
     const rect = facet.el.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
 
     // Remove from tiled order
     const idx = tiledOrder.indexOf(id);
     if (idx !== -1) tiledOrder.splice(idx, 1);
+    tiledSet.delete(id);
 
     // Add to floating set
     floatingSet.add(id);
@@ -535,9 +542,9 @@ export function createFacetManager(options = {}) {
     facet.el.classList.remove("facet-tiled", "facet-solo");
     facet.el.classList.add("facet-floating");
 
-    // Position at snapshotted location
-    facet.el.style.left = rect.left + "px";
-    facet.el.style.top = rect.top + "px";
+    // Position at snapshotted location (container-relative, not viewport-relative)
+    facet.el.style.left = (rect.left - containerRect.left) + "px";
+    facet.el.style.top = (rect.top - containerRect.top) + "px";
     facet.el.style.width = rect.width + "px";
     facet.el.style.height = rect.height + "px";
     facet.el.style.gridColumn = "";
@@ -569,6 +576,7 @@ export function createFacetManager(options = {}) {
 
     // Add to tiled order
     tiledOrder.push(id);
+    tiledSet.add(id);
 
     // Swap CSS classes
     facet.el.classList.remove("facet-floating");
@@ -639,6 +647,7 @@ export function createFacetManager(options = {}) {
     if (facets.size <= 1) return;
 
     if (facet.resizeObserver) facet.resizeObserver.disconnect();
+    if (facet.mutationObserver) facet.mutationObserver.disconnect();
     facet.term.dispose();
     facet.el.remove();
     facets.delete(id);
@@ -646,6 +655,7 @@ export function createFacetManager(options = {}) {
     // Remove from windowing state
     const tiledIdx = tiledOrder.indexOf(id);
     if (tiledIdx !== -1) tiledOrder.splice(tiledIdx, 1);
+    tiledSet.delete(id);
     floatingSet.delete(id);
 
     if (onClose) onClose(id, facet.sessionName);
@@ -665,15 +675,11 @@ export function createFacetManager(options = {}) {
   // --- Windowing queries ---
 
   function isTiled(id) {
-    return tiledOrder.includes(id);
+    return tiledSet.has(id);
   }
 
   function getTiledFacets() {
     return tiledOrder.map(id => facets.get(id)).filter(Boolean);
-  }
-
-  function getFloatingFacets() {
-    return [...floatingSet].map(id => facets.get(id)).filter(Boolean);
   }
 
   // --- Theme ---
@@ -714,7 +720,9 @@ export function createFacetManager(options = {}) {
       ta.setAttribute("spellcheck", "false");
     };
     patch();
-    new MutationObserver(patch).observe(termContainer, { childList: true, subtree: true });
+    const mo = new MutationObserver(patch);
+    mo.observe(termContainer, { childList: true, subtree: true });
+    return mo;
   }
 
   // --- Container resize: re-tile on window resize ---
@@ -735,7 +743,6 @@ export function createFacetManager(options = {}) {
     applyThemeToAll,
     isTiled,
     getTiledFacets,
-    getFloatingFacets,
     floatOut,
     snapBack,
   };

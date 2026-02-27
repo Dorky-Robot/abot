@@ -5,6 +5,14 @@
  */
 
 /**
+ * Get the viewport element for a specific terminal (or fall back to first found)
+ */
+function getViewport(term) {
+  if (term?.element) return term.element.querySelector(".xterm-viewport");
+  return document.querySelector(".xterm-viewport");
+}
+
+/**
  * Check if viewport is at bottom
  */
 export function isAtBottom(viewport = document.querySelector(".xterm-viewport")) {
@@ -27,7 +35,7 @@ export const scrollToBottom = (term) => {
  * Preserve scroll position during operation (composable)
  */
 export const withPreservedScroll = (term, operation) => {
-  const viewport = document.querySelector(".xterm-viewport");
+  const viewport = getViewport(term);
   const wasAtBottom = isAtBottom(viewport);
   operation();
   if (wasAtBottom) scrollToBottom(term);
@@ -37,7 +45,7 @@ export const withPreservedScroll = (term, operation) => {
  * Terminal write with preserved scroll (composable)
  */
 export const terminalWriteWithScroll = (term, data, onComplete) => {
-  const viewport = document.querySelector(".xterm-viewport");
+  const viewport = getViewport(term);
   const wasAtBottom = isAtBottom(viewport);
   term.write(data, () => {
     if (wasAtBottom) scrollToBottom(term);
