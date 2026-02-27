@@ -9,7 +9,7 @@
  */
 export function createViewportManager(options = {}) {
   const {
-    term,
+    getFocusedTerm,
     termContainer,
     bar,
     onDictationOpen
@@ -17,7 +17,6 @@ export function createViewportManager(options = {}) {
 
   // Scroll button elements
   const scrollBtn = document.getElementById("scroll-bottom");
-  const viewport = document.querySelector(".xterm-viewport");
 
   // Resize viewport to match visual viewport (handles mobile keyboard)
   function resizeToViewport() {
@@ -53,21 +52,26 @@ export function createViewportManager(options = {}) {
 
   // Initialize scroll-to-bottom button
   function initScrollButton() {
-    if (!viewport || !scrollBtn) return;
+    if (!scrollBtn) return;
 
+    // Listen for scroll events on the facet layer (captures bubble from any viewport)
     let scrollRaf = 0;
-    viewport.addEventListener("scroll", () => {
+    termContainer.addEventListener("scroll", () => {
       if (!scrollRaf) {
         scrollRaf = requestAnimationFrame(() => {
           scrollRaf = 0;
-          const atBottom = viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - 10;
+          const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
+          const vp = focusedTerm?.element?.querySelector(".xterm-viewport");
+          if (!vp) return;
+          const atBottom = vp.scrollTop >= vp.scrollHeight - vp.clientHeight - 10;
           scrollBtn.style.display = atBottom ? "none" : "flex";
         });
       }
-    }, { passive: true });
+    }, { passive: true, capture: true });
 
     scrollBtn.addEventListener("click", () => {
-      term.scrollToBottom();
+      const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
+      if (focusedTerm) focusedTerm.scrollToBottom();
       scrollBtn.style.display = "none";
     });
   }
@@ -81,7 +85,8 @@ export function createViewportManager(options = {}) {
 
     // Focus terminal on tap
     termContainer.addEventListener("touchstart", (e) => {
-      term.focus();
+      const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
+      if (focusedTerm) focusedTerm.focus();
 
       // Start long-press timer
       touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };

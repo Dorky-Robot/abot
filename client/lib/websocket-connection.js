@@ -114,7 +114,8 @@ export function createWebSocketConnection(deps = {}) {
         break;
       case 'scrollToBottomIfNeeded':
         if (effect.condition) {
-          scrollToBottom(term);
+          const scrollTarget = facetManager?.getFocused()?.term || term;
+          scrollToBottom(scrollTarget);
         }
         break;
       case 'terminalWrite': {

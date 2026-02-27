@@ -293,13 +293,16 @@
     });
     terminalKeyboard.init();
 
-    // Wire keyboard handlers for additional facets (reuses createTerminalKeyboard)
+    // Wire keyboard handlers for additional facets (skip initTabHandler —
+    // it's a global document listener already registered by the default facet)
     function wireNewFacetTerminal(facet) {
-      createTerminalKeyboard({
+      const kb = createTerminalKeyboard({
         term: facet.term,
         onSend: rawSend,
         onToggleSearch: toggleSearchBar
-      }).init();
+      });
+      kb.initCustomKeyHandler();
+      kb.initDataHandler();
     }
 
     // WebSocket connection setup moved to after all dependencies are initialized (see before Boot section)
@@ -314,7 +317,6 @@
       onSend: (sequence) => rawSend(sequence)
     });
     joystickManager.init();
-
 
 
     // --- Pull-to-refresh (composable gesture handler) ---
@@ -495,7 +497,7 @@
     // (Moved here after openSessionManager and openDictationModal are defined)
 
     const viewportManager = createViewportManager({
-      term,
+      getFocusedTerm,
       termContainer: facetLayer,
       bar,
       onDictationOpen: () => openDictationModal()

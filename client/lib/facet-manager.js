@@ -49,7 +49,7 @@ export function createFacetManager(options = {}) {
   const tiledOrder = [];
   /** Set mirror of tiledOrder for O(1) membership checks */
   const tiledSet = new Set();
-  /** Set of facet IDs currently floating */
+  /** Set of facet IDs currently floating (maintained for future queries) */
   const floatingSet = new Set();
 
   // --- Global drag/resize controller ---
@@ -421,6 +421,10 @@ export function createFacetManager(options = {}) {
     return facet;
   }
 
+  function isTitlebarButton(e) {
+    return e.target.closest(".facet-close") || e.target.closest(".facet-max-btn");
+  }
+
   // --- Drag to move (titlebar) ---
 
   function initDrag(facet) {
@@ -446,13 +450,13 @@ export function createFacetManager(options = {}) {
     }
 
     titleBar.addEventListener("mousedown", (e) => {
-      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
+      if (isTitlebarButton(e)) return;
       e.preventDefault();
       onStart(e.clientX, e.clientY);
     });
 
     titleBar.addEventListener("touchstart", (e) => {
-      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
+      if (isTitlebarButton(e)) return;
       const t = e.touches[0];
       onStart(t.clientX, t.clientY);
     }, { passive: true });
@@ -496,7 +500,7 @@ export function createFacetManager(options = {}) {
     let lastTap = 0;
 
     titleBar.addEventListener("dblclick", (e) => {
-      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
+      if (isTitlebarButton(e)) return;
       if (!isTiled(id)) {
         snapBack(id);
       }
@@ -504,7 +508,7 @@ export function createFacetManager(options = {}) {
 
     // Double-tap for touch
     titleBar.addEventListener("touchend", (e) => {
-      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
+      if (isTitlebarButton(e)) return;
       const now = Date.now();
       if (now - lastTap < 300) {
         if (!isTiled(id)) {
