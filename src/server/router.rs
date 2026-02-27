@@ -48,6 +48,8 @@ pub fn build(state: Arc<AppState>) -> Router {
         // Config
         .route("/api/config", get(config_routes::get_config))
         .route("/api/config/instance-name", put(config_routes::set_instance_name))
+        .route("/api/config/instance-icon", put(config_routes::set_instance_icon))
+        .route("/api/config/toolbar-color", put(config_routes::set_toolbar_color))
         // Token/credential API aliases (legacy client uses /api/tokens, /api/credentials)
         .route("/api/tokens", get(auth_handlers::list_tokens))
         .route("/api/credentials", get(auth_handlers::list_credentials))

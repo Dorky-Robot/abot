@@ -132,6 +132,7 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                     let server_msg = if proto == ClientProtocol::Flat {
                                         ServerMessage::FlatExit {
                                             code: code as u32,
+                                            session: Some(session.to_string()),
                                         }
                                     } else {
                                         ServerMessage::SessionExit {

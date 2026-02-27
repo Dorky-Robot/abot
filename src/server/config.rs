@@ -19,6 +19,15 @@ fn read_config(data_dir: &Path) -> serde_json::Value {
     }
 }
 
+/// Write config.json to the data directory
+fn write_config(data_dir: &Path, config: &serde_json::Value) -> Result<(), AppError> {
+    let path = data_dir.join("config.json");
+    let json =
+        serde_json::to_string_pretty(config).map_err(|e| AppError::Internal(e.to_string()))?;
+    std::fs::write(&path, json).map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(())
+}
+
 /// GET /api/config — get instance configuration
 pub async fn get_config(
     State(app): State<Arc<AppState>>,
@@ -26,7 +35,7 @@ pub async fn get_config(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
-    Ok(Json(read_config(&app.data_dir)))
+    Ok(Json(json!({ "config": read_config(&app.data_dir) })))
 }
 
 /// PUT /api/config/instance-name — set the instance name
@@ -39,18 +48,55 @@ pub async fn set_instance_name(
     middleware::require_auth(&app, &addr, &headers)?;
 
     let name = body
-        .get("name")
+        .get("instanceName")
         .and_then(|v| v.as_str())
         .unwrap_or("abot");
 
     let mut config = read_config(&app.data_dir);
     config["instanceName"] = json!(name);
+    write_config(&app.data_dir, &config)?;
 
-    let path = app.data_dir.join("config.json");
-    let json = serde_json::to_string_pretty(&config)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({ "instanceName": name })))
+}
 
-    std::fs::write(&path, json).map_err(|e| AppError::Internal(e.to_string()))?;
+/// PUT /api/config/instance-icon — set the instance icon
+pub async fn set_instance_icon(
+    State(app): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    middleware::require_auth(&app, &addr, &headers)?;
 
-    Ok(Json(json!({ "ok": true })))
+    let icon = body
+        .get("instanceIcon")
+        .and_then(|v| v.as_str())
+        .unwrap_or("terminal-window");
+
+    let mut config = read_config(&app.data_dir);
+    config["instanceIcon"] = json!(icon);
+    write_config(&app.data_dir, &config)?;
+
+    Ok(Json(json!({ "instanceIcon": icon })))
+}
+
+/// PUT /api/config/toolbar-color — set the toolbar color
+pub async fn set_toolbar_color(
+    State(app): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    middleware::require_auth(&app, &addr, &headers)?;
+
+    let color = body
+        .get("toolbarColor")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+
+    let mut config = read_config(&app.data_dir);
+    config["toolbarColor"] = json!(color);
+    write_config(&app.data_dir, &config)?;
+
+    Ok(Json(json!({ "toolbarColor": color })))
 }

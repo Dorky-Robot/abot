@@ -159,7 +159,11 @@ pub enum ServerMessage {
     },
 
     #[serde(rename = "exit")]
-    FlatExit { code: u32 },
+    FlatExit {
+        code: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
 
     #[serde(rename = "session-removed")]
     FlatSessionRemoved { session: String },
