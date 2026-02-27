@@ -51,9 +51,8 @@ pub fn build(state: Arc<AppState>) -> Router {
         // Token/credential API aliases (katulong client uses /api/tokens, /api/credentials)
         .route("/api/tokens", get(auth_handlers::list_tokens))
         .route("/api/credentials", get(auth_handlers::list_credentials))
-        // Stub endpoints the client may call
+        // Stub endpoint for client compatibility
         .route("/connect/info", get(|| async { axum::Json(serde_json::json!({})) }))
-        .route("/ssh/password", get(|| async { axum::Json(serde_json::json!({"password": ""})) }))
         // Fallback: serve embedded assets at root paths (e.g. /lib/..., /vendor/...)
         .fallback(get(assets::serve_asset_root))
         .with_state(state)

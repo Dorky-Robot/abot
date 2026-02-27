@@ -8,6 +8,7 @@ use bollard::container::{
     AttachContainerOptions, Config, CreateContainerOptions, RemoveContainerOptions,
     ResizeContainerTtyOptions,
 };
+use bollard::models::HostConfig;
 use bollard::image::CreateImageOptions;
 use bollard::Docker;
 use futures_util::{StreamExt, TryStreamExt};
@@ -64,7 +65,7 @@ impl DockerBackend {
             FALLBACK_IMAGE
         };
 
-        // Create container with TTY
+        // Create container with TTY and resource limits
         let config = Config {
             image: Some(image.to_string()),
             tty: Some(true),
@@ -78,6 +79,14 @@ impl DockerBackend {
                 "COLORTERM=truecolor".to_string(),
                 "LANG=en_US.UTF-8".to_string(),
             ]),
+            host_config: Some(HostConfig {
+                memory: Some(512 * 1024 * 1024),        // 512 MB
+                memory_swap: Some(512 * 1024 * 1024),   // No swap
+                cpu_period: Some(100_000),               // 100ms period
+                cpu_quota: Some(50_000),                 // 50% of one CPU
+                pids_limit: Some(256),                   // Max 256 processes
+                ..Default::default()
+            }),
             ..Default::default()
         };
 

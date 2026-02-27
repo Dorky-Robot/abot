@@ -66,6 +66,11 @@ pub async fn serve_asset_root(uri: Uri) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     }
 
+    // Block direct access to auth-protected HTML pages via fallback
+    if path == "index.html" || path == "login.html" {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
     match ClientAssets::get(path) {
         Some(file) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();

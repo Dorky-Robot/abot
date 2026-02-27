@@ -56,6 +56,9 @@ pub enum DaemonRequest {
     Input {
         #[serde(rename = "clientId")]
         client_id: String,
+        /// Explicit session name (preferred for multi-session routing)
+        #[serde(default)]
+        session: Option<String>,
         data: String,
     },
 
@@ -64,6 +67,9 @@ pub enum DaemonRequest {
     Resize {
         #[serde(rename = "clientId")]
         client_id: String,
+        /// Explicit session name (preferred for multi-session routing)
+        #[serde(default)]
+        session: Option<String>,
         cols: u16,
         rows: u16,
     },
@@ -283,9 +289,11 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
         }
 
         // Fire-and-forget messages — no response
-        DaemonRequest::Input { client_id, data } => {
-            // Look up which session this client is attached to
-            let session_name = {
+        DaemonRequest::Input { client_id, session, data } => {
+            // Use explicit session name if provided, otherwise fall back to attachment
+            let session_name = if let Some(s) = session {
+                Some(s)
+            } else {
                 let attachments = state.client_attachments.lock().await;
                 attachments.get(&client_id).cloned()
             };
@@ -316,11 +324,14 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
 
         DaemonRequest::Resize {
             client_id,
+            session,
             cols,
             rows,
         } => {
-            // Resize the session this client is attached to
-            let session_name = {
+            // Use explicit session name if provided, otherwise fall back to attachment
+            let session_name = if let Some(s) = session {
+                Some(s)
+            } else {
                 let attachments = state.client_attachments.lock().await;
                 attachments.get(&client_id).cloned()
             };

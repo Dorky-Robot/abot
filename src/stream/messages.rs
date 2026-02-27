@@ -44,7 +44,12 @@ pub enum ClientMessage {
 
     /// katulong sends { type: "input", data: "..." }
     #[serde(rename = "input")]
-    FlatInput { data: String },
+    FlatInput {
+        data: String,
+        /// Optional session name for multi-session routing
+        #[serde(default)]
+        session: Option<String>,
+    },
 
     /// katulong sends { type: "attach", session: "name", cols: N, rows: N }
     #[serde(rename = "attach")]
@@ -63,6 +68,9 @@ pub enum ClientMessage {
         cols: u16,
         #[serde(default = "default_rows")]
         rows: u16,
+        /// Optional session name for multi-session routing
+        #[serde(default)]
+        session: Option<String>,
     },
 
     /// Detach from a specific session (facet close)
@@ -71,6 +79,10 @@ pub enum ClientMessage {
         #[serde(default)]
         session: Option<String>,
     },
+
+    /// P2P signaling (flat protocol)
+    #[serde(rename = "p2p-signal")]
+    FlatP2pSignal { data: serde_json::Value },
 }
 
 fn default_cols() -> u16 {
@@ -152,9 +164,6 @@ pub enum ServerMessage {
     #[serde(rename = "session-removed")]
     FlatSessionRemoved { session: String },
 
-    #[serde(rename = "session-renamed")]
-    FlatSessionRenamed { name: String },
-
     #[serde(rename = "p2p-signal")]
     FlatP2pSignal { data: serde_json::Value },
 
@@ -163,7 +172,4 @@ pub enum ServerMessage {
 
     #[serde(rename = "p2p-closed")]
     FlatP2pClosed,
-
-    #[serde(rename = "server-draining")]
-    FlatServerDraining,
 }

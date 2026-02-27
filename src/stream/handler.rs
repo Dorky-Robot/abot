@@ -59,16 +59,13 @@ struct PeerState {
     event_tx: mpsc::Sender<P2pEvent>,
 }
 
-/// Track whether this client uses flat (katulong) or namespaced (abot) protocol
+/// Track whether this client uses flat or namespaced protocol
 #[derive(Clone, Copy, PartialEq)]
-#[allow(dead_code)]
 enum ClientProtocol {
-    /// Not yet determined
+    /// Not yet determined (defaults to namespaced behavior)
     Unknown,
-    /// katulong flat: { type: "input", data: "..." }
+    /// Flat protocol: { type: "input", data: "..." }
     Flat,
-    /// abot namespaced: { type: "session.input", id: "...", data: "..." }
-    Namespaced,
 }
 
 async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
@@ -90,7 +87,8 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
     let clients = app.stream_clients.clone();
     let relay_protocol = protocol.clone();
 
-    // Task: relay daemon events → client (prefer DataChannel for output)
+    // Task: relay daemon events → this client only
+    let relay_client_id = client_id.clone();
     let relay_handle = tokio::spawn(async move {
         loop {
             match daemon_rx.recv().await {
@@ -102,6 +100,10 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                     msg.get("session").and_then(|v| v.as_str()),
                                     msg.get("data").and_then(|v| v.as_str()),
                                 ) {
+                                    // Only send if this client is attached to this session
+                                    if !clients.is_attached(&relay_client_id, session).await {
+                                        continue;
+                                    }
                                     let proto = *relay_protocol.lock().await;
                                     let server_msg = if proto == ClientProtocol::Flat {
                                         ServerMessage::FlatOutput {
@@ -114,9 +116,8 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                             data: data.to_string(),
                                         }
                                     };
-                                    clients
-                                        .broadcast_to_session_prefer_p2p(session, server_msg)
-                                        .await;
+                                    // Try P2P first, fall back to WS
+                                    clients.send_to_prefer_p2p(&relay_client_id, server_msg).await;
                                 }
                             }
                             "exit" => {
@@ -124,6 +125,9 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                     msg.get("session").and_then(|v| v.as_str()),
                                     msg.get("code").and_then(|v| v.as_u64()),
                                 ) {
+                                    if !clients.is_attached(&relay_client_id, session).await {
+                                        continue;
+                                    }
                                     let proto = *relay_protocol.lock().await;
                                     let server_msg = if proto == ClientProtocol::Flat {
                                         ServerMessage::FlatExit {
@@ -135,9 +139,7 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                             code: code as u32,
                                         }
                                     };
-                                    clients
-                                        .broadcast_to_session(session, server_msg)
-                                        .await;
+                                    clients.send_to(&relay_client_id, server_msg).await;
                                 }
                             }
                             "session-removed" => {
@@ -154,7 +156,7 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                             id: session.to_string(),
                                         }
                                     };
-                                    clients.broadcast_all(server_msg).await;
+                                    clients.send_to(&relay_client_id, server_msg).await;
                                 }
                             }
                             _ => {}
@@ -294,22 +296,24 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::FlatInput { data } => {
+        ClientMessage::FlatInput { data, session } => {
             *protocol.lock().await = ClientProtocol::Flat;
             app.daemon_client
                 .send(&json!({
                     "type": "input",
                     "clientId": client_id,
+                    "session": session,
                     "data": data,
                 }))
                 .await?;
         }
 
-        ClientMessage::FlatResize { cols, rows } => {
+        ClientMessage::FlatResize { cols, rows, session } => {
             app.daemon_client
                 .send(&json!({
                     "type": "resize",
                     "clientId": client_id,
+                    "session": session,
                     "cols": cols,
                     "rows": rows,
                 }))
@@ -417,21 +421,23 @@ async fn handle_client_message(
             }
         }
 
-        ClientMessage::SessionInput { id: _, data } => {
+        ClientMessage::SessionInput { id, data } => {
             app.daemon_client
                 .send(&json!({
                     "type": "input",
                     "clientId": client_id,
+                    "session": id,
                     "data": data,
                 }))
                 .await?;
         }
 
-        ClientMessage::SessionResize { id: _, cols, rows } => {
+        ClientMessage::SessionResize { id, cols, rows } => {
             app.daemon_client
                 .send(&json!({
                     "type": "resize",
                     "clientId": client_id,
+                    "session": id,
                     "cols": cols,
                     "rows": rows,
                 }))
@@ -484,6 +490,7 @@ async fn handle_client_message(
                 .await;
         }
 
+        ClientMessage::FlatP2pSignal { data } |
         ClientMessage::P2pSignal { data } => {
             let signal_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let is_offer = signal_type == "offer";

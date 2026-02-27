@@ -108,6 +108,29 @@ impl ClientTracker {
         }
     }
 
+    /// Check if a client is attached to a specific session
+    pub async fn is_attached(&self, client_id: &str, session_id: &str) -> bool {
+        let clients = self.clients.read().await;
+        clients
+            .get(client_id)
+            .map(|info| info.attached_sessions.contains(session_id))
+            .unwrap_or(false)
+    }
+
+    /// Send a message to a specific client, preferring DataChannel when available
+    pub async fn send_to_prefer_p2p(&self, client_id: &str, msg: ServerMessage) {
+        let clients = self.clients.read().await;
+        if let Some(info) = clients.get(client_id) {
+            if let Some(ref dc) = info.p2p_sender {
+                let json = serde_json::to_string(&msg).unwrap_or_default();
+                if dc.send_text(&json).await.is_ok() {
+                    return;
+                }
+            }
+            let _ = info.tx.send(msg).await;
+        }
+    }
+
     /// Send output to all clients on a session, preferring DataChannel when available
     pub async fn broadcast_to_session_prefer_p2p(&self, session_id: &str, msg: ServerMessage) {
         let json = serde_json::to_string(&msg).unwrap_or_default();

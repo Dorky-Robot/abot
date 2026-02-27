@@ -62,7 +62,9 @@
       },
       onResize: (facetId, cols, rows) => {
         if (state.connection.ws?.readyState === 1) {
-          state.connection.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+          const facet = facetManager.getAll().find(f => f.id === facetId);
+          const session = facet ? facet.sessionName : undefined;
+          state.connection.ws.send(JSON.stringify({ type: "resize", cols, rows, session }));
         }
       },
       onClose: (facetId, sessionName) => {
@@ -77,7 +79,7 @@
 
     // --- Centralized application state (at edge) ---
     const createAppState = () => {
-      const initialSessionName = new URLSearchParams(location.search).get("s") || "default";
+      const initialSessionName = new URLSearchParams(location.search).get("s") || "main";
 
       return {
         session: {
@@ -493,7 +495,9 @@
       bar,
       onWebSocketResize: (cols, rows) => {
         if (state.connection.ws?.readyState === 1) {
-          state.connection.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+          const focused = facetManager.getFocused();
+          const session = focused ? focused.sessionName : state.session.name;
+          state.connection.ws.send(JSON.stringify({ type: "resize", cols, rows, session }));
         }
       },
       onDictationOpen: () => openDictationModal()

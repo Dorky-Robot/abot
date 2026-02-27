@@ -3,11 +3,21 @@ use axum::http::HeaderMap;
 use axum::Json;
 use serde_json::json;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::auth::middleware;
 use crate::error::AppError;
 use crate::server::AppState;
+
+/// Read config.json from the data directory, returning {} if missing/invalid
+fn read_config(data_dir: &Path) -> serde_json::Value {
+    let path = data_dir.join("config.json");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or(json!({})),
+        Err(_) => json!({}),
+    }
+}
 
 /// GET /api/config — get instance configuration
 pub async fn get_config(
@@ -16,14 +26,7 @@ pub async fn get_config(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
-
-    let path = app.data_dir.join("config.json");
-    let config = match std::fs::read_to_string(&path) {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or(json!({})),
-        Err(_) => json!({}),
-    };
-
-    Ok(Json(config))
+    Ok(Json(read_config(&app.data_dir)))
 }
 
 /// PUT /api/config/instance-name — set the instance name
@@ -40,14 +43,10 @@ pub async fn set_instance_name(
         .and_then(|v| v.as_str())
         .unwrap_or("abot");
 
-    let path = app.data_dir.join("config.json");
-    let mut config: serde_json::Value = match std::fs::read_to_string(&path) {
-        Ok(contents) => serde_json::from_str(&contents).unwrap_or(json!({})),
-        Err(_) => json!({}),
-    };
-
+    let mut config = read_config(&app.data_dir);
     config["instanceName"] = json!(name);
 
+    let path = app.data_dir.join("config.json");
     let json = serde_json::to_string_pretty(&config)
         .map_err(|e| AppError::Internal(e.to_string()))?;
 

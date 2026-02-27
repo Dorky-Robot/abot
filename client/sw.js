@@ -1,6 +1,5 @@
 const CACHE_NAME = "abot-v1";
 const PRECACHE = [
-  "/",
   "/icon-192.png",
   "/icon-512.png",
   "/apple-touch-icon.png",

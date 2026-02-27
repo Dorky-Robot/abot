@@ -211,7 +211,6 @@ pub async fn register_verify(
         [(axum::http::header::SET_COOKIE, cookie)],
         Json(json!({
             "success": true,
-            "sessionToken": session_token,
             "csrfToken": csrf_token,
         })),
     ))
@@ -277,11 +276,24 @@ pub async fn login_verify(
     let auth_state: PasskeyAuthentication = serde_json::from_value(state_json)
         .map_err(|e| AppError::Internal(format!("deserialize state: {}", e)))?;
 
-    let auth_result = app
+    // Check global lockout before attempting authentication
+    let (locked, retry_after) = app.auth.lockout.is_locked("_global").await;
+    if locked {
+        let secs = retry_after.unwrap_or(60);
+        return Err(AppError::BadRequest(format!("too many failed attempts, try again in {} seconds", secs)));
+    }
+
+    let auth_result = match app
         .auth
         .webauthn
         .finish_passkey_authentication(&credential, &auth_state)
-        .map_err(|e| AppError::BadRequest(format!("authentication failed: {}", e)))?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            app.auth.lockout.record_failure("_global").await;
+            return Err(AppError::BadRequest(format!("authentication failed: {}", e)));
+        }
+    };
 
     let cred_id = base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -308,7 +320,6 @@ pub async fn login_verify(
         [(axum::http::header::SET_COOKIE, cookie)],
         Json(json!({
             "success": true,
-            "sessionToken": session_token,
             "csrfToken": csrf_token,
         })),
     ))
