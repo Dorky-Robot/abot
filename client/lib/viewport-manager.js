@@ -4,7 +4,7 @@
  * Handles viewport resizing, scroll button UI, and terminal gesture handlers.
  */
 
-import { withPreservedScroll } from "/assets/lib/scroll-utils.js";
+import { withPreservedScroll } from "/lib/scroll-utils.js";
 
 /**
  * Create viewport manager for responsive terminal layout

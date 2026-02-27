@@ -372,6 +372,30 @@ pub async fn create_token(
     })))
 }
 
+/// GET /api/credentials — list all credentials (for katulong client compatibility)
+pub async fn list_credentials(
+    State(app): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    middleware::require_auth(&app, &addr, &headers)?;
+    let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let cred_rows = state::get_credentials(&db)?;
+    let credentials: Vec<serde_json::Value> = cred_rows
+        .iter()
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "name": c.name,
+                "createdAt": c.created_at,
+                "lastUsedAt": c.last_used_at,
+                "userAgent": c.user_agent,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "credentials": credentials })))
+}
+
 /// DELETE /auth/tokens/:id
 pub async fn delete_token(
     State(app): State<Arc<AppState>>,

@@ -3,6 +3,8 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::Read;
 use tokio::sync::mpsc;
 
+use super::backend::SessionBackend;
+
 /// Spawn a PTY process and return handles for I/O.
 pub struct PtyHandle {
     pub writer: Box<dyn std::io::Write + Send>,
@@ -120,6 +122,31 @@ fn is_filtered_env(key: &str) -> bool {
             | "SETUP_TOKEN"
             | "ABOT_NO_AUTH"
     ) || key.starts_with("CLAUDE_CODE_")
+}
+
+impl SessionBackend for PtyHandle {
+    fn write(&mut self, data: &[u8]) -> Result<()> {
+        PtyHandle::write(self, data)
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        PtyHandle::resize(self, cols, rows)
+    }
+
+    fn take_reader(&mut self) -> Option<mpsc::Receiver<String>> {
+        // Replace with a dummy channel — can only be taken once
+        let dummy = mpsc::channel(1).1;
+        let rx = std::mem::replace(&mut self.reader_rx, dummy);
+        Some(rx)
+    }
+
+    fn kill(&mut self) {
+        PtyHandle::kill(self);
+    }
+
+    fn is_alive(&mut self) -> bool {
+        PtyHandle::is_alive(self)
+    }
 }
 
 impl Drop for PtyHandle {

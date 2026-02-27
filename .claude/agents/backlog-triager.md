@@ -33,6 +33,8 @@ abot's core vision:
 - Touch-first, spatial interaction
 - WebAuthn/passkey auth, no passwords
 - Daemon/server split for rolling updates
+- WebRTC DataChannel for low-latency terminal I/O
+- Optional Docker backend for container-based sessions
 
 ### Step 3: Fetch all open issues
 

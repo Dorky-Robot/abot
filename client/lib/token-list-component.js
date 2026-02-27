@@ -4,9 +4,9 @@
  * Auto-updates when token store changes.
  */
 
-import { createComponent } from '/assets/lib/component.js';
-import { clearNewToken, invalidateTokens } from '/assets/lib/stores.js';
-import { ListRenderer } from '/assets/lib/list-renderer.js';
+import { createComponent } from '/lib/component.js';
+import { clearNewToken, invalidateTokens } from '/lib/stores.js';
+import { ListRenderer } from '/lib/list-renderer.js';
 
 // Utility functions
 function escapeHtml(str) {

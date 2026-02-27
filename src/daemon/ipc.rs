@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use super::pty::PtyHandle;
 use super::session::Session;
 use super::DaemonState;
 
@@ -147,12 +146,11 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
             cols,
             rows,
         } => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+            let backend = state.create_backend(&name, cols, rows).await;
 
-            match PtyHandle::spawn(&shell, cols, rows, &home) {
-                Ok(pty) => {
-                    let session = Session::new(name.clone(), pty);
+            match backend {
+                Ok(backend) => {
+                    let session = Session::new(name.clone(), backend);
                     let session_name = session.name.clone();
 
                     // Spawn output reader task
@@ -163,13 +161,10 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
                     let mut sessions = state.sessions.lock().await;
                     sessions.insert(name.clone(), session);
 
-                    // Extract PTY reader channel, then drop the lock
-                    let rx = sessions.get_mut(&name).map(|s| {
-                        std::mem::replace(
-                            &mut s.pty.reader_rx,
-                            tokio::sync::mpsc::channel(1).1,
-                        )
-                    });
+                    // Extract backend reader channel, then drop the lock
+                    let rx = sessions
+                        .get_mut(&name)
+                        .and_then(|s| s.backend.take_reader());
                     drop(sessions);
 
                     if let Some(mut rx) = rx {
@@ -205,11 +200,17 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
 
         DaemonRequest::Attach {
             id,
-            client_id: _,
+            client_id,
             session,
             cols: _,
             rows: _,
         } => {
+            // Record the client→session mapping
+            {
+                let mut attachments = state.client_attachments.lock().await;
+                attachments.insert(client_id, session.clone());
+            }
+
             let sessions = state.sessions.lock().await;
             match sessions.get(&session) {
                 Some(s) => {
@@ -230,7 +231,7 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
         DaemonRequest::DeleteSession { id, name } => {
             let mut sessions = state.sessions.lock().await;
             if let Some(mut session) = sessions.remove(&name) {
-                session.pty.kill();
+                session.backend.kill();
                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                     session: name.clone(),
                 });
@@ -258,6 +259,16 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
             if let Some(mut session) = sessions.remove(&old_name) {
                 session.name = new_name.clone();
                 sessions.insert(new_name.clone(), session);
+
+                // Update client attachments that point to old name
+                drop(sessions);
+                let mut attachments = state.client_attachments.lock().await;
+                for (_client_id, attached_session) in attachments.iter_mut() {
+                    if attached_session == &old_name {
+                        *attached_session = new_name.clone();
+                    }
+                }
+
                 Some(DaemonResponse::Renamed {
                     id,
                     old_name,
@@ -272,44 +283,60 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
         }
 
         // Fire-and-forget messages — no response
-        DaemonRequest::Input { client_id: _, data } => {
-            let mut sessions = state.sessions.lock().await;
-            let count = sessions.len();
-            let mut wrote = false;
-            for session in sessions.values_mut() {
-                if session.alive {
-                    match session.write(data.as_bytes()) {
-                        Ok(_) => {
-                            tracing::info!("daemon: wrote {} bytes to session '{}'", data.len(), session.name);
-                            wrote = true;
+        DaemonRequest::Input { client_id, data } => {
+            // Look up which session this client is attached to
+            let session_name = {
+                let attachments = state.client_attachments.lock().await;
+                attachments.get(&client_id).cloned()
+            };
+
+            if let Some(session_name) = session_name {
+                let mut sessions = state.sessions.lock().await;
+                if let Some(session) = sessions.get_mut(&session_name) {
+                    if session.alive {
+                        match session.write(data.as_bytes()) {
+                            Ok(_) => {
+                                tracing::debug!("daemon: wrote {} bytes to session '{}'", data.len(), session.name);
+                            }
+                            Err(e) => {
+                                tracing::error!("daemon: write to session '{}' failed: {}", session.name, e);
+                            }
                         }
-                        Err(e) => {
-                            tracing::error!("daemon: write to session '{}' failed: {}", session.name, e);
-                        }
+                    } else {
+                        tracing::warn!("daemon: session '{}' is not alive", session_name);
                     }
-                    break;
+                } else {
+                    tracing::warn!("daemon: session '{}' not found for client '{}'", session_name, client_id);
                 }
-            }
-            if !wrote {
-                tracing::warn!("daemon: no alive session to write to (total: {})", count);
+            } else {
+                tracing::warn!("daemon: no session attached for client '{}'", client_id);
             }
             None
         }
 
         DaemonRequest::Resize {
-            client_id: _,
+            client_id,
             cols,
             rows,
         } => {
-            let sessions = state.sessions.lock().await;
-            for session in sessions.values() {
-                let _ = session.resize(cols, rows);
+            // Resize the session this client is attached to
+            let session_name = {
+                let attachments = state.client_attachments.lock().await;
+                attachments.get(&client_id).cloned()
+            };
+
+            if let Some(session_name) = session_name {
+                let mut sessions = state.sessions.lock().await;
+                if let Some(session) = sessions.get_mut(&session_name) {
+                    let _ = session.resize(cols, rows);
+                }
             }
             None
         }
 
-        DaemonRequest::Detach { client_id: _ } => {
-            // Client tracking not yet implemented
+        DaemonRequest::Detach { client_id } => {
+            let mut attachments = state.client_attachments.lock().await;
+            attachments.remove(&client_id);
             None
         }
     }

@@ -87,7 +87,7 @@ export function createP2PManager(config = {}) {
     newPeer.on("signal", (data) => {
       const currentWS = getWS ? getWS() : null;
       if (currentWS?.readyState === 1) {
-        currentWS.send(JSON.stringify({ type: "p2p.signal", data }));
+        currentWS.send(JSON.stringify({ type: "p2p-signal", data }));
       }
     });
 

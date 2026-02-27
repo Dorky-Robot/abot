@@ -4,7 +4,7 @@
  * Composable settings event handlers for theme and logout.
  */
 
-import { api } from "/assets/lib/api-client.js";
+import { api } from "/lib/api-client.js";
 
 /**
  * Phosphor Icons organized by category
@@ -302,10 +302,16 @@ export function createSettingsHandlers(options = {}) {
   }
 
   async function init() {
-    // abot doesn't have /api/config yet — skip remote config
-    initInstanceName(null);
-    initInstanceIcon(null);
-    initToolbarColor(null);
+    let config = null;
+    try {
+      const data = await api.get("/api/config");
+      config = data.config;
+    } catch (error) {
+      console.error("Failed to load config:", error);
+    }
+    initInstanceName(config);
+    initInstanceIcon(config);
+    initToolbarColor(config);
     initThemeToggle();
     initLogout();
     initVersion();

@@ -4,7 +4,7 @@
  * Composable session management with SSH password utilities.
  */
 
-import { api } from "/assets/lib/api-client.js";
+import { api } from "/lib/api-client.js";
 
 /**
  * Create session manager

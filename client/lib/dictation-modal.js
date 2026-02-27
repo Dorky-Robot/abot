@@ -4,7 +4,7 @@
  * Handles text input with image attachments for terminal.
  */
 
-import { createStore, createReducer } from '/assets/lib/store.js';
+import { createStore, createReducer } from '/lib/store.js';
 
 const DICTATION_ACTIONS = {
   ADD_IMAGES: 'dictation/add-images',

@@ -1,6 +1,9 @@
 pub mod assets;
+pub mod config;
 pub mod daemon_client;
 pub mod router;
+pub mod sessions;
+pub mod shortcuts;
 
 use anyhow::Result;
 use std::path::Path;

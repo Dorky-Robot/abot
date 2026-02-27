@@ -1,35 +1,33 @@
-    import { Terminal } from "/assets/vendor/xterm/xterm.esm.js";
-    import { FitAddon } from "/assets/vendor/xterm/addon-fit.esm.js";
-    import { WebLinksAddon } from "/assets/vendor/xterm/addon-web-links.esm.js";
-    import { ModalRegistry } from "/assets/lib/modal.js";
+    import { ModalRegistry } from "/lib/modal.js";
+    import { createFacetManager } from "/lib/facet-manager.js";
     import {
       createSessionStore, invalidateSessions,
       createTokenStore, setNewToken, invalidateTokens, removeToken, loadTokens as reloadTokens,
       createShortcutsStore, loadShortcuts as reloadShortcuts,
-    } from "/assets/lib/stores.js";
-    import { createSessionListComponent } from "/assets/lib/session-list-component.js";
-    import { createSessionManager } from "/assets/lib/session-manager.js";
-    import { createTokenListComponent } from "/assets/lib/token-list-component.js";
-    import { createTokenFormManager } from "/assets/lib/token-form.js";
-    import { createShortcutsPopup, createShortcutsEditPanel, createAddShortcutModal } from "/assets/lib/shortcuts-components.js";
-    import { createDictationModal } from "/assets/lib/dictation-modal.js";
-    import { createDragDropManager } from "/assets/lib/drag-drop.js";
-    import { showToast, isImageFile, uploadImageToTerminal as uploadImageToTerminalFn } from "/assets/lib/image-upload.js";
-    import { createJoystickManager } from "/assets/lib/joystick.js";
-    import { createPullToRefreshManager } from "/assets/lib/pull-to-refresh.js";
-    import { createThemeManager, DARK_THEME, LIGHT_THEME } from "/assets/lib/theme-manager.js";
-    import { createTabManager } from "/assets/lib/tab-manager.js";
-    import { isAtBottom, scrollToBottom, withPreservedScroll, terminalWriteWithScroll } from "/assets/lib/scroll-utils.js";
-    import { keysToSequence, sendSequence, displayKey, keysLabel, keysString, VALID_KEYS, normalizeKey } from "/assets/lib/key-mapping.js";
-    import { createShortcutBar } from "/assets/lib/shortcut-bar.js";
-    import { createPasteHandler } from "/assets/lib/paste-handler.js";
-    import { createNetworkMonitor } from "/assets/lib/network-monitor.js";
-    import { createP2PManager, createP2PIndicator } from "/assets/lib/p2p-manager.js";
-    import { createSettingsHandlers } from "/assets/lib/settings-handlers.js";
-    import { createTerminalKeyboard } from "/assets/lib/terminal-keyboard.js";
-    import { createInputSender } from "/assets/lib/input-sender.js";
-    import { createViewportManager } from "/assets/lib/viewport-manager.js";
-    import { createWebSocketConnection } from "/assets/lib/websocket-connection.js";
+    } from "/lib/stores.js";
+    import { createSessionListComponent } from "/lib/session-list-component.js";
+    import { createSessionManager } from "/lib/session-manager.js";
+    import { createTokenListComponent } from "/lib/token-list-component.js";
+    import { createTokenFormManager } from "/lib/token-form.js";
+    import { createShortcutsPopup, createShortcutsEditPanel, createAddShortcutModal } from "/lib/shortcuts-components.js";
+    import { createDictationModal } from "/lib/dictation-modal.js";
+    import { createDragDropManager } from "/lib/drag-drop.js";
+    import { showToast, isImageFile, uploadImageToTerminal as uploadImageToTerminalFn } from "/lib/image-upload.js";
+    import { createJoystickManager } from "/lib/joystick.js";
+    import { createPullToRefreshManager } from "/lib/pull-to-refresh.js";
+    import { createThemeManager, DARK_THEME, LIGHT_THEME } from "/lib/theme-manager.js";
+    import { createTabManager } from "/lib/tab-manager.js";
+    import { isAtBottom, scrollToBottom, withPreservedScroll, terminalWriteWithScroll } from "/lib/scroll-utils.js";
+    import { keysToSequence, sendSequence, displayKey, keysLabel, keysString, VALID_KEYS, normalizeKey } from "/lib/key-mapping.js";
+    import { createShortcutBar } from "/lib/shortcut-bar.js";
+    import { createPasteHandler } from "/lib/paste-handler.js";
+    import { createNetworkMonitor } from "/lib/network-monitor.js";
+    import { createP2PManager, createP2PIndicator } from "/lib/p2p-manager.js";
+    import { createSettingsHandlers } from "/lib/settings-handlers.js";
+    import { createTerminalKeyboard } from "/lib/terminal-keyboard.js";
+    import { createInputSender } from "/lib/input-sender.js";
+    import { createViewportManager } from "/lib/viewport-manager.js";
+    import { createWebSocketConnection } from "/lib/websocket-connection.js";
 
     // --- Modal Manager ---
     const modals = new ModalRegistry();
@@ -37,21 +35,49 @@
     // Modal registration imported from /lib/modal-init.js
 
     // --- Theme (using composable theme manager) ---
+    // onThemeChange wired after facetManager is created (see below)
     const themeManager = createThemeManager({
       onThemeChange: (themeData) => {
-        withPreservedScroll(term, () => {
-          term.options.theme = themeData;
-        });
+        // Apply to all facets
+        if (facetManager) {
+          facetManager.applyThemeToAll(themeData);
+        }
       }
     });
 
     const applyTheme = themeManager.apply;
 
+    // Forward declaration — assigned after shortcutBarInstance is created
+    let renderBar = null;
+
+    // --- Facet Manager ---
+    const facetManager = createFacetManager({
+      container: document.getElementById("facet-layer"),
+      themeManager: { getEffective: themeManager.getEffective, DARK_THEME, LIGHT_THEME },
+      onFocusChange: (facet) => {
+        // Update state to reflect focused session
+        state.update('session.name', facet.sessionName);
+        document.title = facet.sessionName;
+        renderBar?.(facet.sessionName);
+      },
+      onResize: (facetId, cols, rows) => {
+        if (state.connection.ws?.readyState === 1) {
+          state.connection.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+        }
+      },
+      onClose: (facetId, sessionName) => {
+        // Detach from session on server
+        if (state.connection.ws?.readyState === 1) {
+          state.connection.ws.send(JSON.stringify({ type: "detach", session: sessionName }));
+        }
+      }
+    });
+
     // --- State ---
 
     // --- Centralized application state (at edge) ---
     const createAppState = () => {
-      const initialSessionName = new URLSearchParams(location.search).get("s") || "main";
+      const initialSessionName = new URLSearchParams(location.search).get("s") || "default";
 
       return {
         session: {
@@ -124,8 +150,10 @@
       onData: (str) => {
         try {
           const msg = JSON.parse(str);
-          if (msg.type === "session.output") {
-            term.write(msg.data);
+          if (msg.type === "output") {
+            // Route to correct facet if session specified
+            const facet = msg.session ? facetManager.getBySession(msg.session) : facetManager.getFocused();
+            if (facet) facet.term.write(msg.data);
           }
         } catch {
           // ignore malformed P2P data
@@ -143,29 +171,72 @@
 
     document.title = state.session.name;
 
-    // --- Terminal setup ---
+    // --- Terminal setup via Facet Manager ---
+    // Create default facet (fullscreen, matches legacy single-terminal behavior)
+    const defaultFacet = facetManager.create(state.session.name);
+    // Aliases for backward compatibility with code that references term/fit/searchAddon
+    const term = defaultFacet.term;
+    const fit = defaultFacet.fit;
+    const searchAddon = defaultFacet.searchAddon;
 
-    const term = new Terminal({
-      fontSize: 14,
-      fontFamily: "'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace",
-      theme: themeManager.getEffective() === "light" ? LIGHT_THEME : DARK_THEME,
-      cursorBlink: true,
-      scrollback: 10000,
-      convertEol: true,
+    // Helper: get the currently focused facet's terminal
+    const getFocusedTerm = () => {
+      const f = facetManager.getFocused();
+      return f ? f.term : term;
+    };
+    const getFocusedSearchAddon = () => {
+      const f = facetManager.getFocused();
+      return f ? f.searchAddon : searchAddon;
+    };
+
+    // --- Search bar ---
+    const searchBar = document.getElementById("search-bar");
+    const searchInput = document.getElementById("search-input");
+    const searchClose = document.getElementById("search-close");
+
+    function toggleSearchBar() {
+      const visible = searchBar.classList.toggle("visible");
+      if (visible) {
+        searchInput.focus();
+        searchInput.select();
+      } else {
+        searchInput.value = "";
+        getFocusedSearchAddon().clearDecorations();
+        getFocusedTerm().focus();
+      }
+    }
+
+    searchInput.addEventListener("input", () => {
+      if (searchInput.value) {
+        getFocusedSearchAddon().findNext(searchInput.value);
+      } else {
+        getFocusedSearchAddon().clearDecorations();
+      }
     });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon());
-    term.open(document.getElementById("terminal-container"));
+    searchInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") {
+        toggleSearchBar();
+        ev.preventDefault();
+      } else if (ev.key === "Enter") {
+        if (ev.shiftKey) {
+          getFocusedSearchAddon().findPrevious(searchInput.value);
+        } else {
+          getFocusedSearchAddon().findNext(searchInput.value);
+        }
+        ev.preventDefault();
+      }
+    });
+    searchClose.addEventListener("click", toggleSearchBar);
 
     // Initialize modals with terminal reference
+    const focusTerm = () => getFocusedTerm().focus();
     modals.register('shortcuts', 'shortcuts-overlay', {
       returnFocus: term,
-      onClose: () => term.focus()
+      onClose: focusTerm
     });
     modals.register('edit', 'edit-overlay', {
       returnFocus: term,
-      onClose: () => term.focus()
+      onClose: focusTerm
     });
     modals.register('add', 'add-modal', {
       returnFocus: term,
@@ -173,44 +244,27 @@
         const keyInput = document.getElementById("key-composer-input");
         if (keyInput) keyInput.focus();
       },
-      onClose: () => term.focus()
+      onClose: focusTerm
     });
     modals.register('session', 'session-overlay', {
       returnFocus: term,
-      onClose: () => term.focus()
+      onClose: focusTerm
     });
     modals.register('dictation', 'dictation-overlay', {
       returnFocus: term,
-      onClose: () => term.focus()
+      onClose: focusTerm
     });
     modals.register('settings', 'settings-overlay', {
       returnFocus: term,
-      onClose: () => term.focus()
+      onClose: focusTerm
     });
 
-    // Disable mobile autocorrect/suggestions on xterm's hidden textarea
-    function patchTextarea() {
-      const ta = document.querySelector(".xterm-helper-textarea");
-      if (!ta || ta._patched) return;
-      ta._patched = true;
-      ta.setAttribute("autocorrect", "off");
-      ta.setAttribute("autocapitalize", "none");
-      ta.setAttribute("autocomplete", "new-password");
-      ta.setAttribute("spellcheck", "false");
-      ta.autocomplete = "new-password";
-      ta.autocapitalize = "none";
-      ta.spellcheck = false;
-      ta.addEventListener("compositionstart", (e) => e.preventDefault());
-    }
-    patchTextarea();
-    new MutationObserver(patchTextarea).observe(
-      document.getElementById("terminal-container"),
-      { childList: true, subtree: true }
-    );
     document.fonts.ready.then(() => {
-      withPreservedScroll(term, () => fit.fit());
-      // Ensure we start at bottom on initial page load
-      scrollToBottom(term);
+      // Refit all facets after fonts load
+      for (const f of facetManager.getAll()) {
+        withPreservedScroll(f.term, () => f.fit.fit());
+        scrollToBottom(f.term);
+      }
     });
 
     applyTheme(localStorage.getItem("theme") || "auto");
@@ -224,7 +278,10 @@
     const inputSender = createInputSender({
       p2pManager,
       getWebSocket: () => state.connection.ws,
-      getSessionName: () => state.session.name
+      getSessionName: () => {
+        const focused = facetManager.getFocused();
+        return focused ? focused.sessionName : state.session.name;
+      }
     });
 
     const rawSend = (data) => inputSender.send(data);
@@ -232,7 +289,8 @@
     // Initialize terminal keyboard handlers
     const terminalKeyboard = createTerminalKeyboard({
       term,
-      onSend: rawSend
+      onSend: rawSend,
+      onToggleSearch: toggleSearchBar
     });
     terminalKeyboard.init();
 
@@ -435,13 +493,46 @@
       bar,
       onWebSocketResize: (cols, rows) => {
         if (state.connection.ws?.readyState === 1) {
-          const id = state.session.name;
-          state.connection.ws.send(JSON.stringify({ type: "session.resize", id, cols, rows }));
+          state.connection.ws.send(JSON.stringify({ type: "resize", cols, rows }));
         }
       },
       onDictationOpen: () => openDictationModal()
     });
     viewportManager.init();
+
+    // --- Facet keyboard shortcuts ---
+    document.addEventListener("keydown", (e) => {
+      const isMeta = e.metaKey || e.ctrlKey;
+
+      // Cmd+T: new facet with new session
+      if (isMeta && e.key === "t" && !e.shiftKey) {
+        e.preventDefault();
+        const name = `session-${Date.now()}`;
+        const facet = facetManager.createTiled(name);
+        // Attach the new facet's session on the server
+        if (state.connection.ws?.readyState === 1) {
+          state.connection.ws.send(JSON.stringify({
+            type: "attach", session: name,
+            cols: facet.term.cols, rows: facet.term.rows
+          }));
+        }
+      }
+
+      // Cmd+W: close focused facet (only if multiple)
+      if (isMeta && e.key === "w" && !e.shiftKey) {
+        if (facetManager.count() > 1) {
+          e.preventDefault();
+          const focused = facetManager.getFocused();
+          if (focused) facetManager.remove(focused.id);
+        }
+      }
+
+      // Cmd+` or Ctrl+`: cycle facet focus
+      if (isMeta && e.key === "`") {
+        e.preventDefault();
+        facetManager.cycleFocus();
+      }
+    });
 
     shortcutBarInstance = createShortcutBar({
       container: bar,
@@ -458,7 +549,7 @@
       getInstanceIcon
     });
 
-    const renderBar = (name) => shortcutBarInstance.render(name);
+    renderBar = (name) => shortcutBarInstance.render(name);
 
     // Subscribe to shortcuts changes to re-render bar
     shortcutsStore.subscribe((shortcuts) => {
@@ -530,18 +621,18 @@
       updateP2PIndicator,
       loadTokens,
       isAtBottom,
-      renderBar
+      renderBar,
+      facetManager
     });
     wsConnection.initVisibilityReconnect();
 
     // --- Boot ---
 
     renderBar(state.session.name);  // Initial render
-    // Wait for fonts to load and terminal to be properly sized before
-    // connecting WebSocket. This ensures the correct cols/rows are sent
-    // with session.attach so the shell prompt renders at the right size.
-    document.fonts.ready.then(() => {
-      withPreservedScroll(term, () => fit.fit());
-      wsConnection.connect();
-    });
-    term.focus();
+    wsConnection.connect();
+    loadShortcuts();
+    getFocusedTerm().focus();
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }

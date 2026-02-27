@@ -1,4 +1,4 @@
-use super::pty::PtyHandle;
+use super::backend::SessionBackend;
 use super::ring_buffer::RingBuffer;
 use anyhow::Result;
 
@@ -7,17 +7,17 @@ const DEFAULT_MAX_BUFFER_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
 pub struct Session {
     pub name: String,
-    pub pty: PtyHandle,
+    pub backend: Box<dyn SessionBackend>,
     pub buffer: RingBuffer,
     pub alive: bool,
     pub exit_code: Option<u32>,
 }
 
 impl Session {
-    pub fn new(name: String, pty: PtyHandle) -> Self {
+    pub fn new(name: String, backend: Box<dyn SessionBackend>) -> Self {
         Self {
             name,
-            pty,
+            backend,
             buffer: RingBuffer::new(DEFAULT_MAX_BUFFER_ITEMS, DEFAULT_MAX_BUFFER_BYTES),
             alive: true,
             exit_code: None,
@@ -28,11 +28,11 @@ impl Session {
         if !self.alive {
             anyhow::bail!("session '{}' is not alive", self.name);
         }
-        self.pty.write(data)
+        self.backend.write(data)
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        self.pty.resize(cols, rows)
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        self.backend.resize(cols, rows)
     }
 
     pub fn get_buffer(&self) -> String {

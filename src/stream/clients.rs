@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use webrtc::data_channel::RTCDataChannel;
@@ -13,7 +13,8 @@ pub struct ClientTracker {
 
 struct ClientInfo {
     tx: mpsc::Sender<ServerMessage>,
-    attached_session: Option<String>,
+    /// Sessions this client is attached to (supports multi-facet)
+    attached_sessions: HashSet<String>,
     p2p_sender: Option<Arc<RTCDataChannel>>,
 }
 
@@ -30,7 +31,7 @@ impl ClientTracker {
             client_id,
             ClientInfo {
                 tx,
-                attached_session: None,
+                attached_sessions: HashSet::new(),
                 p2p_sender: None,
             },
         );
@@ -41,17 +42,27 @@ impl ClientTracker {
         clients.remove(client_id);
     }
 
+    /// Attach a client to a session (additive — supports multiple sessions)
     pub async fn attach(&self, client_id: &str, session_id: String) {
         let mut clients = self.clients.write().await;
         if let Some(info) = clients.get_mut(client_id) {
-            info.attached_session = Some(session_id);
+            info.attached_sessions.insert(session_id);
         }
     }
 
+    /// Detach a client from a specific session
+    pub async fn detach_session(&self, client_id: &str, session_id: &str) {
+        let mut clients = self.clients.write().await;
+        if let Some(info) = clients.get_mut(client_id) {
+            info.attached_sessions.remove(session_id);
+        }
+    }
+
+    /// Detach a client from all sessions
     pub async fn detach(&self, client_id: &str) {
         let mut clients = self.clients.write().await;
         if let Some(info) = clients.get_mut(client_id) {
-            info.attached_session = None;
+            info.attached_sessions.clear();
         }
     }
 
@@ -59,7 +70,7 @@ impl ClientTracker {
     pub async fn broadcast_to_session(&self, session_id: &str, msg: ServerMessage) {
         let clients = self.clients.read().await;
         for info in clients.values() {
-            if info.attached_session.as_deref() == Some(session_id) {
+            if info.attached_sessions.contains(session_id) {
                 let _ = info.tx.send(msg.clone()).await;
             }
         }
@@ -102,7 +113,7 @@ impl ClientTracker {
         let json = serde_json::to_string(&msg).unwrap_or_default();
         let clients = self.clients.read().await;
         for info in clients.values() {
-            if info.attached_session.as_deref() == Some(session_id) {
+            if info.attached_sessions.contains(session_id) {
                 // Try DataChannel first
                 if let Some(ref dc) = info.p2p_sender {
                     if dc.send_text(&json).await.is_ok() {
@@ -119,18 +130,13 @@ impl ClientTracker {
     pub async fn relay_to_session_peers(
         &self,
         sender_id: &str,
+        session_id: &str,
         msg: ServerMessage,
     ) {
         let clients = self.clients.read().await;
-        let sender_session = clients
-            .get(sender_id)
-            .and_then(|info| info.attached_session.clone());
-
-        if let Some(session_id) = sender_session {
-            for (id, info) in clients.iter() {
-                if id != sender_id && info.attached_session.as_deref() == Some(&session_id) {
-                    let _ = info.tx.send(msg.clone()).await;
-                }
+        for (id, info) in clients.iter() {
+            if id != sender_id && info.attached_sessions.contains(session_id) {
+                let _ = info.tx.send(msg.clone()).await;
             }
         }
     }

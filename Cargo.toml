@@ -5,6 +5,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+docker = ["bollard"]
+
 [dependencies]
 # HTTP + WebSocket
 axum = { version = "0.8", features = ["ws"] }
@@ -56,3 +59,6 @@ libc = "0.2"
 
 # WebRTC
 webrtc = "0.17"
+
+# Docker (optional — enables container backend for sessions)
+bollard = { version = "0.18", optional = true }

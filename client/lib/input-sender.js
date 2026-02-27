@@ -3,6 +3,7 @@
  *
  * Composable buffered input sender for terminal.
  * Batches input using requestAnimationFrame for better performance.
+ * Supports session-aware routing via focused facet.
  */
 
 /**
@@ -12,7 +13,7 @@ export function createInputSender(options = {}) {
   const {
     p2pManager,
     getWebSocket,
-    getSessionName
+    getSessionName,   // () => string — returns focused facet's session name
   } = options;
 
   let sendBuf = "";
@@ -31,8 +32,7 @@ export function createInputSender(options = {}) {
 
         if (!sendBuf) return;
 
-        const id = getSessionName ? getSessionName() : "main";
-        const payload = JSON.stringify({ type: "session.input", id, data: sendBuf });
+        const payload = JSON.stringify({ type: "input", data: sendBuf });
 
         // Try P2P first, fall back to WebSocket
         if (p2pManager && p2pManager.send(payload)) {

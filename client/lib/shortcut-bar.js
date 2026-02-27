@@ -4,7 +4,7 @@
  * Composable shortcut bar with P2P indicator, session button, and shortcuts.
  */
 
-import { keysToSequence, sendSequence } from "/assets/lib/key-mapping.js";
+import { keysToSequence, sendSequence } from "/lib/key-mapping.js";
 
 /**
  * Create shortcut bar renderer

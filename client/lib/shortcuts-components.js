@@ -4,7 +4,7 @@
  * Handles shortcuts popup, edit panel, and add modal.
  */
 
-import { removeShortcut, addShortcut } from '/assets/lib/stores.js';
+import { removeShortcut, addShortcut } from '/lib/stores.js';
 
 /**
  * Create shortcuts popup component
