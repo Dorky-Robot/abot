@@ -1,7 +1,8 @@
 /**
  * Shortcut Bar Renderer
  *
- * Composable shortcut bar with P2P indicator, session button, and shortcuts.
+ * Global bar with facet tabs, P2P indicator, pinned shortcuts, and action buttons.
+ * [+ New] [tab1] [tab2] ... [spacer] [Esc] [Tab] [keyboard] [settings]
  */
 
 import { keysToSequence, sendSequence } from "/lib/key-mapping.js";
@@ -19,17 +20,22 @@ export function createShortcutBar(options = {}) {
     onSessionClick,
     onShortcutsClick,
     onSettingsClick,
+    onNewFacet,
+    onFocusFacet,
     sendFn,
-    term,
+    getFocusedTerm,
     updateP2PIndicator,
     getInstanceIcon
   } = options;
 
   /**
    * Render the shortcut bar
+   * @param {{ facets: Array, focusedId: string|null }} state
    */
-  function render(sessionName) {
+  function render(state = {}) {
     if (!container) return;
+
+    const { facets = [], focusedId = null } = state;
 
     container.innerHTML = "";
 
@@ -42,22 +48,44 @@ export function createShortcutBar(options = {}) {
     // Update P2P indicator if callback provided
     if (updateP2PIndicator) updateP2PIndicator();
 
-    // Session button
-    const sessBtn = document.createElement("button");
-    sessBtn.className = "session-btn";
-    sessBtn.tabIndex = -1;
-    sessBtn.setAttribute("aria-label", `Session: ${sessionName}`);
-    const rawIcon = getInstanceIcon ? getInstanceIcon() : "terminal-window";
-    const instanceIcon = rawIcon.replace(/[^a-z0-9-]/g, "");
-    const iconEl = document.createElement("i");
-    iconEl.className = `ph ph-${instanceIcon}`;
-    sessBtn.appendChild(iconEl);
-    sessBtn.appendChild(document.createTextNode(" "));
-    sessBtn.appendChild(document.createTextNode(sessionName));
-    if (onSessionClick) {
-      sessBtn.addEventListener("click", onSessionClick);
+    // [+ New] button
+    if (onNewFacet) {
+      const newBtn = document.createElement("button");
+      newBtn.className = "facet-new-btn";
+      newBtn.tabIndex = -1;
+      newBtn.setAttribute("aria-label", "New facet");
+      newBtn.innerHTML = '<i class="ph ph-plus"></i> New';
+      newBtn.addEventListener("click", onNewFacet);
+      container.appendChild(newBtn);
     }
-    container.appendChild(sessBtn);
+
+    // Facet tabs
+    for (const facet of facets) {
+      const tab = document.createElement("button");
+      tab.className = "facet-tab";
+      if (facet.id === focusedId) {
+        tab.classList.add("facet-tab-active");
+      }
+      tab.tabIndex = -1;
+      tab.setAttribute("aria-label", `Focus ${facet.sessionName}`);
+
+      const rawIcon = getInstanceIcon ? getInstanceIcon() : "terminal-window";
+      const instanceIcon = rawIcon.replace(/[^a-z0-9-]/g, "");
+      const iconEl = document.createElement("i");
+      iconEl.className = `ph ph-${instanceIcon}`;
+      tab.appendChild(iconEl);
+
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = facet.sessionName;
+      nameSpan.style.overflow = "hidden";
+      nameSpan.style.textOverflow = "ellipsis";
+      tab.appendChild(nameSpan);
+
+      tab.addEventListener("click", () => {
+        if (onFocusFacet) onFocusFacet(facet.id);
+      });
+      container.appendChild(tab);
+    }
 
     // Spacer
     const spacer = document.createElement("span");
@@ -75,6 +103,7 @@ export function createShortcutBar(options = {}) {
         if (sendFn) {
           sendSequence(keysToSequence(s.keys), sendFn);
         }
+        const term = getFocusedTerm ? getFocusedTerm() : null;
         if (term) term.focus();
       });
       container.appendChild(btn);

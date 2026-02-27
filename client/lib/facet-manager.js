@@ -1,12 +1,17 @@
 /**
- * Facet Manager — Windowing System
+ * Facet Manager — Hybrid Windowing System
  *
- * Each facet is a floating panel containing its own xterm.js Terminal.
- * Supports drag-to-move, edge-drag-to-resize, z-order on focus,
- * and localStorage persistence for layout.
+ * Tile by default, float on drag. Facets auto-tile via CSS Grid when created.
+ * Dragging a titlebar past an 8px threshold pops it into floating mode.
+ * Double-clicking/tapping the titlebar snaps it back into the grid.
  *
- * Default: single facet filling the screen (matches legacy behavior).
- * Users add more facets for multi-session side-by-side layout.
+ * Tiling layouts:
+ *   1 facet  → fullscreen (hide titlebar)
+ *   2 facets → side-by-side 50/50 (stacked on narrow)
+ *   3 facets → master-stack: left full-height, right column 50/50
+ *   4 facets → 2×2 grid
+ *   5+ facets → master-stack generalized
+ *   <768px   → vertical stack
  */
 
 import { Terminal } from "/vendor/xterm/xterm.esm.js";
@@ -15,10 +20,13 @@ import { WebLinksAddon } from "/vendor/xterm/addon-web-links.esm.js";
 import { WebglAddon } from "/vendor/xterm/addon-webgl.esm.js";
 import { SearchAddon } from "/vendor/xterm/addon-search.esm.js";
 import { ClipboardAddon } from "/vendor/xterm/addon-clipboard.esm.js";
-import { withPreservedScroll, scrollToBottom, terminalWriteWithScroll } from "/lib/scroll-utils.js";
+import { withPreservedScroll, scrollToBottom } from "/lib/scroll-utils.js";
 
 let nextZ = 10;
 let facetIdCounter = 0;
+
+const NARROW_BREAKPOINT = 768;
+const DRAG_THRESHOLD = 8;
 
 /**
  * Create a facet manager
@@ -30,13 +38,83 @@ export function createFacetManager(options = {}) {
     onFocusChange,      // (facet) => void — called when focused facet changes
     onResize,           // (facetId, cols, rows) => void — send resize to server
     onClose,            // (facetId, sessionName) => void — facet closed
+    onNewFacet,         // () => void — request new facet from app.js
   } = options;
 
   /** @type {Map<string, Facet>} */
   const facets = new Map();
   let focusedId = null;
 
-  // --- Facet creation ---
+  // --- Windowing state ---
+  /** Ordered list of facet IDs in the tile grid */
+  const tiledOrder = [];
+  /** Set of facet IDs currently floating */
+  const floatingSet = new Set();
+
+  // --- Global drag/resize controller ---
+  let activeDrag = null;   // { facetId, startX, startY, startLeft, startTop, committed }
+  let activeResize = null; // { facetId, startX, startY, startW, startH }
+
+  function setupGlobalPointerHandlers() {
+    function onMove(clientX, clientY) {
+      if (activeDrag) {
+        const facet = facets.get(activeDrag.facetId);
+        if (!facet) return;
+        const dx = clientX - activeDrag.startX;
+        const dy = clientY - activeDrag.startY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (!activeDrag.committed) {
+          if (dist < DRAG_THRESHOLD) return;
+          activeDrag.committed = true;
+          // If tiled, float it out
+          if (isTiled(activeDrag.facetId)) {
+            floatOut(activeDrag.facetId);
+          }
+          facet.el.classList.add("facet-dragging");
+        }
+
+        facet.el.style.left = (activeDrag.startLeft + dx) + "px";
+        facet.el.style.top = (activeDrag.startTop + dy) + "px";
+      }
+
+      if (activeResize) {
+        const facet = facets.get(activeResize.facetId);
+        if (!facet) return;
+        const dx = clientX - activeResize.startX;
+        const dy = clientY - activeResize.startY;
+        facet.el.style.width = Math.max(300, activeResize.startW + dx) + "px";
+        facet.el.style.height = Math.max(200, activeResize.startH + dy) + "px";
+      }
+    }
+
+    function onEnd() {
+      if (activeDrag) {
+        const facet = facets.get(activeDrag.facetId);
+        if (facet) facet.el.classList.remove("facet-dragging");
+        activeDrag = null;
+      }
+      if (activeResize) {
+        const facet = facets.get(activeResize.facetId);
+        if (facet) facet.el.classList.remove("facet-resizing");
+        activeResize = null;
+      }
+    }
+
+    window.addEventListener("mousemove", (e) => onMove(e.clientX, e.clientY));
+    window.addEventListener("mouseup", onEnd);
+    window.addEventListener("touchmove", (e) => {
+      if (activeDrag || activeResize) {
+        const t = e.touches[0];
+        onMove(t.clientX, t.clientY);
+      }
+    }, { passive: true });
+    window.addEventListener("touchend", onEnd, { passive: true });
+  }
+
+  setupGlobalPointerHandlers();
+
+  // --- Terminal creation ---
 
   function createTerminal(themeData) {
     const term = new Terminal({
@@ -78,15 +156,136 @@ export function createFacetManager(options = {}) {
     }
   }
 
+  // --- Tiling algorithm ---
+
   /**
-   * Create a new facet
+   * Compute CSS Grid layout for N tiled facets.
+   * Returns { gridTemplateColumns, gridTemplateRows, areas } where areas[i] = { gridColumn, gridRow }
+   */
+  function computeTileLayout(count, containerWidth) {
+    const narrow = containerWidth < NARROW_BREAKPOINT;
+
+    if (count === 0) return { gridTemplateColumns: "1fr", gridTemplateRows: "1fr", areas: [] };
+
+    if (count === 1) {
+      return {
+        gridTemplateColumns: "1fr",
+        gridTemplateRows: "1fr",
+        areas: [{ gridColumn: "1", gridRow: "1" }],
+      };
+    }
+
+    if (narrow) {
+      // Vertical stack
+      const rows = Array(count).fill("1fr").join(" ");
+      return {
+        gridTemplateColumns: "1fr",
+        gridTemplateRows: rows,
+        areas: Array.from({ length: count }, (_, i) => ({
+          gridColumn: "1",
+          gridRow: `${i + 1}`,
+        })),
+      };
+    }
+
+    if (count === 2) {
+      return {
+        gridTemplateColumns: "1fr 1fr",
+        gridTemplateRows: "1fr",
+        areas: [
+          { gridColumn: "1", gridRow: "1" },
+          { gridColumn: "2", gridRow: "1" },
+        ],
+      };
+    }
+
+    if (count === 3) {
+      // Master-stack: left spans full height, right column split 50/50
+      return {
+        gridTemplateColumns: "1fr 1fr",
+        gridTemplateRows: "1fr 1fr",
+        areas: [
+          { gridColumn: "1", gridRow: "1 / 3" },
+          { gridColumn: "2", gridRow: "1" },
+          { gridColumn: "2", gridRow: "2" },
+        ],
+      };
+    }
+
+    if (count === 4) {
+      return {
+        gridTemplateColumns: "1fr 1fr",
+        gridTemplateRows: "1fr 1fr",
+        areas: [
+          { gridColumn: "1", gridRow: "1" },
+          { gridColumn: "2", gridRow: "1" },
+          { gridColumn: "1", gridRow: "2" },
+          { gridColumn: "2", gridRow: "2" },
+        ],
+      };
+    }
+
+    // 5+: Master-stack generalized — left = main, right = stacked
+    const stackCount = count - 1;
+    const rows = Array(stackCount).fill("1fr").join(" ");
+    const areas = [
+      { gridColumn: "1", gridRow: `1 / ${stackCount + 1}` },
+    ];
+    for (let i = 0; i < stackCount; i++) {
+      areas.push({ gridColumn: "2", gridRow: `${i + 1}` });
+    }
+    return {
+      gridTemplateColumns: "1fr 1fr",
+      gridTemplateRows: rows,
+      areas,
+    };
+  }
+
+  /**
+   * Apply the tiling layout to the container and tiled facets.
+   */
+  function applyTileLayout() {
+    const tiledFacets = getTiledFacets();
+    const count = tiledFacets.length;
+    const containerWidth = container.clientWidth;
+    const layout = computeTileLayout(count, containerWidth);
+
+    container.style.gridTemplateColumns = layout.gridTemplateColumns;
+    container.style.gridTemplateRows = layout.gridTemplateRows;
+
+    const isSolo = count === 1;
+
+    tiledFacets.forEach((facet, i) => {
+      const area = layout.areas[i];
+      if (area) {
+        facet.el.style.gridColumn = area.gridColumn;
+        facet.el.style.gridRow = area.gridRow;
+      }
+
+      // Solo class for hiding titlebar when only one tiled facet
+      facet.el.classList.toggle("facet-solo", isSolo);
+
+      // Always show close on multi-facet, hide on solo only if it's the last overall facet
+      facet.closeBtn.style.display = (facets.size <= 1) ? "none" : "";
+    });
+
+    // Refit all tiled terminals after layout change
+    requestAnimationFrame(() => {
+      for (const facet of tiledFacets) {
+        facet.fit.fit();
+      }
+    });
+  }
+
+  // --- Facet creation ---
+
+  /**
+   * Create a new facet. Always enters tiled mode.
    * @param {string} sessionName - Name of the session to attach
-   * @param {object} [layout] - Optional {x, y, width, height} in percentages
    * @returns {object} facet
    */
-  function create(sessionName, layout) {
+  function create(sessionName) {
     const id = `facet-${facetIdCounter++}`;
-    const isFirst = facets.size === 0;
 
     // Determine theme
     const effectiveTheme = themeManager?.getEffective?.() || "dark";
@@ -98,7 +297,7 @@ export function createFacetManager(options = {}) {
 
     // Build DOM
     const el = document.createElement("div");
-    el.className = "facet" + (isFirst ? " facet-fullscreen" : "");
+    el.className = "facet facet-tiled";
     el.dataset.facetId = id;
 
     // Title bar
@@ -110,6 +309,25 @@ export function createFacetManager(options = {}) {
     titleText.textContent = sessionName;
     titleBar.appendChild(titleText);
 
+    // Titlebar right-side controls
+    const titleControls = document.createElement("span");
+    titleControls.className = "facet-titlebar-controls";
+
+    // Maximize/restore button
+    const maxBtn = document.createElement("button");
+    maxBtn.className = "facet-max-btn";
+    maxBtn.innerHTML = '<i class="ph ph-arrows-out"></i>';
+    maxBtn.title = "Float out";
+    maxBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (isTiled(id)) {
+        floatOut(id);
+      } else {
+        snapBack(id);
+      }
+    });
+    titleControls.appendChild(maxBtn);
+
     const closeBtn = document.createElement("button");
     closeBtn.className = "facet-close";
     closeBtn.innerHTML = '<i class="ph ph-x"></i>';
@@ -118,9 +336,8 @@ export function createFacetManager(options = {}) {
       e.stopPropagation();
       remove(id);
     });
-    // Don't show close on the first (default) facet
-    if (isFirst) closeBtn.style.display = "none";
-    titleBar.appendChild(closeBtn);
+    titleControls.appendChild(closeBtn);
+    titleBar.appendChild(titleControls);
 
     el.appendChild(titleBar);
 
@@ -129,7 +346,7 @@ export function createFacetManager(options = {}) {
     termContainer.className = "facet-terminal";
     el.appendChild(termContainer);
 
-    // Resize handle (bottom-right corner)
+    // Resize handle (only visible when floating)
     const resizeHandle = document.createElement("div");
     resizeHandle.className = "facet-resize-handle";
     el.appendChild(resizeHandle);
@@ -137,23 +354,6 @@ export function createFacetManager(options = {}) {
     container.appendChild(el);
     term.open(termContainer);
     tryLoadWebGL(term);
-
-    // Apply layout
-    if (!isFirst && layout) {
-      el.style.left = layout.x + "%";
-      el.style.top = layout.y + "%";
-      el.style.width = layout.width + "%";
-      el.style.height = layout.height + "%";
-    } else if (!isFirst) {
-      // Default position for new facets: center, 50% size
-      el.style.left = "25%";
-      el.style.top = "10%";
-      el.style.width = "50%";
-      el.style.height = "70%";
-    }
-
-    // Z-order
-    el.style.zIndex = nextZ++;
 
     const facet = {
       id,
@@ -165,12 +365,16 @@ export function createFacetManager(options = {}) {
       titleBar,
       titleText,
       closeBtn,
+      maxBtn,
       termContainer,
       resizeHandle,
       resizeObserver: null,
     };
 
     facets.set(id, facet);
+
+    // Add to tiled order
+    tiledOrder.push(id);
 
     // ResizeObserver for terminal fit
     const ro = new ResizeObserver(() => {
@@ -186,11 +390,17 @@ export function createFacetManager(options = {}) {
     el.addEventListener("mousedown", () => focus(id));
     el.addEventListener("touchstart", () => focus(id), { passive: true });
 
-    // Drag to move (title bar)
+    // Drag (titlebar) — start tracking, global handler does the rest
     initDrag(facet);
 
-    // Resize (corner handle)
+    // Resize handle — start tracking for floating facets
     initResize(facet);
+
+    // Double-click/tap titlebar to snap back
+    initSnapBack(facet);
+
+    // Apply tiling layout
+    applyTileLayout();
 
     // Initial fit after DOM layout settles
     requestAnimationFrame(() => {
@@ -207,95 +417,58 @@ export function createFacetManager(options = {}) {
     return facet;
   }
 
-  // --- Drag to move ---
+  // --- Drag to move (titlebar) ---
 
   function initDrag(facet) {
-    const { el, titleBar } = facet;
-    let dragging = false;
-    let startX, startY, startLeft, startTop;
+    const { id, el, titleBar } = facet;
 
     function onStart(clientX, clientY) {
-      if (el.classList.contains("facet-fullscreen")) return;
-      dragging = true;
-      startX = clientX;
-      startY = clientY;
       const rect = el.getBoundingClientRect();
-      startLeft = rect.left;
-      startTop = rect.top;
-      el.classList.add("facet-dragging");
-    }
+      activeDrag = {
+        facetId: id,
+        startX: clientX,
+        startY: clientY,
+        startLeft: rect.left,
+        startTop: rect.top,
+        committed: false,
+      };
 
-    function onMove(clientX, clientY) {
-      if (!dragging) return;
-      const dx = clientX - startX;
-      const dy = clientY - startY;
-      el.style.left = (startLeft + dx) + "px";
-      el.style.top = (startTop + dy) + "px";
-      // Switch to px positioning once dragged
-      el.style.right = "auto";
-      el.style.bottom = "auto";
-    }
-
-    function onEnd() {
-      if (!dragging) return;
-      dragging = false;
-      el.classList.remove("facet-dragging");
-      saveLayout();
+      // If already floating, mark committed immediately (no threshold needed)
+      if (!isTiled(id)) {
+        activeDrag.committed = true;
+        el.classList.add("facet-dragging");
+      }
     }
 
     titleBar.addEventListener("mousedown", (e) => {
-      if (e.target.closest(".facet-close")) return;
+      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
       e.preventDefault();
       onStart(e.clientX, e.clientY);
     });
-    window.addEventListener("mousemove", (e) => onMove(e.clientX, e.clientY));
-    window.addEventListener("mouseup", onEnd);
 
     titleBar.addEventListener("touchstart", (e) => {
-      if (e.target.closest(".facet-close")) return;
+      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
       const t = e.touches[0];
       onStart(t.clientX, t.clientY);
     }, { passive: true });
-    window.addEventListener("touchmove", (e) => {
-      if (dragging) {
-        const t = e.touches[0];
-        onMove(t.clientX, t.clientY);
-      }
-    }, { passive: true });
-    window.addEventListener("touchend", onEnd, { passive: true });
   }
 
-  // --- Resize ---
+  // --- Resize (corner handle, floating only) ---
 
   function initResize(facet) {
-    const { el, resizeHandle } = facet;
-    let resizing = false;
-    let startX, startY, startW, startH;
+    const { id, el, resizeHandle } = facet;
 
     function onStart(clientX, clientY) {
-      if (el.classList.contains("facet-fullscreen")) return;
-      resizing = true;
-      startX = clientX;
-      startY = clientY;
+      if (isTiled(id)) return; // Only floating facets can be resized
       const rect = el.getBoundingClientRect();
-      startW = rect.width;
-      startH = rect.height;
+      activeResize = {
+        facetId: id,
+        startX: clientX,
+        startY: clientY,
+        startW: rect.width,
+        startH: rect.height,
+      };
       el.classList.add("facet-resizing");
-    }
-
-    function onMove(clientX, clientY) {
-      if (!resizing) return;
-      const dx = clientX - startX;
-      const dy = clientY - startY;
-      el.style.width = Math.max(300, startW + dx) + "px";
-      el.style.height = Math.max(200, startH + dy) + "px";
-    }
-
-    function onEnd() {
-      if (!resizing) return;
-      resizing = false;
-      el.classList.remove("facet-resizing");
-      saveLayout();
     }
 
     resizeHandle.addEventListener("mousedown", (e) => {
@@ -303,25 +476,117 @@ export function createFacetManager(options = {}) {
       e.stopPropagation();
       onStart(e.clientX, e.clientY);
     });
-    window.addEventListener("mousemove", (e) => {
-      if (resizing) onMove(e.clientX, e.clientY);
-    });
-    window.addEventListener("mouseup", onEnd);
 
     resizeHandle.addEventListener("touchstart", (e) => {
       e.stopPropagation();
       const t = e.touches[0];
       onStart(t.clientX, t.clientY);
     }, { passive: true });
-    window.addEventListener("touchmove", (e) => {
-      if (resizing) {
-        const t = e.touches[0];
-        onMove(t.clientX, t.clientY);
+  }
+
+  // --- Snap back on double-click/tap ---
+
+  function initSnapBack(facet) {
+    const { id, titleBar } = facet;
+    let lastTap = 0;
+
+    titleBar.addEventListener("dblclick", (e) => {
+      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
+      if (!isTiled(id)) {
+        snapBack(id);
+      }
+    });
+
+    // Double-tap for touch
+    titleBar.addEventListener("touchend", (e) => {
+      if (e.target.closest(".facet-close") || e.target.closest(".facet-max-btn")) return;
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        if (!isTiled(id)) {
+          snapBack(id);
+        }
+        lastTap = 0;
+      } else {
+        lastTap = now;
       }
     }, { passive: true });
-    window.addEventListener("touchend", () => {
-      if (resizing) onEnd();
-    }, { passive: true });
+  }
+
+  // --- Float out / snap back ---
+
+  /**
+   * Float a facet out of the tile grid.
+   */
+  function floatOut(id) {
+    const facet = facets.get(id);
+    if (!facet || !isTiled(id)) return;
+
+    // Snapshot current rect before removing from grid
+    const rect = facet.el.getBoundingClientRect();
+
+    // Remove from tiled order
+    const idx = tiledOrder.indexOf(id);
+    if (idx !== -1) tiledOrder.splice(idx, 1);
+
+    // Add to floating set
+    floatingSet.add(id);
+
+    // Swap CSS classes
+    facet.el.classList.remove("facet-tiled", "facet-solo");
+    facet.el.classList.add("facet-floating");
+
+    // Position at snapshotted location
+    facet.el.style.left = rect.left + "px";
+    facet.el.style.top = rect.top + "px";
+    facet.el.style.width = rect.width + "px";
+    facet.el.style.height = rect.height + "px";
+    facet.el.style.gridColumn = "";
+    facet.el.style.gridRow = "";
+
+    // Z-order
+    facet.el.style.zIndex = nextZ++;
+
+    // Update maximize button icon
+    facet.maxBtn.innerHTML = '<i class="ph ph-arrows-in"></i>';
+    facet.maxBtn.title = "Snap back";
+
+    // Re-tile remaining
+    applyTileLayout();
+
+    // Refit the floating facet
+    requestAnimationFrame(() => facet.fit.fit());
+  }
+
+  /**
+   * Snap a floating facet back into the tile grid.
+   */
+  function snapBack(id) {
+    const facet = facets.get(id);
+    if (!facet || isTiled(id)) return;
+
+    // Remove from floating set
+    floatingSet.delete(id);
+
+    // Add to tiled order
+    tiledOrder.push(id);
+
+    // Swap CSS classes
+    facet.el.classList.remove("facet-floating");
+    facet.el.classList.add("facet-tiled");
+
+    // Clear inline positioning
+    facet.el.style.left = "";
+    facet.el.style.top = "";
+    facet.el.style.width = "";
+    facet.el.style.height = "";
+    facet.el.style.zIndex = "";
+
+    // Update maximize button icon
+    facet.maxBtn.innerHTML = '<i class="ph ph-arrows-out"></i>';
+    facet.maxBtn.title = "Float out";
+
+    // Re-tile
+    applyTileLayout();
   }
 
   // --- Focus management ---
@@ -340,7 +605,12 @@ export function createFacetManager(options = {}) {
 
     focusedId = id;
     facet.el.classList.add("facet-focused");
-    facet.el.style.zIndex = nextZ++;
+
+    // Only bump z-index for floating facets
+    if (!isTiled(id)) {
+      facet.el.style.zIndex = nextZ++;
+    }
+
     facet.term.focus();
 
     if (onFocusChange) onFocusChange(facet);
@@ -373,6 +643,11 @@ export function createFacetManager(options = {}) {
     facet.el.remove();
     facets.delete(id);
 
+    // Remove from windowing state
+    const tiledIdx = tiledOrder.indexOf(id);
+    if (tiledIdx !== -1) tiledOrder.splice(tiledIdx, 1);
+    floatingSet.delete(id);
+
     if (onClose) onClose(id, facet.sessionName);
 
     // Focus another facet if we removed the focused one
@@ -383,54 +658,22 @@ export function createFacetManager(options = {}) {
       }
     }
 
-    // If only one facet remains, make it fullscreen
-    if (facets.size === 1) {
-      const last = facets.values().next().value;
-      last.el.classList.add("facet-fullscreen");
-      last.el.style.left = "";
-      last.el.style.top = "";
-      last.el.style.width = "";
-      last.el.style.height = "";
-      last.closeBtn.style.display = "none";
-      requestAnimationFrame(() => last.fit.fit());
-    }
-
-    saveLayout();
+    // Re-tile remaining
+    applyTileLayout();
   }
 
-  // --- Multi-facet layout ---
+  // --- Windowing queries ---
 
-  /**
-   * When adding a second facet, convert from fullscreen to tiled layout.
-   * Splits the screen: existing facet takes left half, new facet takes right half.
-   */
-  function exitFullscreen() {
-    for (const facet of facets.values()) {
-      if (facet.el.classList.contains("facet-fullscreen")) {
-        facet.el.classList.remove("facet-fullscreen");
-        facet.el.style.left = "0";
-        facet.el.style.top = "0";
-        facet.el.style.width = "50%";
-        facet.el.style.height = "100%";
-        facet.closeBtn.style.display = "";
-        requestAnimationFrame(() => facet.fit.fit());
-      }
-    }
+  function isTiled(id) {
+    return tiledOrder.includes(id);
   }
 
-  /**
-   * Create a new facet and tile it alongside existing ones
-   */
-  function createTiled(sessionName) {
-    if (facets.size === 1) {
-      exitFullscreen();
-      return create(sessionName, { x: 50, y: 0, width: 50, height: 100 });
-    }
+  function getTiledFacets() {
+    return tiledOrder.map(id => facets.get(id)).filter(Boolean);
+  }
 
-    // For 3+ facets, stack in the right half
-    const count = facets.size;
-    const height = 100 / Math.ceil(count / 2);
-    return create(sessionName, { x: 50, y: 0, width: 50, height });
+  function getFloatingFacets() {
+    return [...floatingSet].map(id => facets.get(id)).filter(Boolean);
   }
 
   // --- Theme ---
@@ -440,37 +683,6 @@ export function createFacetManager(options = {}) {
       withPreservedScroll(facet.term, () => {
         facet.term.options.theme = themeData;
       });
-    }
-  }
-
-  // --- Layout persistence ---
-
-  function saveLayout() {
-    const layout = {};
-    for (const [id, facet] of facets) {
-      const rect = facet.el.getBoundingClientRect();
-      layout[id] = {
-        sessionName: facet.sessionName,
-        x: rect.left,
-        y: rect.top,
-        width: rect.width,
-        height: rect.height,
-        fullscreen: facet.el.classList.contains("facet-fullscreen"),
-      };
-    }
-    try {
-      localStorage.setItem("abot_facet_layout", JSON.stringify(layout));
-    } catch {
-      // localStorage may be full or unavailable
-    }
-  }
-
-  function loadLayout() {
-    try {
-      const raw = localStorage.getItem("abot_facet_layout");
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
     }
   }
 
@@ -505,9 +717,14 @@ export function createFacetManager(options = {}) {
     new MutationObserver(patch).observe(termContainer, { childList: true, subtree: true });
   }
 
+  // --- Container resize: re-tile on window resize ---
+  const resizeObserver = new ResizeObserver(() => {
+    applyTileLayout();
+  });
+  resizeObserver.observe(container);
+
   return {
     create,
-    createTiled,
     remove,
     focus,
     getFocused,
@@ -516,7 +733,10 @@ export function createFacetManager(options = {}) {
     getAll,
     count,
     applyThemeToAll,
-    saveLayout,
-    loadLayout,
+    isTiled,
+    getTiledFacets,
+    getFloatingFacets,
+    floatOut,
+    snapBack,
   };
 }

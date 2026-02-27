@@ -58,7 +58,7 @@
         // Update state to reflect focused session
         state.update('session.name', facet.sessionName);
         document.title = facet.sessionName;
-        renderBar?.(facet.sessionName);
+        renderBar?.();
       },
       onResize: (facetId, cols, rows) => {
         if (state.connection.ws?.readyState === 1) {
@@ -127,10 +127,7 @@
     const getInstanceIcon = () => instanceIcon;
     const setInstanceIcon = (icon) => {
       instanceIcon = icon.replace(/[^a-z0-9-]/g, "");
-      // Re-render shortcut bar to show new icon
-      if (shortcutBarInstance) {
-        shortcutBarInstance.render(state.session.name);
-      }
+      renderBar?.();
     };
 
     // --- Shortcuts state management (reactive store) ---
@@ -174,9 +171,9 @@
     document.title = state.session.name;
 
     // --- Terminal setup via Facet Manager ---
-    // Create default facet (fullscreen, matches legacy single-terminal behavior)
+    // Create default facet (auto-tiled, solo = fullscreen equivalent)
     const defaultFacet = facetManager.create(state.session.name);
-    // Aliases for backward compatibility with code that references term/fit/searchAddon
+    // Keep alias for modules that need a single terminal reference
     const term = defaultFacet.term;
     const fit = defaultFacet.fit;
     const searchAddon = defaultFacet.searchAddon;
@@ -288,7 +285,7 @@
 
     const rawSend = (data) => inputSender.send(data);
 
-    // Initialize terminal keyboard handlers
+    // Initialize terminal keyboard handlers for default facet
     const terminalKeyboard = createTerminalKeyboard({
       term,
       onSend: rawSend,
@@ -296,11 +293,44 @@
     });
     terminalKeyboard.init();
 
+    // Wire keyboard handlers for additional facets
+    function wireNewFacetTerminal(facet) {
+      const fterm = facet.term;
+      import("/lib/terminal-input-filter.js").then(({ filterTerminalResponses, registerResponseSuppressors }) => {
+        fterm.onData((data) => {
+          const filtered = filterTerminalResponses(data);
+          if (filtered) rawSend(filtered);
+        });
+        fterm.attachCustomKeyEventHandler((ev) => {
+          if (ev.metaKey && ev.key === "c" && fterm.hasSelection()) return false;
+          if ((ev.metaKey || ev.ctrlKey) && ev.key === "v") return false;
+          if (ev.ctrlKey && ev.key === "c" && !fterm.hasSelection()) return true;
+          if (ev.key === "Tab") return false;
+          if (ev.shiftKey && ev.key === "Enter" && ev.type === "keydown") {
+            rawSend("\x16\x0a");
+            return false;
+          }
+          if (ev.metaKey && ev.type === "keydown") {
+            if (ev.key === "f") { ev.preventDefault(); toggleSearchBar(); return false; }
+            if (ev.key === "k") { fterm.clear(); return false; }
+            const metaSeq = { Backspace: "\x15", ArrowLeft: "\x01", ArrowRight: "\x05" }[ev.key];
+            if (metaSeq) { rawSend(metaSeq); return false; }
+          }
+          if (ev.altKey && ev.type === "keydown") {
+            const altSeq = { ArrowLeft: "\x1bb", ArrowRight: "\x1bf" }[ev.key];
+            if (altSeq) { rawSend(altSeq); return false; }
+          }
+          return true;
+        });
+        registerResponseSuppressors(fterm);
+      });
+    }
+
     // WebSocket connection setup moved to after all dependencies are initialized (see before Boot section)
 
     // --- Layout ---
 
-    const termContainer = document.getElementById("terminal-container");
+    const facetLayer = document.getElementById("facet-layer");
     const bar = document.getElementById("shortcut-bar");
 
     // --- Joystick (composable state machine) ---
@@ -313,7 +343,7 @@
 
     // --- Pull-to-refresh (composable gesture handler) ---
     const pullToRefresh = createPullToRefreshManager({
-      container: termContainer,
+      container: facetLayer,
       isAtBottom,
       onRefresh: () => {
         if (state.connection.ws && state.connection.ws.readyState === WebSocket.OPEN && state.connection.attached) {
@@ -491,7 +521,7 @@
     const viewportManager = createViewportManager({
       term,
       fit,
-      termContainer,
+      termContainer: facetLayer,
       bar,
       onWebSocketResize: (cols, rows) => {
         if (state.connection.ws?.readyState === 1) {
@@ -504,35 +534,27 @@
     });
     viewportManager.init();
 
+    // --- Facet creation helper ---
+    function createNewFacet() {
+      const name = `session-${Date.now()}`;
+      const facet = facetManager.create(name);
+      wireNewFacetTerminal(facet);
+      // Attach the new facet's session on the server
+      if (state.connection.ws?.readyState === 1) {
+        state.connection.ws.send(JSON.stringify({
+          type: "attach", session: name,
+          cols: facet.term.cols, rows: facet.term.rows
+        }));
+      }
+      renderBar?.();
+    }
+
     // --- Facet keyboard shortcuts ---
+    // New/close facet: use [+ New] button and titlebar close button (no keyboard
+    // shortcuts — Cmd+T/W/Shift variants all conflict with browser tab management).
+    // Cycle focus: Ctrl+` (no browser conflict)
     document.addEventListener("keydown", (e) => {
-      const isMeta = e.metaKey || e.ctrlKey;
-
-      // Cmd+T: new facet with new session
-      if (isMeta && e.key === "t" && !e.shiftKey) {
-        e.preventDefault();
-        const name = `session-${Date.now()}`;
-        const facet = facetManager.createTiled(name);
-        // Attach the new facet's session on the server
-        if (state.connection.ws?.readyState === 1) {
-          state.connection.ws.send(JSON.stringify({
-            type: "attach", session: name,
-            cols: facet.term.cols, rows: facet.term.rows
-          }));
-        }
-      }
-
-      // Cmd+W: close focused facet (only if multiple)
-      if (isMeta && e.key === "w" && !e.shiftKey) {
-        if (facetManager.count() > 1) {
-          e.preventDefault();
-          const focused = facetManager.getFocused();
-          if (focused) facetManager.remove(focused.id);
-        }
-      }
-
-      // Cmd+` or Ctrl+`: cycle facet focus
-      if (isMeta && e.key === "`") {
+      if ((e.ctrlKey || e.metaKey) && e.key === "`") {
         e.preventDefault();
         facetManager.cycleFocus();
       }
@@ -544,24 +566,25 @@
         { label: "Esc", keys: "esc" },
         { label: "Tab", keys: "tab" }
       ],
-      onSessionClick: openSessionManager,
       onShortcutsClick: () => openShortcutsPopup(state.session.shortcuts),
       onSettingsClick: () => modals.open('settings'),
+      onNewFacet: createNewFacet,
+      onFocusFacet: (id) => facetManager.focus(id),
       sendFn: rawSend,
-      term,
+      getFocusedTerm,
       updateP2PIndicator,
       getInstanceIcon
     });
 
-    renderBar = (name) => shortcutBarInstance.render(name);
+    renderBar = () => shortcutBarInstance.render({
+      facets: facetManager.getAll(),
+      focusedId: facetManager.getFocused()?.id,
+    });
 
     // Subscribe to shortcuts changes to re-render bar
     shortcutsStore.subscribe((shortcuts) => {
-      // Update legacy state object (for backward compatibility)
       state.update('session.shortcuts', shortcuts);
-
-      // Re-render bar when shortcuts change
-      renderBar(state.session.name);
+      renderBar?.();
     });
 
 
@@ -632,7 +655,7 @@
 
     // --- Boot ---
 
-    renderBar(state.session.name);  // Initial render
+    renderBar();  // Initial render
     wsConnection.connect();
     loadShortcuts();
     getFocusedTerm().focus();

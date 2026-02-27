@@ -25,19 +25,21 @@ export function createViewportManager(options = {}) {
 
   // Resize viewport to match visual viewport (handles mobile keyboard)
   function resizeToViewport() {
-    withPreservedScroll(term, () => {
-      const vv = window.visualViewport;
-      // In Chromium mobile emulation (isMobile: true), vv.height can be 0 during
-      // initial JS module execution before the visual viewport is fully initialised.
-      // Fall back to window.innerHeight so the terminal container gets a valid height.
-      const h = (vv && vv.height > 0) ? vv.height : window.innerHeight;
-      const top = vv ? vv.offsetTop : 0;
-      bar.style.top = top + "px";
-      termContainer.style.height = (h - 44) + "px";
-      const s = document.documentElement.style;
-      s.setProperty("--viewport-h", h + "px");
-      s.setProperty("--viewport-top", top + "px");
-    });
+    const vv = window.visualViewport;
+    // In Chromium mobile emulation (isMobile: true), vv.height can be 0 during
+    // initial JS module execution before the visual viewport is fully initialised.
+    // Fall back to window.innerHeight so the terminal container gets a valid height.
+    const h = (vv && vv.height > 0) ? vv.height : window.innerHeight;
+    const top = vv ? vv.offsetTop : 0;
+    const barHeight = bar ? bar.offsetHeight : 44;
+    bar.style.top = top + "px";
+    // Adjust facet layer to fit within visual viewport (critical for mobile keyboard)
+    termContainer.style.top = (top + barHeight) + "px";
+    termContainer.style.height = (h - barHeight) + "px";
+    termContainer.style.bottom = "auto";
+    const s = document.documentElement.style;
+    s.setProperty("--viewport-h", h + "px");
+    s.setProperty("--viewport-top", top + "px");
   }
 
   // Initialize viewport resize handlers

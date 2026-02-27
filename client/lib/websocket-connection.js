@@ -140,7 +140,7 @@ export function createWebSocketConnection(deps = {}) {
         url.searchParams.set("s", effect.name);
         history.replaceState(null, "", url);
         // Call render bar via callback if provided
-        if (deps.renderBar) deps.renderBar(effect.name);
+        if (deps.renderBar) deps.renderBar();
         break;
       case 'refreshTokensAfterRegistration':
         // Refresh token list to show newly used token
