@@ -88,6 +88,9 @@ export function createViewportManager(options = {}) {
       const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
       if (focusedTerm) focusedTerm.focus();
 
+      // Don't start long-press timer on titlebar (drag-to-reorder uses it)
+      if (e.target.closest('.facet-titlebar')) return;
+
       // Start long-press timer
       touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       longPressTimer = setTimeout(() => {

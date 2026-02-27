@@ -72,7 +72,7 @@
         if (state.connection.ws?.readyState === 1) {
           state.connection.ws.send(JSON.stringify({ type: "detach", session: sessionName }));
         }
-      }
+      },
     });
 
     // --- State ---
