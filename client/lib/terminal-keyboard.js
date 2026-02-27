@@ -125,20 +125,27 @@ export function createTerminalKeyboard(options = {}) {
   }
 
   /**
+   * Suppress OSC color query responses at the parser level
+   */
+  function initResponseSuppressors() {
+    if (term) registerResponseSuppressors(term);
+  }
+
+  /**
    * Initialize all keyboard handlers
    */
   function init() {
     initTabHandler();
     initCustomKeyHandler();
     initDataHandler();
-    // Suppress OSC color query responses at the parser level
-    if (term) registerResponseSuppressors(term);
+    initResponseSuppressors();
   }
 
   return {
     init,
     initTabHandler,
     initCustomKeyHandler,
-    initDataHandler
+    initDataHandler,
+    initResponseSuppressors
   };
 }

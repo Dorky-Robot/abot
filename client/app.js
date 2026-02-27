@@ -17,7 +17,7 @@
     import { createPullToRefreshManager } from "/lib/pull-to-refresh.js";
     import { createThemeManager, DARK_THEME, LIGHT_THEME } from "/lib/theme-manager.js";
     import { createTabManager } from "/lib/tab-manager.js";
-    import { isAtBottom, scrollToBottom, withPreservedScroll, terminalWriteWithScroll } from "/lib/scroll-utils.js";
+    import { isAtBottom, scrollToBottom, withPreservedScroll } from "/lib/scroll-utils.js";
     import { keysToSequence, sendSequence, displayKey, keysLabel, keysString, VALID_KEYS, normalizeKey } from "/lib/key-mapping.js";
     import { createShortcutBar } from "/lib/shortcut-bar.js";
     import { createPasteHandler } from "/lib/paste-handler.js";
@@ -175,7 +175,6 @@
     const defaultFacet = facetManager.create(state.session.name);
     // Keep alias for modules that need a single terminal reference
     const term = defaultFacet.term;
-    const fit = defaultFacet.fit;
     const searchAddon = defaultFacet.searchAddon;
 
     // Helper: get the currently focused facet's terminal
@@ -303,6 +302,7 @@
       });
       kb.initCustomKeyHandler();
       kb.initDataHandler();
+      kb.initResponseSuppressors();
     }
 
     // WebSocket connection setup moved to after all dependencies are initialized (see before Boot section)
@@ -351,7 +351,6 @@
       modals.close('shortcuts');
       shortcutsEditPanel.open(shortcutsStore.getState());
     });
-    
 
     // --- Edit shortcuts (reactive component) ---
 
@@ -387,8 +386,6 @@
     // Initialize the add modal event handlers
     addShortcutModal.init();
 
-    
-
     // --- Session manager (render takes data) ---
 
     const sessionStore = createSessionStore(state.session.name);
@@ -407,10 +404,6 @@
       onSessionCreate: () => invalidateSessions(sessionStore, state.session.name)
     });
     sessionManager.init();
-
-    // Expose openSessionManager for external use
-    const openSessionManager = () => sessionManager.openSessionManager(state.session.name);
-    
 
     // --- Settings ---
 
@@ -494,7 +487,6 @@
     }
 
     // --- Viewport manager & Shortcut bar ---
-    // (Moved here after openSessionManager and openDictationModal are defined)
 
     const viewportManager = createViewportManager({
       getFocusedTerm,
@@ -556,8 +548,6 @@
       state.update('session.shortcuts', shortcuts);
       renderBar?.();
     });
-
-
 
     // --- Image upload (using imported helpers) ---
     const uploadImageToTerminal = (file) => uploadImageToTerminalFn(file, {
