@@ -8,7 +8,7 @@
  * facet's terminal by session name.
  */
 
-import { scrollToBottom, terminalWriteWithScroll } from "/lib/scroll-utils.js";
+import { isAtBottom, scrollToBottom, terminalWriteWithScroll } from "/lib/scroll-utils.js";
 
 /**
  * Create WebSocket connection manager with injected dependencies
@@ -20,7 +20,6 @@ export function createWebSocketConnection(deps = {}) {
     p2pManager,
     updateP2PIndicator,
     loadTokens,
-    isAtBottom,
     facetManager,   // Optional: if provided, routes output to facets
   } = deps;
 
