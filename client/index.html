@@ -187,14 +187,6 @@
       width: var(--height-btn-sm);
     }
 
-    /* --- Terminal --- */
-    #terminal-container { width: 100%; margin-top: 2.75rem; position: relative; z-index: 1; }
-    #terminal-container .xterm { height: 100%; }
-    #terminal-container .xterm-viewport {
-      -webkit-overflow-scrolling: touch;
-      overscroll-behavior: contain;
-    }
-
     /* --- Search bar --- */
     #search-bar {
       display: none;
@@ -1056,43 +1048,55 @@
     .toast.visible { opacity: 1; }
     .toast.toast-error { border-color: var(--danger); color: var(--danger); }
 
-    /* --- Facet windowing system --- */
+    /* --- Facet windowing system (hybrid tile/float) --- */
     #facet-layer {
       position: fixed;
-      inset: 0;
+      top: var(--height-btn-md);
+      left: 0;
+      right: 0;
+      bottom: 0;
       z-index: 1;
-      pointer-events: none;
+      display: grid;
+      gap: 0;
     }
 
+    /* Tiled facet — grid child, no border/radius/shadow */
     .facet {
-      position: absolute;
       display: flex;
       flex-direction: column;
       background: var(--bg);
+      overflow: hidden;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .facet-tiled {
+      position: relative;
+      border: none;
+      border-radius: 0;
+      box-shadow: none;
+      /* Thin separator between tiles */
+      outline: 0.5px solid var(--border);
+      outline-offset: -0.5px;
+    }
+
+    /* Solo tiled facet hides its titlebar */
+    .facet-solo .facet-titlebar {
+      display: none;
+    }
+
+    /* Floating facet — absolutely positioned, border/shadow */
+    .facet-floating {
+      position: absolute !important;
       border: 1px solid var(--border);
       border-radius: var(--radius-md);
-      overflow: hidden;
-      pointer-events: auto;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.3);
-      transition: box-shadow 0.15s;
-    }
-
-    .facet-fullscreen {
-      inset: 0 !important;
-      width: 100% !important;
-      height: 100% !important;
-      border: none !important;
-      border-radius: 0 !important;
-      box-shadow: none !important;
-    }
-
-    .facet-focused {
       box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-      border-color: var(--accent);
+      z-index: 100;
     }
 
-    .facet-fullscreen .facet-titlebar {
-      display: none;
+    .facet-focused.facet-floating {
+      box-shadow: 0 6px 32px rgba(0,0,0,0.6);
+      border-color: var(--accent);
     }
 
     .facet-titlebar {
@@ -1122,6 +1126,13 @@
       white-space: nowrap;
     }
 
+    .facet-titlebar-controls {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .facet-max-btn,
     .facet-close {
       background: none;
       border: none;
@@ -1132,9 +1143,18 @@
       font-size: 0.8rem;
       line-height: 1;
     }
+    .facet-max-btn:hover {
+      background: var(--accent);
+      color: var(--text);
+    }
     .facet-close:hover {
       background: var(--danger);
       color: #fff;
+    }
+
+    /* Hide max button when only 1 total facet */
+    .facet-solo .facet-max-btn {
+      display: none;
     }
 
     .facet-terminal {
@@ -1159,7 +1179,8 @@
       cursor: nwse-resize;
       z-index: 2;
     }
-    .facet-fullscreen .facet-resize-handle {
+    /* Hide resize handle on tiled facets */
+    .facet-tiled .facet-resize-handle {
       display: none;
     }
 
@@ -1168,10 +1189,64 @@
       -webkit-user-select: none;
     }
 
+    /* Disable float-out on narrow screens (tiling only) */
+    @media (max-width: 767px) {
+      .facet-tiled .facet-titlebar {
+        cursor: default;
+      }
+    }
+
+    /* --- Facet tabs in global bar --- */
+    .facet-tab {
+      flex-shrink: 0;
+      height: var(--height-btn-sm);
+      padding: 0 var(--space-2_5);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-input);
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      max-width: 10rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .facet-tab:active { background: var(--accent); }
+    .facet-tab.facet-tab-active {
+      background: var(--accent);
+      color: var(--text);
+      border-color: var(--accent-active);
+    }
+    .facet-new-btn {
+      flex-shrink: 0;
+      height: var(--height-btn-sm);
+      padding: 0 var(--space-md);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.8125rem;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .facet-new-btn:active { background: var(--accent); color: var(--text); }
+
+    /* Toolbar color variants for tabs */
+    #shortcut-bar[data-toolbar-color] .facet-tab { color: var(--tb-text, var(--text)); border-color: var(--tb-btn-border, var(--border)); background: var(--tb-btn-bg, var(--bg-input)); }
+    #shortcut-bar[data-toolbar-color] .facet-tab.facet-tab-active { background: rgba(255,255,255,0.4); }
+    #shortcut-bar[data-toolbar-color] .facet-new-btn { color: var(--tb-text, var(--text-muted)); border-color: var(--tb-btn-border, var(--border)); }
+
   </style>
 </head>
 <body>
-  <div id="terminal-container"></div>
   <div id="facet-layer"></div>
   <div id="search-bar" role="search" aria-label="Find in terminal">
     <input id="search-input" type="text" placeholder="Find..." aria-label="Search terminal">

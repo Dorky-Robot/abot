@@ -114,7 +114,8 @@ export function createWebSocketConnection(deps = {}) {
         break;
       case 'scrollToBottomIfNeeded':
         if (effect.condition) {
-          scrollToBottom(term);
+          const scrollTarget = facetManager?.getFocused()?.term || term;
+          scrollToBottom(scrollTarget);
         }
         break;
       case 'terminalWrite': {
@@ -140,7 +141,7 @@ export function createWebSocketConnection(deps = {}) {
         url.searchParams.set("s", effect.name);
         history.replaceState(null, "", url);
         // Call render bar via callback if provided
-        if (deps.renderBar) deps.renderBar(effect.name);
+        if (deps.renderBar) deps.renderBar();
         break;
       case 'refreshTokensAfterRegistration':
         // Refresh token list to show newly used token
@@ -221,7 +222,9 @@ export function createWebSocketConnection(deps = {}) {
       }
 
       // Normal disconnect - attempt reconnection with exponential backoff
-      const viewport = document.querySelector(".xterm-viewport");
+      const activeTerm = facetManager?.getFocused()?.term || term;
+      const viewport = activeTerm?.element?.querySelector(".xterm-viewport")
+        || document.querySelector(".xterm-viewport");
       state.scroll.userScrolledUpBeforeDisconnect = !isAtBottom(viewport);
       state.connection.attached = false;
       if (p2pManager) p2pManager.destroy();

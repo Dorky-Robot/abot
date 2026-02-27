@@ -4,40 +4,37 @@
  * Handles viewport resizing, scroll button UI, and terminal gesture handlers.
  */
 
-import { withPreservedScroll } from "/lib/scroll-utils.js";
-
 /**
  * Create viewport manager for responsive terminal layout
  */
 export function createViewportManager(options = {}) {
   const {
-    term,
-    fit,
-    termContainer,
+    getFocusedTerm,
+    facetLayer,
     bar,
-    onWebSocketResize,
     onDictationOpen
   } = options;
 
   // Scroll button elements
   const scrollBtn = document.getElementById("scroll-bottom");
-  const viewport = document.querySelector(".xterm-viewport");
 
   // Resize viewport to match visual viewport (handles mobile keyboard)
   function resizeToViewport() {
-    withPreservedScroll(term, () => {
-      const vv = window.visualViewport;
-      // In Chromium mobile emulation (isMobile: true), vv.height can be 0 during
-      // initial JS module execution before the visual viewport is fully initialised.
-      // Fall back to window.innerHeight so the terminal container gets a valid height.
-      const h = (vv && vv.height > 0) ? vv.height : window.innerHeight;
-      const top = vv ? vv.offsetTop : 0;
-      bar.style.top = top + "px";
-      termContainer.style.height = (h - 44) + "px";
-      const s = document.documentElement.style;
-      s.setProperty("--viewport-h", h + "px");
-      s.setProperty("--viewport-top", top + "px");
-    });
+    const vv = window.visualViewport;
+    // In Chromium mobile emulation (isMobile: true), vv.height can be 0 during
+    // initial JS module execution before the visual viewport is fully initialised.
+    // Fall back to window.innerHeight so the terminal container gets a valid height.
+    const h = (vv && vv.height > 0) ? vv.height : window.innerHeight;
+    const top = vv ? vv.offsetTop : 0;
+    const barHeight = bar ? bar.offsetHeight : 44;
+    bar.style.top = top + "px";
+    // Adjust facet layer to fit within visual viewport (critical for mobile keyboard)
+    facetLayer.style.top = (top + barHeight) + "px";
+    facetLayer.style.height = (h - barHeight) + "px";
+    facetLayer.style.bottom = "auto";
+    const s = document.documentElement.style;
+    s.setProperty("--viewport-h", h + "px");
+    s.setProperty("--viewport-top", top + "px");
   }
 
   // Initialize viewport resize handlers
@@ -53,35 +50,28 @@ export function createViewportManager(options = {}) {
     window.addEventListener("load", resizeToViewport);
   }
 
-  // Initialize terminal ResizeObserver for WebSocket resize events
-  function initTerminalResizeObserver() {
-    const ro = new ResizeObserver(() => {
-      withPreservedScroll(term, () => fit.fit());
-      if (onWebSocketResize) {
-        onWebSocketResize(term.cols, term.rows);
-      }
-    });
-    ro.observe(termContainer);
-    return ro;
-  }
-
   // Initialize scroll-to-bottom button
   function initScrollButton() {
-    if (!viewport || !scrollBtn) return;
+    if (!scrollBtn) return;
 
+    // Listen for scroll events on the facet layer (captures bubble from any viewport)
     let scrollRaf = 0;
-    viewport.addEventListener("scroll", () => {
+    facetLayer.addEventListener("scroll", () => {
       if (!scrollRaf) {
         scrollRaf = requestAnimationFrame(() => {
           scrollRaf = 0;
-          const atBottom = viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - 10;
+          const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
+          const vp = focusedTerm?.element?.querySelector(".xterm-viewport");
+          if (!vp) return;
+          const atBottom = vp.scrollTop >= vp.scrollHeight - vp.clientHeight - 10;
           scrollBtn.style.display = atBottom ? "none" : "flex";
         });
       }
-    }, { passive: true });
+    }, { passive: true, capture: true });
 
     scrollBtn.addEventListener("click", () => {
-      term.scrollToBottom(term);
+      const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
+      if (focusedTerm) focusedTerm.scrollToBottom();
       scrollBtn.style.display = "none";
     });
   }
@@ -94,8 +84,9 @@ export function createViewportManager(options = {}) {
     const MOVE_THRESHOLD = 10; // px
 
     // Focus terminal on tap
-    termContainer.addEventListener("touchstart", (e) => {
-      term.focus();
+    facetLayer.addEventListener("touchstart", (e) => {
+      const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
+      if (focusedTerm) focusedTerm.focus();
 
       // Start long-press timer
       touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -108,7 +99,7 @@ export function createViewportManager(options = {}) {
       }, LONG_PRESS_DURATION);
     }, { passive: true });
 
-    termContainer.addEventListener("touchmove", (e) => {
+    facetLayer.addEventListener("touchmove", (e) => {
       // Cancel long-press if finger moves too much
       if (touchStartPos && longPressTimer) {
         const dx = Math.abs(e.touches[0].clientX - touchStartPos.x);
@@ -120,7 +111,7 @@ export function createViewportManager(options = {}) {
       }
     }, { passive: true });
 
-    termContainer.addEventListener("touchend", () => {
+    facetLayer.addEventListener("touchend", () => {
       // Cancel long-press on touch end
       if (longPressTimer) {
         clearTimeout(longPressTimer);
@@ -129,7 +120,7 @@ export function createViewportManager(options = {}) {
       touchStartPos = null;
     }, { passive: true });
 
-    termContainer.addEventListener("touchcancel", () => {
+    facetLayer.addEventListener("touchcancel", () => {
       // Cancel long-press on touch cancel
       if (longPressTimer) {
         clearTimeout(longPressTimer);
@@ -140,7 +131,7 @@ export function createViewportManager(options = {}) {
 
     // Long-press: native contextmenu event (fired by OS on long-press)
     // Keep this as fallback for desktop/non-touch devices
-    termContainer.addEventListener("contextmenu", (e) => {
+    facetLayer.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       // Only trigger if not already handled by touch events
       if (!longPressTimer && onDictationOpen) {
@@ -152,17 +143,14 @@ export function createViewportManager(options = {}) {
   // Initialize all viewport features
   function init() {
     initViewportResize();
-    const resizeObserver = initTerminalResizeObserver();
     initScrollButton();
     initTerminalGestures();
-    return resizeObserver;
   }
 
   return {
     init,
     resizeToViewport,
     initViewportResize,
-    initTerminalResizeObserver,
     initScrollButton,
     initTerminalGestures
   };
