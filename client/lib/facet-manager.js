@@ -27,7 +27,7 @@ let facetIdCounter = 0;
 const NARROW_BREAKPOINT = 768;
 const DRAG_THRESHOLD = 8;
 
-function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+function gcd(a, b) { while (b !== 0) { [a, b] = [b, a % b]; } return a; }
 function lcm(a, b) { return (a * b) / gcd(a, b); }
 
 /**
@@ -166,35 +166,26 @@ export function createFacetManager(options = {}) {
 
   setupGlobalPointerHandlers();
 
-  // --- FLIP reorder ---
+  // --- FLIP animation helper ---
 
   /**
-   * Swap the columns containing draggedId and targetId with FLIP animation.
+   * Snapshot facet rects, run a mutation callback, apply layout, then
+   * FLIP-animate all facets that moved.
+   * @param {Set<string>|null} skipIds - facet IDs to exclude from snapshot
+   * @param {() => void} mutate - callback that modifies `columns`
    */
-  function reorderColumns(draggedId, targetId) {
-    const dragPos = findFacet(draggedId);
-    const targetPos = findFacet(targetId);
-    if (!dragPos || !targetPos) return;
-    const [dragCol] = dragPos;
-    const [targetCol] = targetPos;
-    if (dragCol === targetCol) return;
-
-    // FLIP: snapshot current rects (First)
+  function flipAnimate(skipIds, mutate) {
     const allIds = getAllTiledIds();
     const snapshots = new Map();
     for (const id of allIds) {
-      if (id === draggedId) continue;
+      if (skipIds && skipIds.has(id)) continue;
       const f = facets.get(id);
       if (f) snapshots.set(id, f.el.getBoundingClientRect());
     }
 
-    // Swap columns
-    [columns[dragCol], columns[targetCol]] = [columns[targetCol], columns[dragCol]];
-
-    // Apply new layout (Last)
+    mutate();
     applyTileLayout();
 
-    // FLIP: Invert + Play for non-dragged facets
     for (const [id, oldRect] of snapshots) {
       const f = facets.get(id);
       if (!f) continue;
@@ -229,6 +220,24 @@ export function createFacetManager(options = {}) {
     }
   }
 
+  // --- Column reorder / move ---
+
+  /**
+   * Swap the columns containing draggedId and targetId with FLIP animation.
+   */
+  function reorderColumns(draggedId, targetId) {
+    const dragPos = findFacet(draggedId);
+    const targetPos = findFacet(targetId);
+    if (!dragPos || !targetPos) return;
+    const [dragCol] = dragPos;
+    const [targetCol] = targetPos;
+    if (dragCol === targetCol) return;
+
+    flipAnimate(new Set([draggedId]), () => {
+      [columns[dragCol], columns[targetCol]] = [columns[targetCol], columns[dragCol]];
+    });
+  }
+
   /**
    * Move a facet from its current column into another column (appended at bottom).
    * If the source column becomes empty, it is removed. FLIP animated.
@@ -239,57 +248,15 @@ export function createFacetManager(options = {}) {
     const [srcCol, srcRow] = srcPos;
     if (srcCol === targetColIdx) return;
 
-    // FLIP: snapshot current rects (First)
-    const allIds = getAllTiledIds();
-    const snapshots = new Map();
-    for (const id of allIds) {
-      const f = facets.get(id);
-      if (f) snapshots.set(id, f.el.getBoundingClientRect());
-    }
-
-    // Move: remove from source, append to target
-    columns[srcCol].splice(srcRow, 1);
-    let adjustedTarget = targetColIdx;
-    if (columns[srcCol].length === 0) {
-      columns.splice(srcCol, 1);
-      if (targetColIdx > srcCol) adjustedTarget--;
-    }
-    columns[adjustedTarget].push(facetId);
-
-    // Apply new layout (Last)
-    applyTileLayout();
-
-    // FLIP: Invert + Play for all facets (including the moved one)
-    for (const [id, oldRect] of snapshots) {
-      const f = facets.get(id);
-      if (!f) continue;
-      const newRect = f.el.getBoundingClientRect();
-      const dx = oldRect.left - newRect.left;
-      const dy = oldRect.top - newRect.top;
-      if (dx === 0 && dy === 0) continue;
-
-      if (f.el._flipHandler) {
-        f.el.removeEventListener("transitionend", f.el._flipHandler);
-        f.el._flipHandler = null;
+    flipAnimate(null, () => {
+      columns[srcCol].splice(srcRow, 1);
+      let adjusted = targetColIdx;
+      if (columns[srcCol].length === 0) {
+        columns.splice(srcCol, 1);
+        if (targetColIdx > srcCol) adjusted--;
       }
-
-      f.el.style.transform = `translate(${dx}px, ${dy}px)`;
-      f.el.style.transition = "none";
-      void f.el.offsetHeight;
-      requestAnimationFrame(() => {
-        f.el.style.transition = "transform 200ms ease";
-        f.el.style.transform = "none";
-        function handler(e) {
-          if (e.propertyName !== "transform") return;
-          f.el.style.transition = "";
-          f.el.style.transform = "";
-          f.el.removeEventListener("transitionend", handler);
-          f.el._flipHandler = null;
-        }
-        f.el._flipHandler = handler;
-        f.el.addEventListener("transitionend", handler);
-      });
-    }
+      columns[adjusted].push(facetId);
+    });
   }
 
   // --- Terminal creation ---
@@ -363,7 +330,7 @@ export function createFacetManager(options = {}) {
       let i = 0;
       const areas = [];
       for (const col of cols) {
-        for (const _id of col) {
+        for (let j = 0; j < col.length; j++) {
           areas.push({ gridColumn: "1", gridRow: `${++i}` });
         }
       }
@@ -652,10 +619,6 @@ export function createFacetManager(options = {}) {
 
   // --- Windowing queries ---
 
-  function isTiled(id) {
-    return facets.has(id);
-  }
-
   function getTiledFacets() {
     return getAllTiledIds().map(id => facets.get(id)).filter(Boolean);
   }
@@ -719,7 +682,6 @@ export function createFacetManager(options = {}) {
     getAll,
     count,
     applyThemeToAll,
-    isTiled,
     getTiledFacets,
   };
 }
