@@ -10,7 +10,7 @@
 export function createViewportManager(options = {}) {
   const {
     getFocusedTerm,
-    termContainer,
+    facetLayer,
     bar,
     onDictationOpen
   } = options;
@@ -29,9 +29,9 @@ export function createViewportManager(options = {}) {
     const barHeight = bar ? bar.offsetHeight : 44;
     bar.style.top = top + "px";
     // Adjust facet layer to fit within visual viewport (critical for mobile keyboard)
-    termContainer.style.top = (top + barHeight) + "px";
-    termContainer.style.height = (h - barHeight) + "px";
-    termContainer.style.bottom = "auto";
+    facetLayer.style.top = (top + barHeight) + "px";
+    facetLayer.style.height = (h - barHeight) + "px";
+    facetLayer.style.bottom = "auto";
     const s = document.documentElement.style;
     s.setProperty("--viewport-h", h + "px");
     s.setProperty("--viewport-top", top + "px");
@@ -56,7 +56,7 @@ export function createViewportManager(options = {}) {
 
     // Listen for scroll events on the facet layer (captures bubble from any viewport)
     let scrollRaf = 0;
-    termContainer.addEventListener("scroll", () => {
+    facetLayer.addEventListener("scroll", () => {
       if (!scrollRaf) {
         scrollRaf = requestAnimationFrame(() => {
           scrollRaf = 0;
@@ -84,7 +84,7 @@ export function createViewportManager(options = {}) {
     const MOVE_THRESHOLD = 10; // px
 
     // Focus terminal on tap
-    termContainer.addEventListener("touchstart", (e) => {
+    facetLayer.addEventListener("touchstart", (e) => {
       const focusedTerm = getFocusedTerm ? getFocusedTerm() : null;
       if (focusedTerm) focusedTerm.focus();
 
@@ -99,7 +99,7 @@ export function createViewportManager(options = {}) {
       }, LONG_PRESS_DURATION);
     }, { passive: true });
 
-    termContainer.addEventListener("touchmove", (e) => {
+    facetLayer.addEventListener("touchmove", (e) => {
       // Cancel long-press if finger moves too much
       if (touchStartPos && longPressTimer) {
         const dx = Math.abs(e.touches[0].clientX - touchStartPos.x);
@@ -111,7 +111,7 @@ export function createViewportManager(options = {}) {
       }
     }, { passive: true });
 
-    termContainer.addEventListener("touchend", () => {
+    facetLayer.addEventListener("touchend", () => {
       // Cancel long-press on touch end
       if (longPressTimer) {
         clearTimeout(longPressTimer);
@@ -120,7 +120,7 @@ export function createViewportManager(options = {}) {
       touchStartPos = null;
     }, { passive: true });
 
-    termContainer.addEventListener("touchcancel", () => {
+    facetLayer.addEventListener("touchcancel", () => {
       // Cancel long-press on touch cancel
       if (longPressTimer) {
         clearTimeout(longPressTimer);
@@ -131,7 +131,7 @@ export function createViewportManager(options = {}) {
 
     // Long-press: native contextmenu event (fired by OS on long-press)
     // Keep this as fallback for desktop/non-touch devices
-    termContainer.addEventListener("contextmenu", (e) => {
+    facetLayer.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       // Only trigger if not already handled by touch events
       if (!longPressTimer && onDictationOpen) {

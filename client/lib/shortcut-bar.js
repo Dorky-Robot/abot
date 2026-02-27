@@ -59,6 +59,7 @@ export function createShortcutBar(options = {}) {
     }
 
     // Facet tabs
+    const instanceIcon = getInstanceIcon ? getInstanceIcon() : "terminal-window";
     for (const facet of facets) {
       const tab = document.createElement("button");
       tab.className = "facet-tab";
@@ -68,8 +69,6 @@ export function createShortcutBar(options = {}) {
       tab.tabIndex = -1;
       tab.setAttribute("aria-label", `Focus ${facet.sessionName}`);
 
-      const rawIcon = getInstanceIcon ? getInstanceIcon() : "terminal-window";
-      const instanceIcon = rawIcon.replace(/[^a-z0-9-]/g, "");
       const iconEl = document.createElement("i");
       iconEl.className = `ph ph-${instanceIcon}`;
       tab.appendChild(iconEl);

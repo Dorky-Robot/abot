@@ -49,8 +49,7 @@ export function createFacetManager(options = {}) {
   const tiledOrder = [];
   /** Set mirror of tiledOrder for O(1) membership checks */
   const tiledSet = new Set();
-  /** Set of facet IDs currently floating (maintained for future queries) */
-  const floatingSet = new Set();
+
 
   // --- Global drag/resize controller ---
   let activeDrag = null;   // { facetId, startX, startY, startLeft, startTop, committed }
@@ -539,9 +538,6 @@ export function createFacetManager(options = {}) {
     if (idx !== -1) tiledOrder.splice(idx, 1);
     tiledSet.delete(id);
 
-    // Add to floating set
-    floatingSet.add(id);
-
     // Swap CSS classes
     facet.el.classList.remove("facet-tiled", "facet-solo");
     facet.el.classList.add("facet-floating");
@@ -574,9 +570,6 @@ export function createFacetManager(options = {}) {
   function snapBack(id) {
     const facet = facets.get(id);
     if (!facet || isTiled(id)) return;
-
-    // Remove from floating set
-    floatingSet.delete(id);
 
     // Add to tiled order
     tiledOrder.push(id);
@@ -660,7 +653,6 @@ export function createFacetManager(options = {}) {
     const tiledIdx = tiledOrder.indexOf(id);
     if (tiledIdx !== -1) tiledOrder.splice(tiledIdx, 1);
     tiledSet.delete(id);
-    floatingSet.delete(id);
 
     if (onClose) onClose(id, facet.sessionName);
 

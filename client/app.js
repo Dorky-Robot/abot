@@ -490,7 +490,7 @@
 
     const viewportManager = createViewportManager({
       getFocusedTerm,
-      termContainer: facetLayer,
+      facetLayer,
       bar,
       onDictationOpen: () => openDictationModal()
     });
