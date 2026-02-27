@@ -69,7 +69,7 @@ export function createSettingsHandlers(options = {}) {
 
     if (config && config.instanceName) {
       input.value = config.instanceName;
-      document.title = `Katulong — ${config.instanceName}`;
+      document.title = `abot — ${config.instanceName}`;
     }
 
     if (config && config.instanceIcon && onInstanceIconChange) {
@@ -85,7 +85,7 @@ export function createSettingsHandlers(options = {}) {
       const instanceName = input.value.trim();
       if (!instanceName) {
         // Don't allow empty name
-        input.value = input.dataset.previousValue || "Katulong";
+        input.value = input.dataset.previousValue || "abot";
         return;
       }
 
@@ -94,7 +94,7 @@ export function createSettingsHandlers(options = {}) {
         input.dataset.previousValue = data.instanceName;
 
         // Update document title
-        document.title = `Katulong — ${data.instanceName}`;
+        document.title = `abot — ${data.instanceName}`;
 
         if (onInstanceNameChange) {
           onInstanceNameChange(data.instanceName);
@@ -102,7 +102,7 @@ export function createSettingsHandlers(options = {}) {
       } catch (error) {
         console.error("Failed to save instance name:", error);
         alert("Failed to save instance name");
-        input.value = input.dataset.previousValue || "Katulong";
+        input.value = input.dataset.previousValue || "abot";
       }
     });
 

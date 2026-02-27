@@ -1140,6 +1140,14 @@
     .facet-terminal {
       flex: 1;
       overflow: hidden;
+      position: relative;
+    }
+    .facet-terminal .xterm {
+      height: 100%;
+    }
+    .facet-terminal .xterm-viewport {
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
     }
 
     .facet-resize-handle {
@@ -1306,10 +1314,10 @@
           <div class="settings-tab-content active" id="settings-tab-theme">
             <div class="settings-row">
               <span class="settings-label">Instance Name</span>
-              <input type="text" id="instance-name-input" class="instance-name-input" placeholder="My Katulong" maxlength="100" />
+              <input type="text" id="instance-name-input" class="instance-name-input" placeholder="My abot" maxlength="100" />
             </div>
             <p class="tab-description" style="margin-top: 0.5rem; margin-bottom: 1.5rem;">
-              This name helps you identify this Katulong instance when you have multiple devices.
+              This name helps you identify this abot instance when you have multiple devices.
             </p>
 
             <div class="settings-row">

@@ -55,14 +55,14 @@ export function createWebSocketConnection(deps = {}) {
       effects: [{ type: 'reload' }]
     }),
 
-    exit: () => ({
+    exit: (msg) => ({
       stateUpdates: {},
-      effects: [{ type: 'terminalWrite', data: '\r\n[shell exited]\r\n' }]
+      effects: [{ type: 'terminalWrite', data: '\r\n[shell exited]\r\n', session: msg.session }]
     }),
 
-    'session-removed': () => ({
+    'session-removed': (msg) => ({
       stateUpdates: {},
-      effects: [{ type: 'terminalWrite', data: '\r\n[session deleted]\r\n' }]
+      effects: [{ type: 'terminalWrite', data: '\r\n[session deleted]\r\n', session: msg.session }]
     }),
 
     'p2p-signal': (msg, currentState) => ({
@@ -258,7 +258,8 @@ export function createWebSocketConnection(deps = {}) {
         } else if (state.connection.ws && state.connection.ws.readyState === WebSocket.OPEN) {
           // Quick test - send resize to verify connection is alive
           try {
-            state.connection.ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+            const activeTerm = facetManager?.getFocused()?.term || term;
+            state.connection.ws.send(JSON.stringify({ type: "resize", cols: activeTerm.cols, rows: activeTerm.rows }));
           } catch {
             state.connection.ws.close();
           }

@@ -44,9 +44,9 @@
         const err = await optsRes.json();
         throw new Error(err.error || "Failed to get registration options");
       }
-      const opts = await optsRes.json();
+      const optsData = await optsRes.json();
 
-      const credential = await startRegistration({ optionsJSON: opts });
+      const credential = await startRegistration({ optionsJSON: optsData.options });
 
       const deviceId = await getOrCreateDeviceId();
       const deviceName = generateDeviceName();
@@ -56,6 +56,8 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           credential,
+          userId: optsData.userId,
+          challengeId: optsData.challengeId,
           setupToken: token,
           deviceId,
           deviceName,
@@ -94,9 +96,9 @@
       try {
         const optsRes = await fetch("/auth/login/options", { method: "POST" });
         if (optsRes.ok) {
-          const opts = await optsRes.json();
+          const optsData = await optsRes.json();
 
-          if (!opts.allowCredentials || opts.allowCredentials.length === 0) {
+          if (!optsData.options?.allowCredentials || optsData.options.allowCredentials.length === 0) {
             const loginBtn = document.getElementById("login-btn");
             if (loginBtn) loginBtn.style.display = 'none';
 
@@ -185,19 +187,19 @@
           const err = await optsRes.json();
           throw new Error(err.error || "Failed to get login options");
         }
-        const opts = await optsRes.json();
+        const optsData = await optsRes.json();
 
-        if (!opts.allowCredentials || opts.allowCredentials.length === 0) {
+        if (!optsData.options?.allowCredentials || optsData.options.allowCredentials.length === 0) {
           loginError.innerHTML = 'No passkeys registered for this device. Please click <strong>"Register New Passkey"</strong> below to set one up.';
           return;
         }
 
-        const credential = await startAuthentication({ optionsJSON: opts });
+        const credential = await startAuthentication({ optionsJSON: optsData.options });
 
         const verifyRes = await fetch("/auth/login/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ credential }),
+          body: JSON.stringify({ credential, challengeId: optsData.challengeId }),
         });
         if (!verifyRes.ok) {
           const err = await verifyRes.json();

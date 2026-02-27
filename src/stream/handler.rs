@@ -322,20 +322,20 @@ async fn handle_client_message(
 
         ClientMessage::FlatDetach { session } => {
             if let Some(session_name) = session {
-                // Detach from specific session (facet close)
+                // Detach from specific session (facet close) — server-side only
                 app.stream_clients
                     .detach_session(client_id, &session_name)
                     .await;
             } else {
                 // Detach from all sessions
                 app.stream_clients.detach(client_id).await;
+                app.daemon_client
+                    .send(&json!({
+                        "type": "detach",
+                        "clientId": client_id,
+                    }))
+                    .await?;
             }
-            app.daemon_client
-                .send(&json!({
-                    "type": "detach",
-                    "clientId": client_id,
-                }))
-                .await?;
         }
 
         // --- Namespaced protocol handlers (abot native) ---
@@ -445,13 +445,10 @@ async fn handle_client_message(
         }
 
         ClientMessage::SessionDetach { id } => {
+            // Only detach from specific session in server-side tracking.
+            // Don't send full "detach" to daemon — that removes the entire client
+            // from client_attachments, breaking other session attachments.
             app.stream_clients.detach_session(client_id, &id).await;
-            app.daemon_client
-                .send(&json!({
-                    "type": "detach",
-                    "clientId": client_id,
-                }))
-                .await?;
         }
 
         ClientMessage::SessionDestroy { id } => {
