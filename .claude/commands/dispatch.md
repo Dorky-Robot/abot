@@ -4,8 +4,9 @@ Create a well-scoped PR for abot and dispatch it to an isolated Docker worker fo
 
 Launch the issue-analyst agent to cluster open issues and recommend the highest-impact PR:
 
+Use the Task tool with subagent_type `issue-analyst`:
 ```
-Use the issue-analyst agent to analyze open issues for this repository.
+Analyze all open issues for the abot project. Follow your full procedure: fetch issues, cluster by subsystem, evaluate from 3 perspectives, and recommend the highest-impact next PR.
 ```
 
 Review the recommendation. Adjust scope if needed — prefer smaller, cohesive PRs over large multi-concern ones.

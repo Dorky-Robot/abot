@@ -1,3 +1,6 @@
+pub mod backend;
+#[cfg(feature = "docker")]
+pub mod docker;
 pub mod ipc;
 pub mod pty;
 pub mod ring_buffer;
@@ -11,14 +14,57 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, Mutex};
 
+use self::backend::SessionBackend;
 use self::ipc::DaemonRequest;
 use self::session::Session;
+
+/// Which backend to use for new sessions
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+pub enum BackendKind {
+    Local,
+    Docker,
+}
 
 pub struct DaemonState {
     pub sessions: Mutex<HashMap<String, Session>>,
     pub _data_dir: PathBuf,
     /// Broadcast channel for session output events (sent to all connected servers)
     pub output_tx: broadcast::Sender<ipc::OutputEvent>,
+    /// Client-to-session attachment mapping (clientId → session name)
+    pub client_attachments: Mutex<HashMap<String, String>>,
+    /// Which backend to use for new sessions
+    pub backend_kind: BackendKind,
+}
+
+impl DaemonState {
+    /// Create a session backend based on the configured kind
+    pub async fn create_backend(
+        &self,
+        _name: &str,
+        cols: u16,
+        rows: u16,
+    ) -> anyhow::Result<Box<dyn SessionBackend>> {
+        match self.backend_kind {
+            BackendKind::Local => {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+                let pty = pty::PtyHandle::spawn(&shell, cols, rows, &home)?;
+                Ok(Box::new(pty))
+            }
+            BackendKind::Docker => {
+                #[cfg(feature = "docker")]
+                {
+                    let backend = docker::DockerBackend::spawn(cols, rows).await?;
+                    Ok(Box::new(backend))
+                }
+                #[cfg(not(feature = "docker"))]
+                {
+                    anyhow::bail!("Docker backend not available (compiled without docker feature)")
+                }
+            }
+        }
+    }
 }
 
 pub async fn run(data_dir: &Path) -> Result<()> {
@@ -55,10 +101,16 @@ pub async fn run(data_dir: &Path) -> Result<()> {
 
     let (output_tx, _) = broadcast::channel(4096);
 
+    // Detect available backend
+    let backend_kind = detect_backend().await;
+    tracing::info!("session backend: {:?}", backend_kind);
+
     let state = Arc::new(DaemonState {
         sessions: Mutex::new(HashMap::new()),
         _data_dir: data_dir.to_path_buf(),
         output_tx,
+        client_attachments: Mutex::new(HashMap::new()),
+        backend_kind,
     });
 
     loop {
@@ -71,6 +123,24 @@ pub async fn run(data_dir: &Path) -> Result<()> {
             }
         });
     }
+}
+
+/// Detect which backend to use at startup.
+/// Checks for Docker socket availability when the docker feature is enabled.
+async fn detect_backend() -> BackendKind {
+    #[cfg(feature = "docker")]
+    {
+        match docker::DockerBackend::is_available().await {
+            true => {
+                tracing::info!("Docker daemon detected, using container backend");
+                return BackendKind::Docker;
+            }
+            false => {
+                tracing::info!("Docker not available, falling back to local PTY");
+            }
+        }
+    }
+    BackendKind::Local
 }
 
 async fn handle_connection(

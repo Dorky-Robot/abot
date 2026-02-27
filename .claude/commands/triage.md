@@ -22,12 +22,12 @@ Count the total and note how many carry the `ready` label. This data provides co
 
 Send a **single message** with 2 Task tool calls so they run concurrently:
 
-1. **backlog-triager** (`backlog-triager` agent) — Pass it:
+1. **backlog-triager** (subagent_type: `backlog-triager`) — Pass it:
    ```
-   Triage all open issues for the abot project. Follow your full procedure: read CLAUDE.md for vision context, fetch open issues, evaluate each one against abot's vision (spatial terminal interface, single-binary, canvas UI, session-centric, passkey auth), and produce a structured triage report with CLOSE/ADJUST/KEEP/MERGE recommendations.
+   Triage all open issues for the abot project. Follow your full procedure: read CLAUDE.md for vision context, fetch open issues, evaluate each one against abot's vision (spatial terminal interface, single-binary, canvas UI, session-centric, passkey auth, daemon/server split), and produce a structured triage report with CLOSE/ADJUST/KEEP/MERGE recommendations.
    ```
 
-2. **issue-analyst** (`issue-analyst` agent) — Pass it:
+2. **issue-analyst** (subagent_type: `issue-analyst`) — Pass it:
    ```
    Analyze all open issues for the abot project. Follow your full procedure: fetch issues, cluster by abot subsystem (daemon, server, auth, stream, client), evaluate from 3 perspectives, and recommend the highest-impact next PR. Focus on issues labeled `ready`.
    ```

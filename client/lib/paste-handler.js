@@ -4,7 +4,7 @@
  * Composable clipboard paste handler for text and images.
  */
 
-import { isImageFile } from "/assets/lib/image-upload.js";
+import { isImageFile } from "/lib/image-upload.js";
 
 /**
  * Create paste handler

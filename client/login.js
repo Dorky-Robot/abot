@@ -1,115 +1,222 @@
-import { api } from './lib/api-client.js';
-import { getOrCreateDeviceId, generateDeviceName } from './lib/device.js';
-import { checkWebAuthnSupport, getWebAuthnErrorMessage } from './lib/webauthn-errors.js';
+    import {
+      startRegistration,
+      startAuthentication,
+    } from "/vendor/simplewebauthn/browser.esm.js";
+    import { getOrCreateDeviceId, generateDeviceName } from "/lib/device.js";
+    import { checkWebAuthnSupport, getWebAuthnErrorMessage } from "/lib/webauthn-errors.js";
 
-const $ = (id) => document.getElementById(id);
+    const setupView = document.getElementById("setup-view");
+    const loginView = document.getElementById("login-view");
+    const pairView = document.getElementById("pair-view");
+    const loadingView = document.getElementById("loading-view");
+    const setupError = document.getElementById("setup-error");
+    const loginError = document.getElementById("login-error");
 
-function showState(id) {
-  for (const el of document.querySelectorAll('.card > div')) {
-    el.classList.add('hidden');
-  }
-  $(id).classList.remove('hidden');
-}
+    const hasWebAuthn = window.isSecureContext && !!window.PublicKeyCredential;
 
-function showError(msg) {
-  const el = $('login-error');
-  el.textContent = msg;
-  el.classList.remove('hidden');
-}
-
-async function init() {
-  try {
-    const status = await api.get('/auth/status');
-
-    // Already authenticated — go straight to terminal
-    if (status.authenticated) {
-      window.location.replace('/');
-      return;
+    // Check if user was redirected after session revocation
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('reason') === 'revoked') {
+      if (loginError) {
+        loginError.innerHTML = '<i class="ph ph-info"></i> Your access was revoked. Please register a new passkey to continue.';
+        loginError.style.color = '#6b9bd1';
+        loginError.style.textAlign = 'center';
+        loginError.style.marginBottom = '1rem';
+      }
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
 
-    // No passkeys set up yet
-    if (!status.setup) {
-      showState('state-setup');
-      return;
+    // --- Shared registration flow ---
+
+    async function performRegistration(token, errorEl) {
+      const supportCheck = checkWebAuthnSupport();
+      if (!supportCheck.supported) {
+        errorEl.textContent = supportCheck.error;
+        return false;
+      }
+
+      const optsRes = await fetch("/auth/register/options", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setupToken: token }),
+      });
+      if (!optsRes.ok) {
+        const err = await optsRes.json();
+        throw new Error(err.error || "Failed to get registration options");
+      }
+      const optsData = await optsRes.json();
+
+      const credential = await startRegistration({ optionsJSON: optsData.options });
+
+      const deviceId = await getOrCreateDeviceId();
+      const deviceName = generateDeviceName();
+
+      const verifyRes = await fetch("/auth/register/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          credential,
+          userId: optsData.userId,
+          challengeId: optsData.challengeId,
+          setupToken: token,
+          deviceId,
+          deviceName,
+          userAgent: navigator.userAgent
+        }),
+      });
+      if (!verifyRes.ok) {
+        const err = await verifyRes.json();
+        throw new Error(err.error || "Registration failed");
+      }
+
+      localStorage.setItem('abot_current_credential', credential.id);
+      window.location.href = "/";
+      return true;
     }
 
-    // Passkeys exist — check if we can use WebAuthn here
-    const support = checkWebAuthnSupport();
-    if (!support.supported) {
-      showState('state-insecure');
-      return;
+    // --- Status check ---
+
+    async function checkStatus() {
+      const res = await fetch("/auth/status");
+      const { setup } = await res.json();
+      loadingView.classList.add("hidden");
+      if (setup) {
+        if (hasWebAuthn) {
+          loginView.classList.remove("hidden");
+          await checkForExistingPasskeys();
+        } else {
+          pairView.classList.remove("hidden");
+        }
+      } else {
+        setupView.classList.remove("hidden");
+      }
     }
 
-    // Ready to login
-    showState('state-login');
-  } catch {
-    showState('state-error');
-  }
-}
+    async function checkForExistingPasskeys() {
+      try {
+        const optsRes = await fetch("/auth/login/options", { method: "POST" });
+        if (optsRes.ok) {
+          const optsData = await optsRes.json();
 
-async function login() {
-  const btn = $('btn-login');
-  btn.disabled = true;
-  btn.textContent = 'Authenticating...';
-  $('login-error').classList.add('hidden');
+          if (!optsData.options?.allowCredentials || optsData.options.allowCredentials.length === 0) {
+            const loginBtn = document.getElementById("login-btn");
+            if (loginBtn) loginBtn.style.display = 'none';
 
-  try {
-    // 1. Get challenge from server
-    const { options, challengeId } = await api.post('/auth/login/options');
+            const showRegisterBtn = document.getElementById("show-register-btn");
+            const registerFields = document.getElementById("register-fields");
+            if (showRegisterBtn && registerFields) {
+              showRegisterBtn.style.display = 'none';
+              registerFields.classList.remove('hidden');
+            }
 
-    // 2. Ask browser for passkey assertion
-    const credential = await navigator.credentials.get({ publicKey: options.publicKey });
-
-    if (!credential) {
-      showError('Authentication was cancelled. Please try again.');
-      btn.disabled = false;
-      btn.textContent = 'Sign in with Passkey';
-      return;
+            loginError.innerHTML = '<i class="ph ph-info"></i> No passkey registered yet. Please register your fingerprint/Touch ID below.';
+            loginError.style.color = '#6b9bd1';
+            loginError.style.textAlign = 'center';
+            loginError.style.marginBottom = '1rem';
+          }
+        }
+      } catch {
+        // Silently fail - user can still try to login
+      }
     }
 
-    // 3. Send assertion to server
-    const deviceId = await getOrCreateDeviceId();
-    const deviceName = generateDeviceName();
+    // --- First-time registration ---
 
-    const result = await api.post('/auth/login/verify', {
-      credential: {
-        id: credential.id,
-        rawId: arrayBufferToBase64url(credential.rawId),
-        type: credential.type,
-        response: {
-          authenticatorData: arrayBufferToBase64url(credential.response.authenticatorData),
-          clientDataJSON: arrayBufferToBase64url(credential.response.clientDataJSON),
-          signature: arrayBufferToBase64url(credential.response.signature),
-          userHandle: credential.response.userHandle
-            ? arrayBufferToBase64url(credential.response.userHandle)
-            : null,
-        },
-      },
-      challengeId,
-      deviceId,
-      deviceName,
+    document.getElementById("register-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("register-btn");
+      const token = document.getElementById("setup-token").value.trim();
+      setupError.textContent = "";
+
+      const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === '::1';
+      if (!token && !isLocalhost) {
+        setupError.textContent = "Setup token is required for remote registration.";
+        return;
+      }
+
+      btn.disabled = true;
+      try {
+        await performRegistration(token, setupError);
+      } catch (err) {
+        setupError.textContent = getWebAuthnErrorMessage(err);
+      } finally {
+        btn.disabled = false;
+      }
     });
 
-    if (result.success) {
-      window.location.replace('/');
-    } else {
-      showError('Authentication failed. Please try again.');
-      btn.disabled = false;
-      btn.textContent = 'Sign in with Passkey';
-    }
-  } catch (err) {
-    showError(getWebAuthnErrorMessage(err));
-    btn.disabled = false;
-    btn.textContent = 'Sign in with Passkey';
-  }
-}
+    // --- Register new passkey (on already-setup instance) ---
 
-function arrayBufferToBase64url(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+    document.getElementById("show-register-btn").addEventListener("click", () => {
+      document.getElementById("register-fields").classList.toggle("hidden");
+    });
 
-$('btn-login').addEventListener('click', login);
-init();
+    document.getElementById("register-new-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("register-new-btn");
+      const token = document.getElementById("register-token").value.trim();
+      loginError.textContent = "";
+
+      if (!token) { loginError.textContent = "Setup token is required."; return; }
+
+      btn.disabled = true;
+      try {
+        await performRegistration(token, loginError);
+      } catch (err) {
+        loginError.textContent = getWebAuthnErrorMessage(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    // --- Login ---
+
+    document.getElementById("login-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("login-btn");
+      loginError.textContent = "";
+      loginError.style.color = '';
+
+      const supportCheck = checkWebAuthnSupport();
+      if (!supportCheck.supported) {
+        loginError.textContent = supportCheck.error;
+        return;
+      }
+
+      btn.disabled = true;
+
+      try {
+        const optsRes = await fetch("/auth/login/options", { method: "POST" });
+        if (!optsRes.ok) {
+          const err = await optsRes.json();
+          throw new Error(err.error || "Failed to get login options");
+        }
+        const optsData = await optsRes.json();
+
+        if (!optsData.options?.allowCredentials || optsData.options.allowCredentials.length === 0) {
+          loginError.innerHTML = 'No passkeys registered for this device. Please click <strong>"Register New Passkey"</strong> below to set one up.';
+          return;
+        }
+
+        const credential = await startAuthentication({ optionsJSON: optsData.options });
+
+        const verifyRes = await fetch("/auth/login/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ credential, challengeId: optsData.challengeId }),
+        });
+        if (!verifyRes.ok) {
+          const err = await verifyRes.json();
+          throw new Error(err.error || "Login failed");
+        }
+
+        localStorage.setItem('abot_current_credential', credential.id);
+        window.location.href = "/";
+      } catch (err) {
+        if (err.name === "NotAllowedError" && err.message?.includes("No available authenticator")) {
+          loginError.innerHTML = 'No passkeys found for this device. Please click <strong>"Register New Passkey"</strong> below to set one up.';
+        } else {
+          loginError.textContent = getWebAuthnErrorMessage(err);
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    checkStatus();

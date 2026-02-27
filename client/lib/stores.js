@@ -5,8 +5,8 @@
  * All three follow the same pattern: Redux-style reducer + API sync.
  */
 
-import { createStore, createReducer } from '/assets/lib/store.js';
-import { api } from '/assets/lib/api-client.js';
+import { createStore, createReducer } from '/lib/store.js';
+import { api } from '/lib/api-client.js';
 
 // ============================================================
 // Session Store
@@ -63,7 +63,7 @@ export function createSessionStore(currentSession) {
     sessionReducer,
     { debug: false }
   );
-  // Skip auto-load — abot manages sessions via WebSocket, not REST
+  loadSessions(store, currentSession);
   return store;
 }
 
@@ -128,7 +128,7 @@ const shortcutsReducer = createReducer([], {
 
 export function createShortcutsStore() {
   const store = createStore([], shortcutsReducer, { debug: false });
-  // Skip auto-load — abot doesn't have a /shortcuts endpoint yet
+  loadShortcuts(store);
   return store;
 }
 
@@ -219,7 +219,7 @@ const tokenReducer = createReducer(tokenInitialState, {
 
 export function createTokenStore() {
   const store = createStore(tokenInitialState, tokenReducer, { debug: false });
-  // Skip auto-load — abot doesn't have /api/tokens or /api/credentials endpoints yet
+  loadTokens(store);
   return store;
 }
 

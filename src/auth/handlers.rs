@@ -62,6 +62,9 @@ pub async fn register_options(
         let cred_count = state::credential_count(&db)?;
 
         // First registration: localhost only. Subsequent: need setup token or localhost.
+        if cred_count == 0 && !is_local {
+            return Err(AppError::Unauthorized);
+        }
         if cred_count > 0 && !is_local {
             let setup_token = body.get("setupToken").and_then(|v| v.as_str());
             if setup_token.is_none() {
@@ -211,7 +214,6 @@ pub async fn register_verify(
         [(axum::http::header::SET_COOKIE, cookie)],
         Json(json!({
             "success": true,
-            "sessionToken": session_token,
             "csrfToken": csrf_token,
         })),
     ))
@@ -277,18 +279,31 @@ pub async fn login_verify(
     let auth_state: PasskeyAuthentication = serde_json::from_value(state_json)
         .map_err(|e| AppError::Internal(format!("deserialize state: {}", e)))?;
 
-    let auth_result = app
+    // Check global lockout before attempting authentication
+    let (locked, retry_after) = app.auth.lockout.is_locked("_global").await;
+    if locked {
+        let secs = retry_after.unwrap_or(60);
+        return Err(AppError::BadRequest(format!("too many failed attempts, try again in {} seconds", secs)));
+    }
+
+    let auth_result = match app
         .auth
         .webauthn
         .finish_passkey_authentication(&credential, &auth_state)
-        .map_err(|e| AppError::BadRequest(format!("authentication failed: {}", e)))?;
+    {
+        Ok(result) => result,
+        Err(e) => {
+            app.auth.lockout.record_failure("_global").await;
+            return Err(AppError::BadRequest(format!("authentication failed: {}", e)));
+        }
+    };
 
     let cred_id = base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         auth_result.cred_id().as_ref(),
     );
 
-    app.auth.lockout.record_success(&cred_id).await;
+    app.auth.lockout.record_success("_global").await;
 
     let session_token = tokens::generate_token();
     let csrf_token = tokens::generate_token();
@@ -308,7 +323,6 @@ pub async fn login_verify(
         [(axum::http::header::SET_COOKIE, cookie)],
         Json(json!({
             "success": true,
-            "sessionToken": session_token,
             "csrfToken": csrf_token,
         })),
     ))
@@ -370,6 +384,30 @@ pub async fn create_token(
         "token": token_value,
         "expiresAt": expires_at,
     })))
+}
+
+/// GET /api/credentials — list all credentials
+pub async fn list_credentials(
+    State(app): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, AppError> {
+    middleware::require_auth(&app, &addr, &headers)?;
+    let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let cred_rows = state::get_credentials(&db)?;
+    let credentials: Vec<serde_json::Value> = cred_rows
+        .iter()
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "name": c.name,
+                "createdAt": c.created_at,
+                "lastUsedAt": c.last_used_at,
+                "userAgent": c.user_agent,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "credentials": credentials })))
 }
 
 /// DELETE /auth/tokens/:id

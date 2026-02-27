@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 /// Front-evicting circular buffer for terminal output.
-/// Matches katulong's RingBuffer: max items and max bytes.
+/// Ring buffer with max items and max bytes.
 pub struct RingBuffer {
     items: VecDeque<String>,
     max_items: usize,

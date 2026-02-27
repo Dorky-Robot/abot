@@ -21,27 +21,24 @@ List all files changed in the diff. Read the full content of each changed file (
 
 ### Step 3: Launch parallel review agents
 
-Launch ALL of the following review agents in parallel using the Task tool. Each agent should receive:
-1. The full diff
-2. The list of changed files
-3. The full content of each changed file
+Launch ALL of the following review agents in parallel using the Task tool. Each agent receives the full diff and the full content of each changed file.
 
 **Agents to launch:**
 
-1. **Architecture Review** (subagent_type: "general-purpose")
-   - Prompt: Review these changes as an architecture reviewer for the abot project. Check daemon/server boundaries, module responsibilities, IPC protocol adherence, API contracts, and ripple effects. Use the architecture-reviewer agent guidelines from `.claude/agents/architecture-reviewer.md`. Here is the diff: [include diff]. Here are the full file contents: [include file contents]. Respond with LGTM if no issues, otherwise list issues as `[severity: high|medium|low] file:line — description`.
+1. **Security Review** (subagent_type: `security-reviewer`)
+   - Prompt: Review PR #<N> for abot. Here is the diff: [include diff]. Here are the full file contents: [include file contents].
 
-2. **Security Review** (subagent_type: "general-purpose")
-   - Prompt: Review these changes as a security reviewer for abot using STRIDE and OWASP. This application provides direct terminal access to the host — any auth bypass is a full shell access vulnerability. Check for auth bypass, injection, session hijacking, path traversal, XSS, header trust, WebSocket origin validation, and credential exposure. Use the security-reviewer agent guidelines from `.claude/agents/security-reviewer.md`. Here is the diff: [include diff]. Here are the full file contents: [include file contents]. Respond with LGTM if no issues, otherwise list issues as `[severity: high|medium|low] file:line — description`.
+2. **Architecture Review** (subagent_type: `architecture-reviewer`)
+   - Prompt: Review PR #<N> for abot. Here is the diff: [include diff]. Here are the full file contents: [include file contents].
 
-3. **Correctness Review** (subagent_type: "general-purpose")
-   - Prompt: Review these changes for correctness in a Rust/async/tokio context. Check for logic errors, async bugs, race conditions, resource leaks, error handling gaps, edge cases, and broken callers. Use the correctness-reviewer agent guidelines from `.claude/agents/correctness-reviewer.md`. Here is the diff: [include diff]. Here are the full file contents: [include file contents]. Respond with LGTM if no issues, otherwise list issues as `[severity: high|medium|low] file:line — description`.
+3. **Correctness Review** (subagent_type: `correctness-reviewer`)
+   - Prompt: Review PR #<N> for abot. Here is the diff: [include diff]. Here are the full file contents: [include file contents].
 
-4. **Code Quality Review** (subagent_type: "general-purpose")
-   - Prompt: Review these changes for code quality. Check naming, complexity, duplication, dead code, error messages, consistency with adjacent Rust code, and API design. Use the code-quality-reviewer agent guidelines from `.claude/agents/code-quality-reviewer.md`. Here is the diff: [include diff]. Here are the full file contents: [include file contents]. Respond with LGTM if no issues, otherwise list issues as `[severity: high|medium|low] file:line — description`.
+4. **Code Quality Review** (subagent_type: `code-quality-reviewer`)
+   - Prompt: Review PR #<N> for abot. Here is the diff: [include diff]. Here are the full file contents: [include file contents].
 
-5. **Vision Alignment Review** (subagent_type: "general-purpose")
-   - Prompt: Review these changes for alignment with abot's vision: spatial intelligence interface, single-binary distribution, canvas-rendered UI, session-centric design, touch-first. Check for feature creep, unnecessary dependencies, UX regressions, scope deviation, and complexity growth. Use the vision-reviewer agent guidelines from `.claude/agents/vision-reviewer.md`. Here is the diff: [include diff]. Here are the full file contents: [include file contents]. Respond with LGTM if no issues, otherwise list issues as `[severity: high|medium|low] — description`.
+5. **Vision Alignment Review** (subagent_type: `vision-reviewer`)
+   - Prompt: Review PR #<N> for abot. Here is the diff: [include diff]. Here are the full file contents: [include file contents].
 
 ### Step 4: Compile and post the review
 

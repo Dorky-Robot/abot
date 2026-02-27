@@ -4,9 +4,9 @@
  * Auto-updates when session store changes.
  */
 
-import { createComponent } from '/assets/lib/component.js';
-import { invalidateSessions } from '/assets/lib/stores.js';
-import { api } from '/assets/lib/api-client.js';
+import { createComponent } from '/lib/component.js';
+import { invalidateSessions } from '/lib/stores.js';
+import { api } from '/lib/api-client.js';
 
 /**
  * Create session list component

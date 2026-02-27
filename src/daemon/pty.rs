@@ -3,12 +3,15 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::Read;
 use tokio::sync::mpsc;
 
+use super::backend::SessionBackend;
+
 /// Spawn a PTY process and return handles for I/O.
 pub struct PtyHandle {
     pub writer: Box<dyn std::io::Write + Send>,
     pub child: Box<dyn portable_pty::Child + Send + Sync>,
-    pub reader_rx: mpsc::Receiver<String>,
+    reader_rx: Option<mpsc::Receiver<String>>,
     reader_handle: Option<std::thread::JoinHandle<()>>,
+    master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
 impl PtyHandle {
@@ -52,6 +55,7 @@ impl PtyHandle {
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
+        let master = pair.master;
 
         // Read PTY output in a blocking thread, send via channel
         let (tx, rx) = mpsc::channel::<String>(256);
@@ -74,8 +78,9 @@ impl PtyHandle {
         Ok(Self {
             writer,
             child,
-            reader_rx: rx,
+            reader_rx: Some(rx),
             reader_handle: Some(reader_handle),
+            master,
         })
     }
 
@@ -87,9 +92,12 @@ impl PtyHandle {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        // portable-pty doesn't have a resize on the handle directly,
-        // we'd need to keep the master pair. For now this is a placeholder.
-        let _ = (cols, rows);
+        self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
         Ok(())
     }
 
@@ -120,6 +128,28 @@ fn is_filtered_env(key: &str) -> bool {
             | "SETUP_TOKEN"
             | "ABOT_NO_AUTH"
     ) || key.starts_with("CLAUDE_CODE_")
+}
+
+impl SessionBackend for PtyHandle {
+    fn write(&mut self, data: &[u8]) -> Result<()> {
+        PtyHandle::write(self, data)
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        PtyHandle::resize(self, cols, rows)
+    }
+
+    fn take_reader(&mut self) -> Option<mpsc::Receiver<String>> {
+        self.reader_rx.take()
+    }
+
+    fn kill(&mut self) {
+        PtyHandle::kill(self);
+    }
+
+    fn is_alive(&mut self) -> bool {
+        PtyHandle::is_alive(self)
+    }
 }
 
 impl Drop for PtyHandle {

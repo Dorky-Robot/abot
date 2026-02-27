@@ -1,122 +1,99 @@
 /**
- * WebSocket Connection Manager — adapted for abot protocol.
+ * WebSocket Connection Manager
  *
- * abot uses session.* prefixed messages and requires explicit
- * session.list → session.create → session.attach flow.
+ * Handles WebSocket connection lifecycle, message routing, and effects.
+ * Uses functional core / imperative shell pattern with dependency injection.
  *
- * Based on katulong's websocket-connection.js.
+ * Supports multi-session via facet manager: output routes to the correct
+ * facet's terminal by session name.
  */
 
-import { scrollToBottom, terminalWriteWithScroll } from "/assets/lib/scroll-utils.js";
+import { scrollToBottom, terminalWriteWithScroll } from "/lib/scroll-utils.js";
 
 /**
  * Create WebSocket connection manager with injected dependencies
  */
 export function createWebSocketConnection(deps = {}) {
   const {
-    term,
+    term,           // Legacy single terminal (used when no facetManager)
     state,
     p2pManager,
     updateP2PIndicator,
     loadTokens,
-    isAtBottom
+    isAtBottom,
+    facetManager,   // Optional: if provided, routes output to facets
   } = deps;
 
   let isConnecting = false;
   let reconnectTimeout = null;
 
-  // --- Helper: send JSON over WS ---
-  function wsSend(obj) {
-    if (state.connection.ws && state.connection.ws.readyState === WebSocket.OPEN) {
-      state.connection.ws.send(JSON.stringify(obj));
-    }
-  }
-
   // --- Pure WebSocket message handlers (functional core) ---
-  // abot uses "session.*" message types
   const wsMessageHandlers = {
-    'session.attached': (msg, currentState) => ({
+    attached: (msg, currentState) => ({
       stateUpdates: {
         'connection.attached': true,
-        'session.name': msg.id,
         'scroll.userScrolledUpBeforeDisconnect': false
       },
       effects: [
-        ...(msg.buffer ? [{ type: 'terminalWrite', data: msg.buffer, preserveScroll: false }] : []),
-        { type: 'sendResize', id: msg.id },
         { type: 'updateP2PIndicator' },
         { type: 'initP2P' },
-        { type: 'scrollToBottomIfNeeded', condition: !currentState.scroll.userScrolledUpBeforeDisconnect }
+        { type: 'scrollToBottomIfNeeded', condition: !currentState.scroll.userScrolledUpBeforeDisconnect },
+        // Write buffer to the correct facet terminal
+        ...(msg.buffer ? [{ type: 'terminalWrite', data: msg.buffer, session: msg.session, preserveScroll: true }] : [])
       ]
     }),
 
-    'session.output': (msg) => ({
+    output: (msg) => ({
       stateUpdates: {},
       effects: [
-        { type: 'terminalWrite', data: msg.data, preserveScroll: true }
+        { type: 'terminalWrite', data: msg.data, session: msg.session, preserveScroll: true }
       ]
     }),
 
-    'session.exit': (msg) => ({
+    reload: () => ({
       stateUpdates: {},
-      effects: [{ type: 'terminalWrite', data: `\r\n[process exited with code ${msg.code}]\r\n` }]
+      effects: [{ type: 'reload' }]
     }),
 
-    'session.removed': () => ({
+    exit: (msg) => ({
       stateUpdates: {},
-      effects: [{ type: 'terminalWrite', data: '\r\n[session deleted]\r\n' }]
+      effects: [{ type: 'terminalWrite', data: '\r\n[shell exited]\r\n', session: msg.session }]
     }),
 
-    'session.list': (msg) => ({
+    'session-removed': (msg) => ({
       stateUpdates: {},
-      effects: [{ type: 'handleSessionList', sessions: msg.sessions }]
+      effects: [{ type: 'terminalWrite', data: '\r\n[session deleted]\r\n', session: msg.session }]
     }),
 
-    'session.created': (msg) => ({
-      stateUpdates: { 'session.name': msg.id },
-      effects: [{ type: 'attachSession', id: msg.id }]
-    }),
-
-    'p2p.signal': (msg, currentState) => ({
+    'p2p-signal': (msg, currentState) => ({
       stateUpdates: {},
       effects: currentState.p2p?.peer
         ? [{ type: 'p2pSignal', data: msg.data }]
         : []
     }),
 
-    'p2p.ready': () => ({
-      stateUpdates: { 'p2p.connected': true },
+    'p2p-ready': () => ({
+      stateUpdates: {},
       effects: [
-        { type: 'log', message: '[P2P] DataChannel ready' },
+        { type: 'log', message: '[P2P] Server confirmed DataChannel ready' },
         { type: 'updateP2PIndicator' }
       ]
     }),
 
-    'p2p.closed': () => ({
+    'p2p-closed': () => ({
       stateUpdates: { 'p2p.connected': false },
       effects: [
-        { type: 'log', message: '[P2P] DataChannel closed' },
-        { type: 'destroyP2P' },
+        { type: 'log', message: '[P2P] Server reports DataChannel closed' },
         { type: 'updateP2PIndicator' }
       ]
     }),
 
-    'p2p.unavailable': () => ({
-      stateUpdates: {},
-      effects: [{ type: 'log', message: '[P2P] Server WebRTC unavailable' }]
-    }),
-
-    'server.draining': () => ({
+    'server-draining': () => ({
       stateUpdates: {},
       effects: [
         { type: 'log', message: '[WS] Server is draining, reconnecting immediately' },
         { type: 'fastReconnect' }
       ]
-    }),
-
-    'error': (msg) => ({
-      stateUpdates: {},
-      effects: [{ type: 'log', message: `[server error] ${msg.message}` }]
     })
   };
 
@@ -132,9 +109,6 @@ export function createWebSocketConnection(deps = {}) {
       case 'p2pSignal':
         if (p2pManager) p2pManager.signal(effect.data);
         break;
-      case 'destroyP2P':
-        if (p2pManager) p2pManager.destroy();
-        break;
       case 'log':
         console.log(effect.message);
         break;
@@ -143,57 +117,42 @@ export function createWebSocketConnection(deps = {}) {
           scrollToBottom(term);
         }
         break;
-      case 'terminalWrite':
+      case 'terminalWrite': {
+        // Route to facet terminal if available, otherwise use legacy single terminal
+        let targetTerm = term;
+        if (facetManager && effect.session) {
+          const facet = facetManager.getBySession(effect.session);
+          if (facet) targetTerm = facet.term;
+        }
         if (effect.preserveScroll) {
-          terminalWriteWithScroll(term, effect.data);
+          terminalWriteWithScroll(targetTerm, effect.data);
         } else {
-          term.write(effect.data);
+          targetTerm.write(effect.data);
         }
         break;
+      }
       case 'reload':
         location.reload();
         break;
       case 'updateSessionUI':
         document.title = effect.name;
+        const url = new URL(window.location);
+        url.searchParams.set("s", effect.name);
+        history.replaceState(null, "", url);
+        // Call render bar via callback if provided
         if (deps.renderBar) deps.renderBar(effect.name);
         break;
       case 'refreshTokensAfterRegistration':
-        if (loadTokens) loadTokens();
-        break;
-      case 'handleSessionList': {
-        const sessions = effect.sessions || [];
-        if (sessions.length === 0) {
-          // No sessions — create one
-          wsSend({ type: 'session.create', kind: 'terminal', config: { name: 'main' } });
-        } else {
-          // Attach to first session
-          const s = sessions[0];
-          const id = s.name || s.id;
-          state.update('session.name', id);
-          wsSend({
-            type: 'session.attach',
-            id,
-            viewport: { cols: term.cols, rows: term.rows }
-          });
-        }
-        break;
-      }
-      case 'attachSession':
-        wsSend({
-          type: 'session.attach',
-          id: effect.id,
-          viewport: { cols: term.cols, rows: term.rows }
-        });
-        break;
-      case 'sendResize':
-        wsSend({
-          type: 'session.resize',
-          id: effect.id,
-          cols: term.cols,
-          rows: term.rows
-        });
+        // Refresh token list to show newly used token
+        loadTokens();
+        // Hide token creation form and show "Generate New Token" button
+        const tokenCreateForm = document.getElementById("token-create-form");
+        const createTokenBtn = document.getElementById("settings-create-token");
+        if (tokenCreateForm) tokenCreateForm.style.display = "none";
+        if (createTokenBtn) createTokenBtn.style.display = "block";
         break;
       case 'fastReconnect':
+        // Reset reconnect delay for fast reconnection to new server
         state.connection.reconnectDelay = 500;
         if (state.connection.ws && state.connection.ws.readyState === WebSocket.OPEN) {
           state.connection.ws.close();
@@ -204,8 +163,12 @@ export function createWebSocketConnection(deps = {}) {
 
   // WebSocket connection function
   function connect() {
-    if (isConnecting) return;
+    // Prevent multiple simultaneous connection attempts
+    if (isConnecting) {
+      return;
+    }
 
+    // Clear any pending reconnection timeout
     if (reconnectTimeout) {
       clearTimeout(reconnectTimeout);
       reconnectTimeout = null;
@@ -213,14 +176,22 @@ export function createWebSocketConnection(deps = {}) {
 
     isConnecting = true;
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    // abot WebSocket endpoint is /stream
     state.connection.ws = new WebSocket(`${proto}//${location.host}/stream`);
 
     state.connection.ws.onopen = () => {
       isConnecting = false;
       state.connection.reconnectDelay = 1000;
-      // abot flow: request session list, then attach or create in the handler
-      wsSend({ type: 'session.list' });
+      // Re-attach all facets (multi-session support)
+      if (facetManager) {
+        for (const f of facetManager.getAll()) {
+          state.connection.ws.send(JSON.stringify({
+            type: "attach", session: f.sessionName,
+            cols: f.term.cols, rows: f.term.rows
+          }));
+        }
+      } else {
+        state.connection.ws.send(JSON.stringify({ type: "attach", session: state.session.name, cols: term.cols, rows: term.rows }));
+      }
     };
 
     state.connection.ws.onmessage = (e) => {
@@ -230,24 +201,26 @@ export function createWebSocketConnection(deps = {}) {
       if (handler) {
         const { stateUpdates, effects } = handler(msg, state);
 
+        // Apply state updates
         if (Object.keys(stateUpdates).length > 0) {
           state.updateMany(stateUpdates);
         }
 
+        // Execute effects
         effects.forEach(executeEffect);
-      } else {
-        console.log('[ws] unhandled:', msg.type, msg);
       }
     };
 
     state.connection.ws.onclose = (event) => {
       isConnecting = false;
 
-      if (event.code === 1008) {
+      // Check if connection was closed due to revoked credentials
+      if (event.code === 1008) { // 1008 = Policy Violation
         window.location.href = '/login?reason=revoked';
         return;
       }
 
+      // Normal disconnect - attempt reconnection with exponential backoff
       const viewport = document.querySelector(".xterm-viewport");
       state.scroll.userScrolledUpBeforeDisconnect = !isAtBottom(viewport);
       state.connection.attached = false;
@@ -271,18 +244,22 @@ export function createWebSocketConnection(deps = {}) {
       if (document.hidden) {
         hiddenAt = Date.now();
       } else {
+        // Coming back to foreground
         const hiddenDuration = Date.now() - hiddenAt;
-        if (isConnecting) return;
 
+        // Skip if already connecting
+        if (isConnecting) {
+          return;
+        }
+
+        // If was hidden for more than 5 seconds, force reconnect
         if (hiddenDuration > 5000 && state.connection.ws && !isConnecting) {
           state.connection.ws.close();
         } else if (state.connection.ws && state.connection.ws.readyState === WebSocket.OPEN) {
+          // Quick test - send resize to verify connection is alive
           try {
-            // abot resize includes session ID
-            const id = state.session.name;
-            state.connection.ws.send(JSON.stringify({
-              type: "session.resize", id, cols: term.cols, rows: term.rows
-            }));
+            const activeTerm = facetManager?.getFocused()?.term || term;
+            state.connection.ws.send(JSON.stringify({ type: "resize", cols: activeTerm.cols, rows: activeTerm.rows }));
           } catch {
             state.connection.ws.close();
           }
