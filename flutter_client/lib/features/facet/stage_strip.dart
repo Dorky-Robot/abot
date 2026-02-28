@@ -49,7 +49,7 @@ class StageStrip extends StatelessWidget {
         .toList();
 
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 250),
+      duration: AbotSizes.sidebarAnimDuration,
       curve: Curves.easeInOut,
       width: collapsed
           ? AbotSizes.sidebarCollapsedWidth
@@ -207,18 +207,20 @@ class StageStrip extends StatelessWidget {
   }
 }
 
-/// Small icon button used in the strip header.
+/// Small icon button used in the strip.
 class _IconBtn extends StatelessWidget {
   final IconData icon;
   final Color color;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final String? tooltip;
+  final double size;
 
   const _IconBtn({
     required this.icon,
     required this.color,
-    required this.onTap,
+    this.onTap,
     this.tooltip,
+    this.size = 18,
   });
 
   @override
@@ -230,7 +232,7 @@ class _IconBtn extends StatelessWidget {
         borderRadius: BorderRadius.circular(AbotRadius.sm),
         child: Padding(
           padding: const EdgeInsets.all(AbotSpacing.xs),
-          child: Icon(icon, size: 18, color: color),
+          child: Icon(icon, size: size, color: color),
         ),
       ),
     );
@@ -277,26 +279,22 @@ class _SidebarFooter extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () {},
-                borderRadius: BorderRadius.circular(AbotRadius.sm),
-                child: Padding(
-                  padding: const EdgeInsets.all(AbotSpacing.xs),
-                  child: Icon(Icons.settings, size: 16, color: p.overlay1),
-                ),
-              ),
+            _IconBtn(
+              icon: Icons.settings,
+              size: 16,
+              color: p.overlay1,
+              tooltip: 'Settings',
             ),
             const SizedBox(height: AbotSpacing.sm),
             Padding(
+              // Nudge dot to visually center under the 16px gear icon
               padding: const EdgeInsets.only(left: AbotSpacing.xs + 3),
               child: Tooltip(
                 message: tooltip,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
-                  width: 8,
-                  height: 8,
+                  width: AbotSizes.statusDotSize,
+                  height: AbotSizes.statusDotSize,
                   decoration: BoxDecoration(
                     color: dotColor,
                     shape: BoxShape.circle,

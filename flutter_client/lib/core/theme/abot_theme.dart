@@ -87,6 +87,8 @@ class AbotSizes {
   static const double titleBarHeight = 32;
   static const double sidebarExpandedWidth = 200;
   static const double sidebarCollapsedWidth = 44;
+  static const double statusDotSize = 8;
+  static const Duration sidebarAnimDuration = Duration(milliseconds: 250);
 }
 
 class AbotFonts {

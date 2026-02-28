@@ -185,7 +185,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
     } else {
       // Wait for animation + layout settle, then recalculate transforms
       _animationCleanup?.cancel();
-      _animationCleanup = Timer(const Duration(milliseconds: 300), () {
+      // Wait for sidebar AnimatedContainer to finish + layout settle
+      _animationCleanup = Timer(AbotSizes.sidebarAnimDuration + const Duration(milliseconds: 50), () {
         if (!mounted) return;
         _updateSidebarTransforms();
       });
