@@ -8,6 +8,12 @@ use std::sync::Arc;
 use crate::auth::middleware;
 use crate::server::AppState;
 
+#[cfg(feature = "flutter")]
+#[derive(Embed)]
+#[folder = "flutter_client/build/web/"]
+pub struct ClientAssets;
+
+#[cfg(not(feature = "flutter"))]
 #[derive(Embed)]
 #[folder = "client/"]
 pub struct ClientAssets;
