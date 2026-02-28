@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/network/session_service.dart';
+import '../../core/network/websocket_service.dart';
 import '../../core/theme/abot_theme.dart';
 import 'facet.dart';
 
@@ -17,6 +18,9 @@ class StageStrip extends StatelessWidget {
   final void Function(String sessionName) onOpenSession;
   final void Function(String sessionName) onDeleteSession;
   final VoidCallback onNewSession;
+  final WsConnectionState connectionState;
+  final bool collapsed;
+  final VoidCallback onToggleCollapse;
 
   const StageStrip({
     super.key,
@@ -30,6 +34,9 @@ class StageStrip extends StatelessWidget {
     required this.onOpenSession,
     required this.onDeleteSession,
     required this.onNewSession,
+    required this.connectionState,
+    required this.collapsed,
+    required this.onToggleCollapse,
   });
 
   @override
@@ -41,128 +48,264 @@ class StageStrip extends StatelessWidget {
         .where((s) => !openSessionNames.contains(s.name))
         .toList();
 
-    return Container(
-      width: 200,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeInOut,
+      width: collapsed
+          ? AbotSizes.sidebarCollapsedWidth
+          : AbotSizes.sidebarExpandedWidth,
       color: p.mantle,
       child: Column(
         children: [
-          // "+" button at top
+          // Top bar: toggle + add button
           Padding(
             padding: const EdgeInsets.only(
               top: AbotSpacing.sm,
-              left: AbotSpacing.sm,
-              right: AbotSpacing.sm,
+              left: AbotSpacing.xs,
+              right: AbotSpacing.xs,
             ),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: onNewSession,
-                  borderRadius: BorderRadius.circular(AbotRadius.sm),
-                  child: Padding(
-                    padding: const EdgeInsets.all(AbotSpacing.xs),
-                    child: Icon(Icons.add, size: 18, color: p.subtext0),
+            child: collapsed
+                ? Column(
+                    children: [
+                      _IconBtn(
+                        icon: Icons.chevron_right,
+                        color: p.subtext0,
+                        onTap: onToggleCollapse,
+                        tooltip: 'Expand sidebar',
+                      ),
+                      const SizedBox(height: AbotSpacing.xs),
+                      _IconBtn(
+                        icon: Icons.add,
+                        color: p.subtext0,
+                        onTap: onNewSession,
+                        tooltip: 'New session',
+                      ),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      _IconBtn(
+                        icon: Icons.chevron_left,
+                        color: p.subtext0,
+                        onTap: onToggleCollapse,
+                        tooltip: 'Collapse sidebar',
+                      ),
+                      const Spacer(),
+                      _IconBtn(
+                        icon: Icons.add,
+                        color: p.subtext0,
+                        onTap: onNewSession,
+                        tooltip: 'New session',
+                      ),
+                    ],
+                  ),
+          ),
+
+          // Middle: cards or spacer
+          if (collapsed)
+            const Spacer()
+          else
+            Expanded(
+              child: CustomScrollView(
+                slivers: [
+                  // All facets in stable order — reorderable
+                  SliverPadding(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: AbotSpacing.sm,
+                      horizontal: AbotSpacing.sm,
+                    ),
+                    sliver: SliverReorderableList(
+                      itemCount: allFacets.length,
+                      onReorder: onReorder,
+                      itemBuilder: (context, index) {
+                        final facet = allFacets[index];
+                        final isFocused = facet.id == focusedId;
+
+                        return ReorderableDelayedDragStartListener(
+                          key: ValueKey(facet.id),
+                          index: index,
+                          child: Padding(
+                            padding: const EdgeInsets.only(
+                              bottom: AbotSpacing.sm,
+                            ),
+                            child: SizedBox(
+                              key: cardKeys?[facet.id],
+                              child: isFocused
+                                  ? _FocusedCard(facet: facet)
+                                  : _StripCard(
+                                      facet: facet,
+                                      onTap: () => onFocusFacet(facet.id),
+                                    ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+
+                  // Unattached server sessions
+                  if (unattachedSessions.isNotEmpty)
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AbotSpacing.sm,
+                      ),
+                      sliver: SliverList(
+                        delegate: SliverChildListDelegate([
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: AbotSpacing.xs,
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Divider(
+                                    color: p.surface1, height: 1,
+                                  ),
+                                ),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: AbotSpacing.sm,
+                                  ),
+                                  child: Text(
+                                    'Sessions',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: p.subtext0,
+                                      fontFamily: AbotFonts.mono,
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: Divider(
+                                    color: p.surface1, height: 1,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: AbotSpacing.xs),
+                          for (final session in unattachedSessions) ...[
+                            _SessionTile(
+                              session: session,
+                              onTap: () => onOpenSession(session.name),
+                              onDelete: () => onDeleteSession(session.name),
+                            ),
+                            const SizedBox(height: AbotSpacing.xs),
+                          ],
+                        ]),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+          // Footer: gear above dot (both states)
+          _SidebarFooter(connectionState: connectionState),
+        ],
+      ),
+    );
+  }
+}
+
+/// Small icon button used in the strip header.
+class _IconBtn extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+  final String? tooltip;
+
+  const _IconBtn({
+    required this.icon,
+    required this.color,
+    required this.onTap,
+    this.tooltip,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final child = Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AbotRadius.sm),
+        child: Padding(
+          padding: const EdgeInsets.all(AbotSpacing.xs),
+          child: Icon(icon, size: 18, color: color),
+        ),
+      ),
+    );
+    if (tooltip != null) {
+      return Tooltip(message: tooltip!, child: child);
+    }
+    return child;
+  }
+}
+
+/// Sidebar footer showing gear icon above connection status dot.
+class _SidebarFooter extends StatelessWidget {
+  final WsConnectionState connectionState;
+
+  const _SidebarFooter({required this.connectionState});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+
+    final Color dotColor;
+    final String tooltip;
+    switch (connectionState) {
+      case WsConnectionState.connected:
+        dotColor = p.green;
+        tooltip = 'Connected';
+      case WsConnectionState.connecting:
+        dotColor = p.yellow;
+        tooltip = 'Connecting...';
+      case WsConnectionState.disconnected:
+        dotColor = p.overlay0;
+        tooltip = 'Disconnected';
+    }
+
+    return Align(
+      alignment: Alignment.bottomLeft,
+      child: Padding(
+        padding: const EdgeInsets.only(
+          left: AbotSpacing.xs,
+          top: AbotSpacing.sm,
+          bottom: AbotSpacing.sm,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () {},
+                borderRadius: BorderRadius.circular(AbotRadius.sm),
+                child: Padding(
+                  padding: const EdgeInsets.all(AbotSpacing.xs),
+                  child: Icon(Icons.settings, size: 16, color: p.overlay1),
+                ),
+              ),
+            ),
+            const SizedBox(height: AbotSpacing.sm),
+            Padding(
+              padding: const EdgeInsets.only(left: AbotSpacing.xs + 3),
+              child: Tooltip(
+                message: tooltip,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: dotColor,
+                    shape: BoxShape.circle,
                   ),
                 ),
               ),
             ),
-          ),
-          Expanded(
-            child: CustomScrollView(
-              slivers: [
-                // All facets in stable order — reorderable
-                SliverPadding(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: AbotSpacing.sm,
-                    horizontal: AbotSpacing.sm,
-                  ),
-                  sliver: SliverReorderableList(
-                    itemCount: allFacets.length,
-                    onReorder: onReorder,
-                    itemBuilder: (context, index) {
-                      final facet = allFacets[index];
-                      final isFocused = facet.id == focusedId;
-
-                      return ReorderableDelayedDragStartListener(
-                        key: ValueKey(facet.id),
-                        index: index,
-                        child: Padding(
-                          padding: const EdgeInsets.only(
-                            bottom: AbotSpacing.sm,
-                          ),
-                          child: SizedBox(
-                            key: cardKeys?[facet.id],
-                            child: isFocused
-                                ? _FocusedCard(facet: facet)
-                                : _StripCard(
-                                    facet: facet,
-                                    onTap: () => onFocusFacet(facet.id),
-                                  ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-
-                // Unattached server sessions
-                if (unattachedSessions.isNotEmpty)
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: AbotSpacing.sm,
-                    ),
-                    sliver: SliverList(
-                      delegate: SliverChildListDelegate([
-                        Padding(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: AbotSpacing.xs,
-                          ),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Divider(
-                                  color: p.surface1, height: 1,
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: AbotSpacing.sm,
-                                ),
-                                child: Text(
-                                  'Sessions',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: p.subtext0,
-                                    fontFamily: AbotFonts.mono,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Divider(
-                                  color: p.surface1, height: 1,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: AbotSpacing.xs),
-                        for (final session in unattachedSessions) ...[
-                          _SessionTile(
-                            session: session,
-                            onTap: () => onOpenSession(session.name),
-                            onDelete: () => onDeleteSession(session.name),
-                          ),
-                          const SizedBox(height: AbotSpacing.xs),
-                        ],
-                      ]),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -325,4 +468,3 @@ class _SessionTileState extends State<_SessionTile> {
     );
   }
 }
-

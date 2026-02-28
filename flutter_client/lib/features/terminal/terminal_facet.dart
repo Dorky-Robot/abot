@@ -147,6 +147,10 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key == 'F') {
         return false.toJS;
       }
+      // Ctrl+B / Cmd+B — toggle sidebar
+      if ((event.ctrlKey || event.metaKey) && event.key == 'b') {
+        return false.toJS;
+      }
 
       // macOS: translate Cmd+key → Ctrl+key for terminal use.
       // Native terminal emulators treat Cmd as Ctrl for most keys.
@@ -159,6 +163,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
         const browserReserved = {
           'c', 'v', 'a', 'x', 'z', // clipboard / undo
           'r', 'l', 't', 'q', // browser navigation
+          'b', // sidebar toggle
         };
         if (key.length == 1 && !browserReserved.contains(key)) {
           final code = key.codeUnitAt(0);
