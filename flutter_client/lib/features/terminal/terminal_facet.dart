@@ -9,6 +9,7 @@ import '../../core/js_interop/xterm_interop.dart';
 import '../../core/theme/abot_theme.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/network/websocket_service.dart';
+import '../facet/drag_controller.dart';
 
 /// A single terminal facet backed by xterm.js via HtmlElementView
 class TerminalFacet extends ConsumerStatefulWidget {
@@ -18,6 +19,13 @@ class TerminalFacet extends ConsumerStatefulWidget {
   final VoidCallback? onFocused;
   final VoidCallback? onClose;
   final bool showTitleBar;
+  final DragPreview dragPreview;
+  final bool isDragging;
+
+  /// Titlebar drag callbacks — forwarded to the shell's DragController.
+  final void Function(String facetId, Offset globalPosition)? onTitleDragStart;
+  final void Function(Offset globalPosition)? onTitleDragUpdate;
+  final VoidCallback? onTitleDragEnd;
 
   const TerminalFacet({
     super.key,
@@ -27,6 +35,11 @@ class TerminalFacet extends ConsumerStatefulWidget {
     this.onFocused,
     this.onClose,
     this.showTitleBar = true,
+    this.dragPreview = DragPreview.none,
+    this.isDragging = false,
+    this.onTitleDragStart,
+    this.onTitleDragUpdate,
+    this.onTitleDragEnd,
   });
 
   @override
@@ -206,21 +219,36 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
         widget.onFocused?.call();
         _terminal?.focus();
       },
-      child: Column(
-        children: [
-          // Title bar (hidden when single facet)
-          if (widget.showTitleBar)
-            _TitleBar(
-              sessionName: widget.sessionName,
-              isFocused: widget.isFocused,
-              isDark: isDark,
-              onClose: widget.onClose,
+      child: Opacity(
+        opacity: widget.isDragging ? 0.7 : 1.0,
+        child: Column(
+          children: [
+            // Title bar (hidden when single facet)
+            if (widget.showTitleBar)
+              _TitleBar(
+                sessionName: widget.sessionName,
+                isFocused: widget.isFocused,
+                isDark: isDark,
+                onClose: widget.onClose,
+                dragPreview: widget.dragPreview,
+                onDragStart: widget.onTitleDragStart != null
+                    ? (details) => widget.onTitleDragStart!(
+                        widget.facetId, details.globalPosition)
+                    : null,
+                onDragUpdate: widget.onTitleDragUpdate != null
+                    ? (details) =>
+                        widget.onTitleDragUpdate!(details.globalPosition)
+                    : null,
+                onDragEnd: widget.onTitleDragEnd != null
+                    ? (_) => widget.onTitleDragEnd!()
+                    : null,
+              ),
+            // Terminal content
+            Expanded(
+              child: HtmlElementView(viewType: _viewId),
             ),
-          // Terminal content
-          Expanded(
-            child: HtmlElementView(viewType: _viewId),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -231,56 +259,76 @@ class _TitleBar extends StatelessWidget {
   final bool isFocused;
   final bool isDark;
   final VoidCallback? onClose;
+  final DragPreview dragPreview;
+  final GestureDragStartCallback? onDragStart;
+  final GestureDragUpdateCallback? onDragUpdate;
+  final GestureDragEndCallback? onDragEnd;
 
   const _TitleBar({
     required this.sessionName,
     required this.isFocused,
     required this.isDark,
     this.onClose,
+    this.dragPreview = DragPreview.none,
+    this.onDragStart,
+    this.onDragUpdate,
+    this.onDragEnd,
   });
 
   @override
   Widget build(BuildContext context) {
     final bg = isDark
-        ? (isFocused
-            ? CatppuccinMocha.surface0
-            : CatppuccinMocha.mantle)
-        : (isFocused
-            ? CatppuccinLatte.surface0
-            : CatppuccinLatte.mantle);
-    final textColor = isDark
-        ? CatppuccinMocha.subtext0
-        : CatppuccinLatte.subtext0;
+        ? (isFocused ? CatppuccinMocha.surface0 : CatppuccinMocha.mantle)
+        : (isFocused ? CatppuccinLatte.surface0 : CatppuccinLatte.mantle);
+    final textColor =
+        isDark ? CatppuccinMocha.subtext0 : CatppuccinLatte.subtext0;
 
-    return Container(
-      height: AbotSizes.titleBarHeight,
-      color: bg,
-      padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
-      child: Row(
-        children: [
-          Icon(Icons.terminal, size: 14, color: textColor),
-          const SizedBox(width: AbotSpacing.xs),
-          Expanded(
-            child: Text(
-              sessionName,
-              style: TextStyle(
-                fontSize: 12,
-                color: textColor,
-                fontFamily: 'JetBrains Mono',
+    // Preview indicator colors
+    final previewColor = isDark ? CatppuccinMocha.blue : CatppuccinLatte.blue;
+
+    return GestureDetector(
+      onPanStart: onDragStart,
+      onPanUpdate: onDragUpdate,
+      onPanEnd: onDragEnd,
+      child: Container(
+        height: AbotSizes.titleBarHeight,
+        decoration: BoxDecoration(
+          color: bg,
+          // Top edge indicator for split-up preview
+          border: dragPreview == DragPreview.splitUp
+              ? Border(top: BorderSide(color: previewColor, width: 3))
+              : dragPreview == DragPreview.moveDown
+                  ? Border(
+                      bottom: BorderSide(color: previewColor, width: 3))
+                  : null,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
+        child: Row(
+          children: [
+            Icon(Icons.terminal, size: 14, color: textColor),
+            const SizedBox(width: AbotSpacing.xs),
+            Expanded(
+              child: Text(
+                sessionName,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: textColor,
+                  fontFamily: 'JetBrains Mono',
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
-              overflow: TextOverflow.ellipsis,
             ),
-          ),
-          if (onClose != null)
-            InkWell(
-              onTap: onClose,
-              borderRadius: BorderRadius.circular(AbotRadius.sm),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(Icons.close, size: 14, color: textColor),
+            if (onClose != null)
+              InkWell(
+                onTap: onClose,
+                borderRadius: BorderRadius.circular(AbotRadius.sm),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(Icons.close, size: 14, color: textColor),
+                ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
