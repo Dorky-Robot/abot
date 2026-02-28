@@ -184,6 +184,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (e.statusCode != null && e.statusCode != 409) rethrow;
     }
 
+    if (!mounted) return;
     facetManager.create(sessionName);
     final wsService = ref.read(wsServiceProvider.notifier);
     wsService.attachSession(sessionName);
@@ -275,7 +276,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
         ],
       ),
     );
-    if (confirmed == true) {
+    if (confirmed == true && mounted) {
       try {
         await ref
             .read(sessionServiceProvider.notifier)
@@ -317,6 +318,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   void _ensureCardKey(String facetId) {
     _cardKeys.putIfAbsent(facetId, () => GlobalKey());
+  }
+
+  void _ensureFacetKey(String facetId) {
+    _facetKeys.putIfAbsent(facetId, () => GlobalKey());
   }
 
   /// Compute and apply CSS transforms for all non-focused terminals so they
@@ -484,7 +489,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     if (focusedId == null) return const SizedBox.shrink();
 
     for (final id in state.order) {
-      _ensureKey(id);
+      _ensureFacetKey(id);
     }
 
     // After layout, compute CSS transforms for sidebar positioning.
@@ -527,8 +532,4 @@ class _FacetShellState extends ConsumerState<FacetShell>
     );
   }
 
-  /// Ensure a GlobalKey exists for a facet.
-  void _ensureKey(String facetId) {
-    _facetKeys.putIfAbsent(facetId, () => GlobalKey());
-  }
 }

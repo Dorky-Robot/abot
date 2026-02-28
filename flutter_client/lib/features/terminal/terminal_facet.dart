@@ -16,7 +16,6 @@ class TerminalFacet extends ConsumerStatefulWidget {
   final String facetId;
   final String sessionName;
   final bool isFocused;
-  final VoidCallback? onFocused;
   final VoidCallback? onClose;
   final bool showTitleBar;
 
@@ -25,7 +24,6 @@ class TerminalFacet extends ConsumerStatefulWidget {
     required this.facetId,
     required this.sessionName,
     this.isFocused = false,
-    this.onFocused,
     this.onClose,
     this.showTitleBar = true,
   });
@@ -74,6 +72,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   }
 
   void _initTerminal(web.HTMLElement container) {
+    if (!mounted) return;
     _container = container;
     final xtermTheme = ref.read(xtermThemeProvider);
     final themeJs = createXtermThemeJs(
@@ -236,17 +235,6 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _terminal?.write(data.toJS);
   }
 
-  /// Get terminal dimensions
-  ({int cols, int rows})? get dimensions {
-    if (_terminal == null) return null;
-    return (cols: _terminal!.cols, rows: _terminal!.rows);
-  }
-
-  /// Focus the underlying xterm terminal
-  void focusTerminal() {
-    _terminal?.focus();
-  }
-
   /// Toggle the search bar overlay.
   @override
   void toggleSearch() {
@@ -316,10 +304,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () {
-        widget.onFocused?.call();
-        _terminal?.focus();
-      },
+      onTap: () => _terminal?.focus(),
       child: Column(
         children: [
           // Title bar (hidden when single facet)
