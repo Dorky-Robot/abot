@@ -9,7 +9,6 @@ import '../../core/js_interop/xterm_interop.dart';
 import '../../core/theme/abot_theme.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/network/websocket_service.dart';
-import '../facet/drag_controller.dart';
 import 'search_bar.dart';
 
 /// A single terminal facet backed by xterm.js via HtmlElementView
@@ -17,30 +16,16 @@ class TerminalFacet extends ConsumerStatefulWidget {
   final String facetId;
   final String sessionName;
   final bool isFocused;
-  final VoidCallback? onFocused;
   final VoidCallback? onClose;
   final bool showTitleBar;
-  final DragPreview dragPreview;
-  final bool isDragging;
-
-  /// Titlebar drag callbacks — forwarded to the shell's DragController.
-  final void Function(String facetId, Offset globalPosition)? onTitleDragStart;
-  final void Function(Offset globalPosition)? onTitleDragUpdate;
-  final VoidCallback? onTitleDragEnd;
 
   const TerminalFacet({
     super.key,
     required this.facetId,
     required this.sessionName,
     this.isFocused = false,
-    this.onFocused,
     this.onClose,
     this.showTitleBar = true,
-    this.dragPreview = DragPreview.none,
-    this.isDragging = false,
-    this.onTitleDragStart,
-    this.onTitleDragUpdate,
-    this.onTitleDragEnd,
   });
 
   @override
@@ -57,8 +42,10 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   XtermFitAddon? _fitAddon;
   XtermSearchAddon? _searchAddon;
   web.ResizeObserver? _resizeObserver;
+  web.HTMLElement? _container;
   bool _registered = false;
   Timer? _fitDebounce;
+  Timer? _initialFit;
   bool _showSearch = false;
 
   @override
@@ -86,6 +73,8 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   }
 
   void _initTerminal(web.HTMLElement container) {
+    if (!mounted) return;
+    _container = container;
     final xtermTheme = ref.read(xtermThemeProvider);
     final themeJs = createXtermThemeJs(
       background: xtermTheme.background,
@@ -112,8 +101,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 
     final options = createXtermOptions(
       fontSize: 14,
-      fontFamily:
-          "'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace",
+      fontFamily: AbotFonts.xtermStack,
       cursorBlink: true,
       scrollback: 10000,
       convertEol: true,
@@ -140,6 +128,70 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     // Open terminal in container
     _terminal!.open(container);
 
+    // Intercept app-level shortcuts so xterm doesn't consume them.
+    // Return false to block xterm from processing, true to let through.
+    _terminal!.attachCustomKeyEventHandler(((web.KeyboardEvent event) {
+      // Ctrl+Tab / Ctrl+` — cycle focus
+      if (event.ctrlKey && (event.key == 'Tab' || event.key == '`')) {
+        return false.toJS;
+      }
+      // Ctrl+N / Cmd+N — new session
+      if ((event.ctrlKey || event.metaKey) && event.key == 'n') {
+        return false.toJS;
+      }
+      // Ctrl+W / Cmd+W — close facet
+      if ((event.ctrlKey || event.metaKey) && event.key == 'w') {
+        return false.toJS;
+      }
+      // Ctrl+Shift+F / Cmd+Shift+F — search
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key == 'F') {
+        return false.toJS;
+      }
+
+      // macOS: translate Cmd+key → Ctrl+key for terminal use.
+      // Native terminal emulators treat Cmd as Ctrl for most keys.
+      // Skip browser-reserved combos (copy/paste/select-all/etc).
+      if (event.metaKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          event.type == 'keydown') {
+        final key = event.key.toLowerCase();
+        const browserReserved = {
+          'c', 'v', 'a', 'x', 'z', // clipboard / undo
+          'r', 'l', 't', 'q', // browser navigation
+        };
+        if (key.length == 1 && !browserReserved.contains(key)) {
+          final code = key.codeUnitAt(0);
+          if (code >= 97 && code <= 122) {
+            // Send Ctrl+letter (ASCII 1-26)
+            final wsService = ref.read(wsServiceProvider.notifier);
+            wsService.sendInput(
+              String.fromCharCode(code - 96),
+              session: widget.sessionName,
+            );
+            event.preventDefault();
+            return false.toJS;
+          }
+        }
+        // Cmd+Backspace → Ctrl+U (kill line)
+        if (event.key == 'Backspace') {
+          final wsService = ref.read(wsServiceProvider.notifier);
+          wsService.sendInput('\x15', session: widget.sessionName);
+          event.preventDefault();
+          return false.toJS;
+        }
+        // Cmd+Delete → Ctrl+K (kill to end of line)
+        if (event.key == 'Delete') {
+          final wsService = ref.read(wsServiceProvider.notifier);
+          wsService.sendInput('\x0b', session: widget.sessionName);
+          event.preventDefault();
+          return false.toJS;
+        }
+      }
+
+      return true.toJS;
+    }).toJS);
+
     // Wire up data handler -> send input to server
     _terminal!.onData(((JSString data) {
       final wsService = ref.read(wsServiceProvider.notifier);
@@ -162,8 +214,8 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     }).toJS);
     _resizeObserver!.observe(container);
 
-    // Initial fit
-    Future.delayed(const Duration(milliseconds: 50), () {
+    // Initial fit (cancellable in dispose)
+    _initialFit = Timer(const Duration(milliseconds: 50), () {
       _fitAddon?.fit();
     });
 
@@ -184,21 +236,53 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _terminal?.write(data.toJS);
   }
 
-  /// Get terminal dimensions
-  ({int cols, int rows})? get dimensions {
-    if (_terminal == null) return null;
-    return (cols: _terminal!.cols, rows: _terminal!.rows);
-  }
-
-  /// Focus the underlying xterm terminal
-  void focusTerminal() {
-    _terminal?.focus();
-  }
-
   /// Toggle the search bar overlay.
   @override
   void toggleSearch() {
     setState(() => _showSearch = !_showSearch);
+  }
+
+  /// Apply a CSS transform to the xterm container for GPU-accelerated animation.
+  /// When [animate] is true, a CSS transition smoothly interpolates the transform.
+  @override
+  void setGenieTransform(String transform, {bool animate = true}) {
+    if (_container == null) return;
+    _container!.style.transformOrigin = '0 0';
+    _container!.style.transition = animate
+        ? 'transform 400ms cubic-bezier(0.4, 0, 0.2, 1)'
+        : 'none';
+    _container!.style.transform = transform;
+    _container!.style.pointerEvents = 'none';
+    _setAncestorOverflow(true);
+  }
+
+  /// Clear CSS transform (restore full-size rendering).
+  @override
+  void clearGenieTransform({bool animate = true}) {
+    if (_container == null) return;
+    _container!.style.transition = animate
+        ? 'transform 400ms cubic-bezier(0.4, 0, 0.2, 1)'
+        : 'none';
+    _container!.style.transform = '';
+    _container!.style.transformOrigin = '';
+    _container!.style.pointerEvents = '';
+    _setAncestorOverflow(false);
+  }
+
+  /// Allow (or restore) CSS overflow on ancestor DOM elements so that
+  /// CSS-transformed content can render outside the platform view bounds.
+  /// Max DOM ancestor depth to walk when toggling overflow.
+  /// Must be deep enough to escape Flutter's platform view wrappers.
+  static const _ancestorOverflowDepth = 8;
+
+  void _setAncestorOverflow(bool allowOverflow) {
+    web.Element? el = _container?.parentElement;
+    for (var i = 0; i < _ancestorOverflowDepth && el != null; i++) {
+      if (el is web.HTMLElement) {
+        el.style.overflow = allowOverflow ? 'visible' : '';
+      }
+      el = el.parentElement;
+    }
   }
 
   @override
@@ -213,6 +297,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   void dispose() {
     TerminalRegistry.instance.unregister(widget.facetId);
     _fitDebounce?.cancel();
+    _initialFit?.cancel();
     _resizeObserver?.disconnect();
     _terminal?.dispose();
     super.dispose();
@@ -220,49 +305,28 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return GestureDetector(
-      onTap: () {
-        widget.onFocused?.call();
-        _terminal?.focus();
-      },
-      child: Opacity(
-        opacity: widget.isDragging ? 0.7 : 1.0,
-        child: Column(
-          children: [
-            // Title bar (hidden when single facet)
-            if (widget.showTitleBar)
-              _TitleBar(
-                sessionName: widget.sessionName,
-                isFocused: widget.isFocused,
-                isDark: isDark,
-                onClose: widget.onClose,
-                dragPreview: widget.dragPreview,
-                onDragStart: widget.onTitleDragStart != null
-                    ? (details) => widget.onTitleDragStart!(
-                        widget.facetId, details.globalPosition)
-                    : null,
-                onDragUpdate: widget.onTitleDragUpdate != null
-                    ? (details) =>
-                        widget.onTitleDragUpdate!(details.globalPosition)
-                    : null,
-                onDragEnd: widget.onTitleDragEnd != null
-                    ? (_) => widget.onTitleDragEnd!()
-                    : null,
-              ),
-            // Search bar overlay
-            if (_showSearch && _searchAddon != null)
-              TerminalSearchBar(
-                searchAddon: _searchAddon!,
-                onClose: () => setState(() => _showSearch = false),
-              ),
-            // Terminal content
-            Expanded(
-              child: HtmlElementView(viewType: _viewId),
+      onTap: () => _terminal?.focus(),
+      child: Column(
+        children: [
+          // Title bar (hidden when single facet)
+          if (widget.showTitleBar)
+            _TitleBar(
+              sessionName: widget.sessionName,
+              isFocused: widget.isFocused,
+              onClose: widget.onClose,
             ),
-          ],
-        ),
+          // Search bar overlay
+          if (_showSearch && _searchAddon != null)
+            TerminalSearchBar(
+              searchAddon: _searchAddon!,
+              onClose: () => setState(() => _showSearch = false),
+            ),
+          // Terminal content
+          Expanded(
+            child: HtmlElementView(viewType: _viewId),
+          ),
+        ],
       ),
     );
   }
@@ -271,78 +335,49 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 class _TitleBar extends StatelessWidget {
   final String sessionName;
   final bool isFocused;
-  final bool isDark;
   final VoidCallback? onClose;
-  final DragPreview dragPreview;
-  final GestureDragStartCallback? onDragStart;
-  final GestureDragUpdateCallback? onDragUpdate;
-  final GestureDragEndCallback? onDragEnd;
 
   const _TitleBar({
     required this.sessionName,
     required this.isFocused,
-    required this.isDark,
     this.onClose,
-    this.dragPreview = DragPreview.none,
-    this.onDragStart,
-    this.onDragUpdate,
-    this.onDragEnd,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bg = isDark
-        ? (isFocused ? CatppuccinMocha.surface0 : CatppuccinMocha.mantle)
-        : (isFocused ? CatppuccinLatte.surface0 : CatppuccinLatte.mantle);
-    final textColor =
-        isDark ? CatppuccinMocha.subtext0 : CatppuccinLatte.subtext0;
+    final p = context.palette;
+    final bg = isFocused ? p.surface0 : p.mantle;
+    final textColor = p.subtext0;
 
-    // Preview indicator colors
-    final previewColor = isDark ? CatppuccinMocha.blue : CatppuccinLatte.blue;
-
-    return GestureDetector(
-      onPanStart: onDragStart,
-      onPanUpdate: onDragUpdate,
-      onPanEnd: onDragEnd,
-      child: Container(
-        height: AbotSizes.titleBarHeight,
-        decoration: BoxDecoration(
-          color: bg,
-          // Top edge indicator for split-up preview
-          border: dragPreview == DragPreview.splitUp
-              ? Border(top: BorderSide(color: previewColor, width: 3))
-              : dragPreview == DragPreview.moveDown
-                  ? Border(
-                      bottom: BorderSide(color: previewColor, width: 3))
-                  : null,
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
-        child: Row(
-          children: [
-            Icon(Icons.terminal, size: 14, color: textColor),
-            const SizedBox(width: AbotSpacing.xs),
-            Expanded(
-              child: Text(
-                sessionName,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: textColor,
-                  fontFamily: 'JetBrains Mono',
-                ),
-                overflow: TextOverflow.ellipsis,
+    return Container(
+      height: AbotSizes.titleBarHeight,
+      decoration: BoxDecoration(color: bg),
+      padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
+      child: Row(
+        children: [
+          Icon(Icons.terminal, size: 14, color: textColor),
+          const SizedBox(width: AbotSpacing.xs),
+          Expanded(
+            child: Text(
+              sessionName,
+              style: TextStyle(
+                fontSize: 12,
+                color: textColor,
+                fontFamily: AbotFonts.mono,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (onClose != null)
+            InkWell(
+              onTap: onClose,
+              borderRadius: BorderRadius.circular(AbotRadius.sm),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(Icons.close, size: 14, color: textColor),
               ),
             ),
-            if (onClose != null)
-              InkWell(
-                onTap: onClose,
-                borderRadius: BorderRadius.circular(AbotRadius.sm),
-                child: Padding(
-                  padding: const EdgeInsets.all(4),
-                  child: Icon(Icons.close, size: 14, color: textColor),
-                ),
-              ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -353,6 +388,8 @@ abstract interface class TerminalSink {
   String get sessionName;
   void writeData(String data);
   void toggleSearch();
+  void setGenieTransform(String transform, {bool animate});
+  void clearGenieTransform({bool animate});
 }
 
 /// Global registry so the WS message handler can route output to the right terminal
@@ -362,8 +399,12 @@ class TerminalRegistry {
 
   final Map<String, TerminalSink> _terminals = {};
 
+  /// Called when a new terminal finishes initializing and registers itself.
+  VoidCallback? onRegistered;
+
   void register(String facetId, TerminalSink sink) {
     _terminals[facetId] = sink;
+    onRegistered?.call();
   }
 
   void unregister(String facetId) {
@@ -390,5 +431,16 @@ class TerminalRegistry {
   /// Toggle search on a specific facet
   void toggleSearchOnFacet(String facetId) {
     _terminals[facetId]?.toggleSearch();
+  }
+
+  /// Apply a CSS transform to a facet's terminal container (GPU-accelerated).
+  void setGenieTransform(String facetId, String transform,
+      {bool animate = true}) {
+    _terminals[facetId]?.setGenieTransform(transform, animate: animate);
+  }
+
+  /// Clear CSS transform on a facet's terminal container.
+  void clearGenieTransform(String facetId, {bool animate = true}) {
+    _terminals[facetId]?.clearGenieTransform(animate: animate);
   }
 }

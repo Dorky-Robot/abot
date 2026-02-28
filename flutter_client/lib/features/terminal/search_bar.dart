@@ -52,15 +52,12 @@ class _TerminalSearchBarState extends State<TerminalSearchBar> {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor =
-        isDark ? CatppuccinMocha.surface0 : CatppuccinLatte.surface0;
-    final textColor = isDark ? CatppuccinMocha.text : CatppuccinLatte.text;
-    final subtextColor =
-        isDark ? CatppuccinMocha.subtext0 : CatppuccinLatte.subtext0;
-    final borderColor =
-        isDark ? CatppuccinMocha.surface1 : CatppuccinLatte.surface1;
-    final accentColor = isDark ? CatppuccinMocha.mauve : CatppuccinLatte.mauve;
+    final p = context.palette;
+    final bgColor = p.surface0;
+    final textColor = p.text;
+    final subtextColor = p.subtext0;
+    final borderColor = p.surface1;
+    final accentColor = p.mauve;
 
     return Container(
       height: 36,
@@ -76,14 +73,14 @@ class _TerminalSearchBarState extends State<TerminalSearchBar> {
               controller: _controller,
               focusNode: _focusNode,
               style: TextStyle(
-                fontFamily: 'JetBrains Mono',
+                fontFamily: AbotFonts.mono,
                 fontSize: 12,
                 color: textColor,
               ),
               decoration: InputDecoration(
                 hintText: 'Search...',
                 hintStyle: TextStyle(
-                  fontFamily: 'JetBrains Mono',
+                  fontFamily: AbotFonts.mono,
                   fontSize: 12,
                   color: subtextColor.withValues(alpha: 0.5),
                 ),

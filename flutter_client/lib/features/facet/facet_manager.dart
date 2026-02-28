@@ -1,26 +1,31 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'facet.dart';
 
-/// State for the facet manager — column-major tiling model.
+/// State for the facet manager — Stage Manager model.
+/// All facets live in a single ordered list. One is focused (expanded to
+/// center stage); the rest appear as cards in the sidebar at their stable
+/// positions.
 class FacetManagerState {
   final Map<String, FacetData> facets;
-  final List<List<String>> columns;
+
+  /// All facet IDs in their stable sidebar order.
+  final List<String> order;
   final String? focusedId;
 
   const FacetManagerState({
     this.facets = const {},
-    this.columns = const [],
+    this.order = const [],
     this.focusedId,
   });
 
   FacetManagerState copyWith({
     Map<String, FacetData>? facets,
-    List<List<String>>? columns,
+    List<String>? order,
     Object? focusedId = _sentinel,
   }) =>
       FacetManagerState(
         facets: facets ?? this.facets,
-        columns: columns ?? this.columns,
+        order: order ?? this.order,
         focusedId: focusedId == _sentinel
             ? this.focusedId
             : focusedId as String?,
@@ -37,28 +42,26 @@ class FacetManagerState {
     return null;
   }
 
-  /// Flat list of all facet data in column-major order.
+  /// Non-focused facet IDs in order (for sidebar strip cards).
+  List<String> get stripOrder =>
+      order.where((id) => id != focusedId).toList();
+
+  /// All facets in order (focused first, then the rest).
   List<FacetData> get orderedFacets {
     final result = <FacetData>[];
-    for (final col in columns) {
-      for (final id in col) {
-        final f = facets[id];
-        if (f != null) result.add(f);
-      }
+    if (focusedId != null) {
+      final f = facets[focusedId];
+      if (f != null) result.add(f);
+    }
+    for (final id in order) {
+      if (id == focusedId) continue;
+      final f = facets[id];
+      if (f != null) result.add(f);
     }
     return result;
   }
 
   int get count => facets.length;
-
-  /// Find which column a facet belongs to: returns (col, row) or null.
-  ({int col, int row})? findFacet(String facetId) {
-    for (int c = 0; c < columns.length; c++) {
-      final r = columns[c].indexOf(facetId);
-      if (r != -1) return (col: c, row: r);
-    }
-    return null;
-  }
 }
 
 /// Facet manager provider
@@ -72,19 +75,20 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
   @override
   FacetManagerState build() => const FacetManagerState();
 
-  /// Create a new facet for a session (always adds a new column).
+  /// Create a new facet for a session — becomes focused, appended to end
+  /// of the order list.
   FacetData create(String sessionName) {
     final id = 'facet-${_nextId++}';
     final facet = FacetData(id: id, sessionName: sessionName);
     final newFacets = Map<String, FacetData>.from(state.facets);
     newFacets[id] = facet;
-    final newColumns = [
-      for (final col in state.columns) List<String>.from(col),
-      [id],
-    ];
+
+    final newOrder = List<String>.from(state.order);
+    newOrder.add(id);
+
     state = state.copyWith(
       facets: newFacets,
-      columns: newColumns,
+      order: newOrder,
       focusedId: id,
     );
     return facet;
@@ -97,102 +101,40 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     final newFacets = Map<String, FacetData>.from(state.facets);
     newFacets.remove(facetId);
 
-    final newColumns = <List<String>>[];
-    for (final col in state.columns) {
-      final filtered = col.where((id) => id != facetId).toList();
-      if (filtered.isNotEmpty) newColumns.add(filtered);
-    }
+    final newOrder = List<String>.from(state.order);
+    newOrder.remove(facetId);
 
     String? newFocused = state.focusedId;
     if (newFocused == facetId) {
-      // Focus the last facet in column-major order
-      final allIds = newColumns.expand((col) => col).toList();
-      newFocused = allIds.isNotEmpty ? allIds.last : null;
+      // Promote the next item in order, or the previous one
+      newFocused = newOrder.isNotEmpty ? newOrder.first : null;
     }
 
     state = state.copyWith(
       facets: newFacets,
-      columns: newColumns,
+      order: newOrder,
       focusedId: newFocused,
     );
   }
 
-  /// Focus a specific facet.
+  /// Focus a specific facet — just changes focusedId, order is stable.
   void focus(String facetId) {
-    if (state.facets.containsKey(facetId)) {
-      state = state.copyWith(focusedId: facetId);
-    }
+    if (!state.facets.containsKey(facetId)) return;
+    if (facetId == state.focusedId) return;
+    state = state.copyWith(focusedId: facetId);
   }
 
-  /// Cycle focus to the next facet (column-major order).
-  void cycleFocus() {
-    final ordered = state.orderedFacets;
-    if (ordered.isEmpty) return;
-    final currentIdx = ordered.indexWhere((f) => f.id == state.focusedId);
-    final nextIdx = (currentIdx + 1) % ordered.length;
-    state = state.copyWith(focusedId: ordered[nextIdx].id);
+  /// Reorder: move facet from [oldIndex] to [newIndex] in the full order list.
+  void reorder(int oldIndex, int newIndex) {
+    final newOrder = List<String>.from(state.order);
+    if (oldIndex < 0 || oldIndex >= newOrder.length) return;
+    if (newIndex < 0 || newIndex > newOrder.length) return;
+
+    final id = newOrder.removeAt(oldIndex);
+    final insertAt = newIndex > oldIndex ? newIndex - 1 : newIndex;
+    newOrder.insert(insertAt, id);
+
+    state = state.copyWith(order: newOrder);
   }
 
-  /// Swap the columns containing draggedId and targetId.
-  void reorderColumns(String draggedId, String targetId) {
-    final dragPos = state.findFacet(draggedId);
-    final targetPos = state.findFacet(targetId);
-    if (dragPos == null || targetPos == null) return;
-    if (dragPos.col == targetPos.col) return;
-
-    final newColumns = [
-      for (final col in state.columns) List<String>.from(col),
-    ];
-    final temp = newColumns[dragPos.col];
-    newColumns[dragPos.col] = newColumns[targetPos.col];
-    newColumns[targetPos.col] = temp;
-
-    state = state.copyWith(columns: newColumns);
-  }
-
-  /// Move a facet from its column into another column's stack (at the bottom).
-  /// The target is identified by another facet's ID — the moved facet joins
-  /// that facet's column.
-  void moveFacetToColumn(String facetId, String targetFacetId) {
-    final srcPos = state.findFacet(facetId);
-    final targetPos = state.findFacet(targetFacetId);
-    if (srcPos == null || targetPos == null) return;
-    if (srcPos.col == targetPos.col) return;
-
-    final newColumns = [
-      for (final col in state.columns) List<String>.from(col),
-    ];
-
-    // Remove from source column
-    newColumns[srcPos.col].removeAt(srcPos.row);
-
-    // Calculate adjusted target column index after potential source removal
-    int adjustedTargetCol = targetPos.col;
-    if (newColumns[srcPos.col].isEmpty) {
-      newColumns.removeAt(srcPos.col);
-      if (targetPos.col > srcPos.col) adjustedTargetCol--;
-    }
-
-    // Add to target column
-    newColumns[adjustedTargetCol].add(facetId);
-
-    state = state.copyWith(columns: newColumns);
-  }
-
-  /// Split a facet out of a multi-facet column into its own new column
-  /// (inserted to the right of the source column).
-  void splitFacetToOwnColumn(String facetId) {
-    final srcPos = state.findFacet(facetId);
-    if (srcPos == null) return;
-    if (state.columns[srcPos.col].length <= 1) return;
-
-    final newColumns = [
-      for (final col in state.columns) List<String>.from(col),
-    ];
-
-    newColumns[srcPos.col].removeAt(srcPos.row);
-    newColumns.insert(srcPos.col + 1, [facetId]);
-
-    state = state.copyWith(columns: newColumns);
-  }
 }

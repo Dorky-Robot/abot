@@ -87,6 +87,35 @@ class AbotSizes {
   static const double titleBarHeight = 32;
 }
 
+class AbotFonts {
+  AbotFonts._();
+  static const String mono = 'JetBrains Mono';
+  static const String xtermStack =
+      "'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace";
+}
+
+/// Resolved Catppuccin palette — picks Mocha or Latte based on brightness.
+class CatPalette {
+  final bool isDark;
+  const CatPalette(this.isDark);
+
+  Color get base => isDark ? CatppuccinMocha.base : CatppuccinLatte.base;
+  Color get mantle => isDark ? CatppuccinMocha.mantle : CatppuccinLatte.mantle;
+  Color get surface0 => isDark ? CatppuccinMocha.surface0 : CatppuccinLatte.surface0;
+  Color get surface1 => isDark ? CatppuccinMocha.surface1 : CatppuccinLatte.surface1;
+  Color get subtext0 => isDark ? CatppuccinMocha.subtext0 : CatppuccinLatte.subtext0;
+  Color get text => isDark ? CatppuccinMocha.text : CatppuccinLatte.text;
+  Color get blue => isDark ? CatppuccinMocha.blue : CatppuccinLatte.blue;
+  Color get red => isDark ? CatppuccinMocha.red : CatppuccinLatte.red;
+  Color get green => isDark ? CatppuccinMocha.green : CatppuccinLatte.green;
+  Color get mauve => isDark ? CatppuccinMocha.mauve : CatppuccinLatte.mauve;
+}
+
+extension AbotColors on BuildContext {
+  bool get isDark => Theme.of(this).brightness == Brightness.dark;
+  CatPalette get palette => CatPalette(isDark);
+}
+
 /// xterm.js theme objects for JS interop
 class XtermThemeColors {
   final String background;
@@ -197,7 +226,7 @@ class AbotTheme {
         ),
         textTheme: const TextTheme(
           bodyMedium: TextStyle(
-            fontFamily: 'JetBrains Mono',
+            fontFamily: AbotFonts.mono,
             color: CatppuccinMocha.text,
           ),
         ),
@@ -218,7 +247,7 @@ class AbotTheme {
         ),
         textTheme: const TextTheme(
           bodyMedium: TextStyle(
-            fontFamily: 'JetBrains Mono',
+            fontFamily: AbotFonts.mono,
             color: CatppuccinLatte.text,
           ),
         ),
