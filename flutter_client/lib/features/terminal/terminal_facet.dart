@@ -10,6 +10,7 @@ import '../../core/theme/abot_theme.dart';
 import '../../core/theme/theme_provider.dart';
 import '../../core/network/websocket_service.dart';
 import '../facet/drag_controller.dart';
+import 'search_bar.dart';
 
 /// A single terminal facet backed by xterm.js via HtmlElementView
 class TerminalFacet extends ConsumerStatefulWidget {
@@ -58,6 +59,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   web.ResizeObserver? _resizeObserver;
   bool _registered = false;
   Timer? _fitDebounce;
+  bool _showSearch = false;
 
   @override
   void initState() {
@@ -193,6 +195,12 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _terminal?.focus();
   }
 
+  /// Toggle the search bar overlay.
+  @override
+  void toggleSearch() {
+    setState(() => _showSearch = !_showSearch);
+  }
+
   @override
   void didUpdateWidget(TerminalFacet oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -242,6 +250,12 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
                 onDragEnd: widget.onTitleDragEnd != null
                     ? (_) => widget.onTitleDragEnd!()
                     : null,
+              ),
+            // Search bar overlay
+            if (_showSearch && _searchAddon != null)
+              TerminalSearchBar(
+                searchAddon: _searchAddon!,
+                onClose: () => setState(() => _showSearch = false),
               ),
             // Terminal content
             Expanded(
@@ -338,6 +352,7 @@ class _TitleBar extends StatelessWidget {
 abstract interface class TerminalSink {
   String get sessionName;
   void writeData(String data);
+  void toggleSearch();
 }
 
 /// Global registry so the WS message handler can route output to the right terminal
@@ -370,5 +385,10 @@ class TerminalRegistry {
     for (final sink in _terminals.values) {
       sink.writeData(data);
     }
+  }
+
+  /// Toggle search on a specific facet
+  void toggleSearchOnFacet(String facetId) {
+    _terminals[facetId]?.toggleSearch();
   }
 }

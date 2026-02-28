@@ -4,7 +4,7 @@ import '../../core/theme/abot_theme.dart';
 import '../../core/network/websocket_service.dart';
 import '../facet/facet.dart';
 
-/// Bottom shortcut bar: [+ New] [tab1] [tab2] ... [spacer] [Esc] [Tab]
+/// Bottom shortcut bar: [+ New] [tab1] [tab2] ... [spacer] [sessions] [Esc] [Tab]
 class ShortcutBar extends ConsumerWidget {
   final List<FacetData> facets;
   final String? focusedId;
@@ -119,6 +119,16 @@ class ShortcutBar extends ConsumerWidget {
               }).toList(),
             ),
           ),
+
+          // Sessions drawer button
+          _BarButton(
+            onTap: () {
+              Scaffold.of(context).openEndDrawer();
+            },
+            isDark: isDark,
+            child: Icon(Icons.dashboard_outlined, size: 16, color: textColor),
+          ),
+          const SizedBox(width: AbotSpacing.xs),
 
           // Pinned shortcuts
           _ShortcutButton(

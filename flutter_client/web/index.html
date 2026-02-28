@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="auto">
 <head>
-  <base href="$FLUTTER_BASE_HREF">
+  <base href="/">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
   <meta name="mobile-web-app-capable" content="yes">
@@ -20,6 +20,7 @@
     import { FitAddon } from './vendor/xterm/addon-fit.esm.js';
     import { WebLinksAddon } from './vendor/xterm/addon-web-links.esm.js';
     import { SearchAddon } from './vendor/xterm/addon-search.esm.js';
+    import { startRegistration, startAuthentication } from './vendor/simplewebauthn/browser.esm.js';
 
     // Expose to globalThis for Dart JS interop
     globalThis.xtermJs = {
@@ -28,6 +29,7 @@
       WebLinksAddon,
       SearchAddon,
     };
+    globalThis.simpleWebAuthn = { startRegistration, startAuthentication };
   </script>
 
   <style>

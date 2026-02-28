@@ -56,9 +56,24 @@ pub async fn index(
 }
 
 pub async fn login() -> Response {
-    match ClientAssets::get("login.html") {
-        Some(file) => Html(String::from_utf8_lossy(&file.data).into_owned()).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+    #[cfg(feature = "flutter")]
+    {
+        // Flutter SPA handles login route internally
+        match ClientAssets::get("index.html") {
+            Some(file) => {
+                let html = String::from_utf8_lossy(&file.data).into_owned();
+                let html = inject_csrf_meta(&html);
+                Html(html).into_response()
+            }
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+    #[cfg(not(feature = "flutter"))]
+    {
+        match ClientAssets::get("login.html") {
+            Some(file) => Html(String::from_utf8_lossy(&file.data).into_owned()).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
     }
 }
 
