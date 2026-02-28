@@ -52,15 +52,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authProvider);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final bgColor = isDark ? CatppuccinMocha.base : CatppuccinLatte.base;
-    final cardColor =
-        isDark ? CatppuccinMocha.surface0 : CatppuccinLatte.surface0;
-    final textColor = isDark ? CatppuccinMocha.text : CatppuccinLatte.text;
-    final subtextColor =
-        isDark ? CatppuccinMocha.subtext0 : CatppuccinLatte.subtext0;
-    final accentColor = isDark ? CatppuccinMocha.mauve : CatppuccinLatte.mauve;
-    final errorColor = isDark ? CatppuccinMocha.red : CatppuccinLatte.red;
+    final p = context.palette;
+    final bgColor = p.base;
+    final cardColor = p.surface0;
+    final textColor = p.text;
+    final subtextColor = p.subtext0;
+    final accentColor = p.mauve;
+    final errorColor = p.red;
 
     return Scaffold(
       backgroundColor: bgColor,
@@ -73,7 +71,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ? _buildLoading(subtextColor)
                 : auth.isSetup
                     ? _buildLoginView(
-                        isDark: isDark,
+                        isDark: p.isDark,
                         cardColor: cardColor,
                         textColor: textColor,
                         subtextColor: subtextColor,
@@ -82,7 +80,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         error: auth.error,
                       )
                     : _buildSetupView(
-                        isDark: isDark,
+                        isDark: p.isDark,
                         cardColor: cardColor,
                         textColor: textColor,
                         subtextColor: subtextColor,
@@ -105,7 +103,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         Text(
           'Checking authentication...',
           style: TextStyle(
-            fontFamily: 'JetBrains Mono',
+            fontFamily: AbotFonts.mono,
             fontSize: 14,
             color: subtextColor,
           ),
@@ -136,7 +134,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           Text(
             'abot',
             style: TextStyle(
-              fontFamily: 'JetBrains Mono',
+              fontFamily: AbotFonts.mono,
               fontSize: 24,
               fontWeight: FontWeight.bold,
               color: accentColor,
@@ -147,7 +145,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           Text(
             'Register your first passkey',
             style: TextStyle(
-              fontFamily: 'JetBrains Mono',
+              fontFamily: AbotFonts.mono,
               fontSize: 14,
               color: subtextColor,
             ),
@@ -169,7 +167,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             Text(
               error,
               style: TextStyle(
-                fontFamily: 'JetBrains Mono',
+                fontFamily: AbotFonts.mono,
                 fontSize: 12,
                 color: errorColor,
               ),
@@ -203,7 +201,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           Text(
             'abot',
             style: TextStyle(
-              fontFamily: 'JetBrains Mono',
+              fontFamily: AbotFonts.mono,
               fontSize: 24,
               fontWeight: FontWeight.bold,
               color: accentColor,
@@ -214,7 +212,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           Text(
             'Sign in with passkey',
             style: TextStyle(
-              fontFamily: 'JetBrains Mono',
+              fontFamily: AbotFonts.mono,
               fontSize: 14,
               color: subtextColor,
             ),
@@ -249,7 +247,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   Text(
                     'Register New Passkey',
                     style: TextStyle(
-                      fontFamily: 'JetBrains Mono',
+                      fontFamily: AbotFonts.mono,
                       fontSize: 12,
                       color: subtextColor,
                     ),
@@ -274,7 +272,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             Text(
               error,
               style: TextStyle(
-                fontFamily: 'JetBrains Mono',
+                fontFamily: AbotFonts.mono,
                 fontSize: 12,
                 color: errorColor,
               ),
@@ -290,21 +288,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       {required bool isDark,
       required Color textColor,
       required Color subtextColor}) {
-    final fieldBg = isDark ? CatppuccinMocha.mantle : CatppuccinLatte.mantle;
-    final borderColor =
-        isDark ? CatppuccinMocha.surface1 : CatppuccinLatte.surface1;
+    final p = CatPalette(isDark);
+    final fieldBg = p.mantle;
+    final borderColor = p.surface1;
 
     return TextField(
       controller: _tokenController,
       style: TextStyle(
-        fontFamily: 'JetBrains Mono',
+        fontFamily: AbotFonts.mono,
         fontSize: 14,
         color: textColor,
       ),
       decoration: InputDecoration(
         hintText: 'Setup token',
         hintStyle: TextStyle(
-          fontFamily: 'JetBrains Mono',
+          fontFamily: AbotFonts.mono,
           fontSize: 14,
           color: subtextColor.withValues(alpha: 0.5),
         ),
@@ -320,8 +318,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AbotRadius.sm),
-          borderSide: BorderSide(
-              color: isDark ? CatppuccinMocha.mauve : CatppuccinLatte.mauve),
+          borderSide: BorderSide(color: p.mauve),
         ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: AbotSpacing.md,
@@ -337,7 +334,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     required bool isDark,
     required Color accentColor,
   }) {
-    final onAccent = isDark ? CatppuccinMocha.base : CatppuccinLatte.base;
+    final onAccent = CatPalette(isDark).base;
 
     return SizedBox(
       height: AbotSizes.buttonMdHeight,
@@ -350,7 +347,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             borderRadius: BorderRadius.circular(AbotRadius.sm),
           ),
           textStyle: const TextStyle(
-            fontFamily: 'JetBrains Mono',
+            fontFamily: AbotFonts.mono,
             fontSize: 14,
             fontWeight: FontWeight.w500,
           ),

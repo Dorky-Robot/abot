@@ -35,6 +35,10 @@ extension type XtermTerminal._(JSObject _) implements JSObject {
   /// Load an addon
   external void loadAddon(JSObject addon);
 
+  /// Attach a custom key event handler. Return false to prevent xterm from
+  /// processing the event, true to let it through.
+  external void attachCustomKeyEventHandler(JSFunction handler);
+
   /// Set terminal options
   void setOption(String key, JSAny? value) {
     final options = this['options'] as JSObject;

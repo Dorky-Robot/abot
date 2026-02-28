@@ -7,17 +7,16 @@ import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
 import '../../core/theme/abot_theme.dart';
-import '../session/session_drawer.dart';
 import '../terminal/terminal_facet.dart';
-import '../shortcut_bar/shortcut_bar.dart';
-import 'drag_controller.dart';
 import 'facet.dart';
 import 'facet_manager.dart';
+import 'stage_strip.dart';
 
 const double _narrowBreakpoint = 768;
 
 /// The main app shell that holds facets and the shortcut bar.
-/// This is the top-level widget that wires WebSocket messages to facets.
+/// Uses an iPad Stage Manager-style layout: one focused facet takes center
+/// stage while others appear as perspective-tilted cards in a side strip.
 class FacetShell extends ConsumerStatefulWidget {
   const FacetShell({super.key});
 
@@ -26,45 +25,23 @@ class FacetShell extends ConsumerStatefulWidget {
 }
 
 class _FacetShellState extends ConsumerState<FacetShell>
-    with WidgetsBindingObserver, TickerProviderStateMixin {
-  late final DragController _dragController;
-
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   /// Monotonic counter for session naming (starts at 1 since 'main' is created in _initialize).
   int _nextSessionId = 1;
 
-  /// GlobalKeys per facet for FLIP rect tracking.
+  /// GlobalKeys per facet — ensures Flutter reuses the same State when a facet
+  /// moves between focused/offstage, preserving the HtmlElementView (xterm).
   final Map<String, GlobalKey> _facetKeys = {};
 
-  /// Drag preview state per facet (only the dragged facet shows a preview).
-  final Map<String, DragPreview> _previews = {};
-
-  /// The facet currently being dragged (for opacity).
-  String? _draggingId;
-
-  /// FLIP animation: captured rects before a mutation.
-  Map<String, Rect>? _flipSnapshot;
-
-  /// Animation controller for FLIP transitions.
-  AnimationController? _flipController;
-
-  /// Per-facet translation offsets for FLIP animation.
-  final Map<String, Offset> _flipOffsets = {};
+  /// Swap animation controller (300ms, easeOutCubic).
+  AnimationController? _swapController;
+  String? _swapFromId;
+  String? _swapToId;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-
-    _dragController = DragController(
-      onReorderColumns: _onReorderColumns,
-      onMoveFacetToColumn: _onMoveFacetToColumn,
-      onSplitFacetToOwnColumn: _onSplitFacetToOwnColumn,
-      onPreviewChanged: _onPreviewChanged,
-      onDragEnd: _onDragEnd,
-      hitTest: _hitTestFacet,
-      isInMultiFacetColumn: _isInMultiFacetColumn,
-      hasMultipleColumns: _hasMultipleColumns,
-    );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initialize();
@@ -86,6 +63,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
         for (final facet in facets) {
           wsService.attachSession(facet.sessionName);
         }
+        // Refresh server session list on connect
+        ref.read(sessionServiceProvider.notifier).refresh();
       }
     });
   }
@@ -163,17 +142,59 @@ class _FacetShellState extends ConsumerState<FacetShell>
     _facetKeys.remove(facetId);
   }
 
-  /// Open or focus a session from the session drawer.
-  void _onSessionTap(String sessionName) {
+  void _focusFacet(String facetId) {
+    final currentFocused = ref.read(facetManagerProvider).focusedId;
+    if (facetId == currentFocused) return;
+
+    _startSwapAnimation(currentFocused, facetId);
+    ref.read(facetManagerProvider.notifier).focus(facetId);
+  }
+
+  /// Open or focus a server session from the strip.
+  void _onOpenSession(String sessionName) {
     final facetState = ref.read(facetManagerProvider);
     final existing = facetState.getBySession(sessionName);
     if (existing != null) {
-      ref.read(facetManagerProvider.notifier).focus(existing.id);
+      _focusFacet(existing.id);
     } else {
       final facetManager = ref.read(facetManagerProvider.notifier);
       facetManager.create(sessionName);
       final wsService = ref.read(wsServiceProvider.notifier);
       wsService.attachSession(sessionName);
+    }
+  }
+
+  /// Delete a server session (with confirmation).
+  Future<void> _onDeleteSession(String sessionName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Session'),
+        content: Text('Delete session "$sessionName"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      try {
+        await ref
+            .read(sessionServiceProvider.notifier)
+            .deleteSession(sessionName);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to delete session: $e')),
+          );
+        }
+      }
     }
   }
 
@@ -185,188 +206,68 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  // --- FLIP animation helpers ---
+  // --- Swap animation ---
 
-  /// Snapshot all facet rects before a mutation.
-  void _captureFlipSnapshot() {
-    _flipSnapshot = {};
-    for (final entry in _facetKeys.entries) {
-      final key = entry.value;
-      final renderBox =
-          key.currentContext?.findRenderObject() as RenderBox?;
-      if (renderBox != null && renderBox.hasSize) {
-        final position = renderBox.localToGlobal(Offset.zero);
-        _flipSnapshot![entry.key] =
-            Rect.fromLTWH(position.dx, position.dy,
-                renderBox.size.width, renderBox.size.height);
-      }
-    }
-  }
+  void _startSwapAnimation(String? fromId, String toId) {
+    _swapFromId = fromId;
+    _swapToId = toId;
 
-  /// After a mutation + rebuild, compute inverse offsets and animate.
-  void _animateFlip() {
-    if (_flipSnapshot == null) return;
-    final snapshot = _flipSnapshot!;
-    _flipSnapshot = null;
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _flipOffsets.clear();
-      bool hasMotion = false;
-
-      for (final entry in _facetKeys.entries) {
-        final oldRect = snapshot[entry.key];
-        if (oldRect == null) continue;
-        final renderBox =
-            entry.value.currentContext?.findRenderObject() as RenderBox?;
-        if (renderBox == null || !renderBox.hasSize) continue;
-
-        final newPos = renderBox.localToGlobal(Offset.zero);
-        final dx = oldRect.left - newPos.dx;
-        final dy = oldRect.top - newPos.dy;
-        if (dx.abs() > 0.5 || dy.abs() > 0.5) {
-          _flipOffsets[entry.key] = Offset(dx, dy);
-          hasMotion = true;
-        }
-      }
-
-      if (!hasMotion) return;
-
-      _flipController?.dispose();
-      _flipController = AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 200),
-      );
-      _flipController!.addListener(() {
-        setState(() {});
-      });
-      _flipController!.addStatusListener((status) {
-        if (status == AnimationStatus.completed) {
-          _flipOffsets.clear();
-          setState(() {});
-        }
-      });
-
-      setState(() {}); // Apply inverse offsets
-      _flipController!.forward(from: 0);
+    _swapController?.dispose();
+    _swapController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    _swapController!.addListener(() {
+      setState(() {});
     });
-  }
-
-  /// Wrap a mutation with FLIP: capture → mutate → animate.
-  void _flipMutate(VoidCallback mutate) {
-    _captureFlipSnapshot();
-    mutate();
-    _animateFlip();
-  }
-
-  // --- Drag controller callbacks ---
-
-  void _onReorderColumns(String draggedId, String targetId) {
-    _flipMutate(() {
-      ref.read(facetManagerProvider.notifier).reorderColumns(draggedId, targetId);
-    });
-  }
-
-  void _onMoveFacetToColumn(String facetId, String targetFacetId) {
-    _flipMutate(() {
-      ref
-          .read(facetManagerProvider.notifier)
-          .moveFacetToColumn(facetId, targetFacetId);
-    });
-  }
-
-  void _onSplitFacetToOwnColumn(String facetId) {
-    _flipMutate(() {
-      ref.read(facetManagerProvider.notifier).splitFacetToOwnColumn(facetId);
-    });
-  }
-
-  void _onPreviewChanged(String facetId, DragPreview preview) {
-    setState(() {
-      if (preview == DragPreview.none) {
-        _previews.remove(facetId);
-      } else {
-        _previews[facetId] = preview;
+    _swapController!.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        setState(() {
+          _swapFromId = null;
+          _swapToId = null;
+        });
       }
     });
-  }
-
-  void _onDragEnd() {
-    setState(() {
-      _draggingId = null;
-      _previews.clear();
-    });
-  }
-
-  /// Hit-test: find which facet's GlobalKey rect contains the given point.
-  String? _hitTestFacet(Offset globalPosition, String excludeId) {
-    for (final entry in _facetKeys.entries) {
-      if (entry.key == excludeId) continue;
-      final renderBox =
-          entry.value.currentContext?.findRenderObject() as RenderBox?;
-      if (renderBox == null || !renderBox.hasSize) continue;
-      final position = renderBox.localToGlobal(Offset.zero);
-      final rect = Rect.fromLTWH(
-          position.dx, position.dy, renderBox.size.width, renderBox.size.height);
-      if (rect.contains(globalPosition)) return entry.key;
-    }
-    return null;
-  }
-
-  bool _isInMultiFacetColumn(String facetId) {
-    final state = ref.read(facetManagerProvider);
-    final pos = state.findFacet(facetId);
-    if (pos == null) return false;
-    return state.columns[pos.col].length > 1;
-  }
-
-  bool _hasMultipleColumns() {
-    return ref.read(facetManagerProvider).columns.length > 1;
-  }
-
-  // --- Titlebar drag forwarding ---
-
-  void _onTitleDragStart(String facetId, Offset globalPosition) {
-    setState(() => _draggingId = facetId);
-    _dragController.onDragStart(facetId, globalPosition);
-  }
-
-  void _onTitleDragUpdate(Offset globalPosition) {
-    _dragController.onDragUpdate(globalPosition);
-  }
-
-  void _onTitleDragEnd() {
-    _dragController.onDragEnded();
+    _swapController!.forward(from: 0);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _flipController?.dispose();
+    _swapController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final facetState = ref.watch(facetManagerProvider);
-    final wsState = ref.watch(wsServiceProvider);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final showTitleBar = facetState.count > 1;
+    final sessionsAsync = ref.watch(sessionServiceProvider);
 
     return Scaffold(
-      backgroundColor: isDark ? CatppuccinMocha.base : CatppuccinLatte.base,
-      endDrawer: SessionDrawer(onSessionTap: _onSessionTap),
+      backgroundColor: context.palette.base,
       body: CallbackShortcuts(
         bindings: {
           // Ctrl+` — cycle focus
           const SingleActivator(LogicalKeyboardKey.backquote,
               control: true): () {
+            final state = ref.read(facetManagerProvider);
+            final currentFocused = state.focusedId;
             ref.read(facetManagerProvider.notifier).cycleFocus();
+            final newFocused = ref.read(facetManagerProvider).focusedId;
+            if (currentFocused != newFocused && newFocused != null) {
+              _startSwapAnimation(currentFocused, newFocused);
+            }
           },
           // Ctrl+Tab — cycle focus (alias)
           const SingleActivator(LogicalKeyboardKey.tab,
               control: true): () {
+            final state = ref.read(facetManagerProvider);
+            final currentFocused = state.focusedId;
             ref.read(facetManagerProvider.notifier).cycleFocus();
+            final newFocused = ref.read(facetManagerProvider).focusedId;
+            if (currentFocused != newFocused && newFocused != null) {
+              _startSwapAnimation(currentFocused, newFocused);
+            }
           },
           // Ctrl+N — new session
           SingleActivator(LogicalKeyboardKey.keyN,
@@ -396,133 +297,144 @@ class _FacetShellState extends ConsumerState<FacetShell>
         },
         child: Focus(
           autofocus: true,
-          child: Column(
-            children: [
-              Expanded(
-                child: _buildFacetLayout(facetState, showTitleBar),
-              ),
-              ShortcutBar(
-                facets: facetState.orderedFacets,
-                focusedId: facetState.focusedId,
-                connected: wsState.connectionState ==
-                    WsConnectionState.connected,
-                onNewFacet: _createNewFacet,
-                onFocusFacet: (id) {
-                  ref.read(facetManagerProvider.notifier).focus(id);
-                },
-              ),
-            ],
-          ),
+          child: _buildFacetLayout(facetState, sessionsAsync),
         ),
       ),
     );
   }
 
-  Widget _buildFacetLayout(FacetManagerState state, bool showTitleBar) {
+  Widget _buildFacetLayout(
+      FacetManagerState state, AsyncValue<List<SessionInfo>> sessionsAsync) {
     if (state.facets.isEmpty) {
       return const Center(
         child: Text(
           'Connecting...',
           style: TextStyle(
-            fontFamily: 'JetBrains Mono',
+            fontFamily: AbotFonts.mono,
             fontSize: 14,
           ),
         ),
       );
     }
 
-    // Single facet: fullscreen, no titlebar
-    if (state.count == 1) {
-      final facet = state.orderedFacets.first;
-      _ensureKey(facet.id);
-      return TerminalFacet(
-        key: _facetKeys[facet.id],
-        facetId: facet.id,
-        sessionName: facet.sessionName,
-        isFocused: true,
-        showTitleBar: false,
-      );
-    }
+    final stripFacets = state.stripOrder
+        .map((id) => state.facets[id])
+        .whereType<FacetData>()
+        .toList();
 
-    // Multiple facets: column-based tiling with narrow breakpoint
+    final serverSessions = sessionsAsync.when(
+      data: (list) => list,
+      loading: () => <SessionInfo>[],
+      error: (_, __) => <SessionInfo>[],
+    );
+    final openSessionNames = state.facets.values
+        .map((f) => f.sessionName)
+        .toSet();
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final narrow = constraints.maxWidth < _narrowBreakpoint;
 
         if (narrow) {
-          // Vertical stack — all facets in a single column
-          return Column(
-            children: state.orderedFacets.map((facet) {
-              return Expanded(
-                child: _buildFacetTile(facet, state, showTitleBar),
-              );
-            }).toList(),
-          );
+          // Narrow: focused facet fullscreen only
+          return _buildFocusedArea(state);
         }
 
-        // Wide layout: Row of columns, each column is a Column of facets
+        // Wide: StageStrip always visible on left + focused area
         return Row(
-          children: state.columns.map((columnIds) {
-            return Expanded(
-              child: Column(
-                children: columnIds.map((facetId) {
-                  final facet = state.facets[facetId];
-                  if (facet == null) return const SizedBox.shrink();
-                  return Expanded(
-                    child: _buildFacetTile(facet, state, showTitleBar),
-                  );
-                }).toList(),
-              ),
-            );
-          }).toList(),
+          children: [
+            StageStrip(
+              focusedFacet: state.focused,
+              stripFacets: stripFacets,
+              serverSessions: serverSessions,
+              openSessionNames: openSessionNames,
+              onFocusFacet: _focusFacet,
+              onCloseFacet: _closeFacet,
+              onOpenSession: _onOpenSession,
+              onDeleteSession: _onDeleteSession,
+              onNewSession: _createNewFacet,
+            ),
+            Expanded(child: _buildFocusedArea(state)),
+          ],
         );
       },
     );
   }
 
-  /// Build a single facet tile with drag callbacks and FLIP animation.
-  Widget _buildFacetTile(
-      FacetData facet, FacetManagerState state, bool showTitleBar) {
-    _ensureKey(facet.id);
-    return _buildAnimatedFacet(
-      facet.id,
-      TerminalFacet(
-        key: _facetKeys[facet.id],
-        facetId: facet.id,
-        sessionName: facet.sessionName,
-        isFocused: facet.id == state.focusedId,
-        showTitleBar: showTitleBar,
-        dragPreview: _previews[facet.id] ?? DragPreview.none,
-        isDragging: _draggingId == facet.id,
-        onFocused: () {
-          ref.read(facetManagerProvider.notifier).focus(facet.id);
-        },
-        onClose: () => _closeFacet(facet.id, facet.sessionName),
-        onTitleDragStart: _onTitleDragStart,
-        onTitleDragUpdate: _onTitleDragUpdate,
-        onTitleDragEnd: _onTitleDragEnd,
-      ),
+  /// Build the focused terminal area with unfocused terminals kept alive
+  /// via Offstage (preserves xterm.js state).
+  Widget _buildFocusedArea(FacetManagerState state) {
+    final focusedId = state.focusedId;
+    if (focusedId == null) return const SizedBox.shrink();
+
+    _ensureKey(focusedId);
+    for (final id in state.stripOrder) {
+      _ensureKey(id);
+    }
+
+    // Compute swap animation values
+    final swapT = _swapController != null
+        ? Curves.easeOutCubic.transform(_swapController!.value)
+        : 1.0;
+    final isSwapping = _swapFromId != null && _swapToId != null;
+
+    return Stack(
+      children: [
+        // Focused terminal — visible, full size, with swap-in animation
+        AnimatedBuilder(
+          animation: _swapController ?? const AlwaysStoppedAnimation(1.0),
+          builder: (context, child) {
+            final scale = isSwapping && _swapToId == focusedId
+                ? 0.95 + 0.05 * swapT
+                : 1.0;
+            final opacity = isSwapping && _swapToId == focusedId
+                ? swapT
+                : 1.0;
+            return Opacity(
+              opacity: opacity,
+              child: Transform.scale(
+                scale: scale,
+                child: child,
+              ),
+            );
+          },
+          child: TerminalFacet(
+            key: _facetKeys[focusedId],
+            facetId: focusedId,
+            sessionName: state.facets[focusedId]!.sessionName,
+            isFocused: true,
+            showTitleBar: state.count > 1,
+            onClose: state.count > 1
+                ? () => _closeFacet(
+                    focusedId, state.facets[focusedId]!.sessionName)
+                : null,
+          ),
+        ),
+        // Unfocused terminals — alive but hidden (preserves xterm.js state).
+        // Using Positioned off-screen because Offstage may not properly hide
+        // HtmlElementView DOM elements.
+        for (final id in state.stripOrder)
+          Positioned(
+            left: -9999,
+            top: -9999,
+            child: SizedBox(
+              width: 1,
+              height: 1,
+              child: TerminalFacet(
+                key: _facetKeys[id],
+                facetId: id,
+                sessionName: state.facets[id]!.sessionName,
+                isFocused: false,
+                showTitleBar: false,
+              ),
+            ),
+          ),
+      ],
     );
   }
 
-  /// Ensure a GlobalKey exists for a facet (for FLIP rect tracking).
+  /// Ensure a GlobalKey exists for a facet.
   void _ensureKey(String facetId) {
     _facetKeys.putIfAbsent(facetId, () => GlobalKey());
-  }
-
-  /// Wrap a facet widget with a FLIP translation transform if animating.
-  Widget _buildAnimatedFacet(String facetId, Widget child) {
-    final offset = _flipOffsets[facetId];
-    if (offset == null || _flipController == null) return child;
-
-    // Animate from inverse offset back to zero
-    final t = Curves.easeOut.transform(_flipController!.value);
-    final dx = offset.dx * (1 - t);
-    final dy = offset.dy * (1 - t);
-
-    return Transform.translate(
-      offset: Offset(dx, dy),
-      child: child,
-    );
   }
 }
