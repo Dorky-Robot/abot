@@ -97,14 +97,7 @@ class AuthNotifier extends Notifier<AuthState> {
         'challengeId': challengeId,
       });
 
-      // Store credential ID
-      final credId = (credential['id'] as JSString?)?.toDart;
-      if (credId != null) {
-        web.window.localStorage.setItem('abot_current_credential', credId);
-      }
-
-      // Reload to get fresh CSRF token
-      web.window.location.href = '/';
+      _completeAuth(credential);
     } on ApiException catch (e) {
       state = state.copyWith(error: e.message);
     } catch (e) {
@@ -149,19 +142,21 @@ class AuthNotifier extends Notifier<AuthState> {
         'userAgent': web.window.navigator.userAgent,
       });
 
-      // Store credential ID
-      final credId = (credential['id'] as JSString?)?.toDart;
-      if (credId != null) {
-        web.window.localStorage.setItem('abot_current_credential', credId);
-      }
-
-      // Reload to get fresh CSRF token
-      web.window.location.href = '/';
+      _completeAuth(credential);
     } on ApiException catch (e) {
       state = state.copyWith(error: e.message);
     } catch (e) {
       state = state.copyWith(error: _getWebAuthnErrorMessage(e));
     }
+  }
+
+  /// Store credential ID and reload to get fresh CSRF token.
+  void _completeAuth(JSObject credential) {
+    final credId = (credential['id'] as JSString?)?.toDart;
+    if (credId != null) {
+      web.window.localStorage.setItem('abot_current_credential', credId);
+    }
+    web.window.location.href = '/';
   }
 
   /// Convert a Dart object to a JSObject (for passing to JS APIs).

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/network/api_client.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
@@ -28,8 +29,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
     with WidgetsBindingObserver, TickerProviderStateMixin {
   late final DragController _dragController;
 
-  /// Monotonic counter for session naming to avoid collisions after delete.
-  int _nextSessionId = 0;
+  /// Monotonic counter for session naming (starts at 1 since 'main' is created in _initialize).
+  int _nextSessionId = 1;
 
   /// GlobalKeys per facet for FLIP rect tracking.
   final Map<String, GlobalKey> _facetKeys = {};
@@ -139,13 +140,14 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   Future<void> _createNewFacet() async {
     final facetManager = ref.read(facetManagerProvider.notifier);
-    final sessionName = _nextSessionId == 0 ? 'main' : 'session-$_nextSessionId';
+    final sessionName = 'session-$_nextSessionId';
     _nextSessionId++;
 
     try {
       await ref.read(sessionServiceProvider.notifier).createSession(sessionName);
-    } catch (_) {
-      // Session may already exist on server — proceed with attach
+    } on ApiException catch (e) {
+      // 409 Conflict means session already exists — safe to proceed with attach
+      if (e.statusCode != null && e.statusCode != 409) rethrow;
     }
 
     facetManager.create(sessionName);
@@ -356,11 +358,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
       endDrawer: SessionDrawer(onSessionTap: _onSessionTap),
       body: CallbackShortcuts(
         bindings: {
+          // Ctrl+` — cycle focus
           const SingleActivator(LogicalKeyboardKey.backquote,
               control: true): () {
             ref.read(facetManagerProvider.notifier).cycleFocus();
           },
-          // Ctrl+Tab — cycle focus
+          // Ctrl+Tab — cycle focus (alias)
           const SingleActivator(LogicalKeyboardKey.tab,
               control: true): () {
             ref.read(facetManagerProvider.notifier).cycleFocus();
@@ -383,9 +386,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
               }
             }
           },
-          // Ctrl+Shift+F — toggle search
-          const SingleActivator(LogicalKeyboardKey.keyF,
-              control: true, shift: true): () {
+          // Ctrl+Shift+F / Cmd+Shift+F — toggle search
+          SingleActivator(LogicalKeyboardKey.keyF,
+              control: defaultTargetPlatform != TargetPlatform.macOS,
+              meta: defaultTargetPlatform == TargetPlatform.macOS,
+              shift: true): () {
             _toggleSearch();
           },
         },

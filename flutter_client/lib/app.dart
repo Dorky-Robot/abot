@@ -44,6 +44,8 @@ class AuthGuard extends ConsumerStatefulWidget {
 }
 
 class _AuthGuardState extends ConsumerState<AuthGuard> {
+  bool _redirecting = false;
+
   @override
   void initState() {
     super.initState();
@@ -76,10 +78,13 @@ class _AuthGuardState extends ConsumerState<AuthGuard> {
     }
 
     if (!auth.isAuthenticated) {
-      // Redirect to login
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        web.window.location.href = '/login';
-      });
+      // Redirect to login (guard prevents duplicate redirects)
+      if (!_redirecting) {
+        _redirecting = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          web.window.location.href = '/login';
+        });
+      }
       return const SizedBox.shrink();
     }
 
