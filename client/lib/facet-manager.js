@@ -7,6 +7,8 @@
  *
  * Dragging a titlebar downward past 80px moves the facet into the adjacent
  * column (appended at the bottom), collapsing from side-by-side into stacked.
+ * Dragging upward past 80px splits the facet out of a stacked column into
+ * its own new column to the right.
  *
  * Tiling layouts:
  *   1 facet  → fullscreen (hide titlebar)
@@ -74,8 +76,8 @@ export function createFacetManager(options = {}) {
   // --- Global drag controller ---
   let activeDrag = null;   // { facetId, startX, startY, committed, lastSwapTime, moveTriggered }
   const SWAP_COOLDOWN = 100; // ms between reorder swaps
-  const MOVE_PREVIEW_THRESHOLD = 40;  // px downward to show move indicator
-  const MOVE_THRESHOLD = 80;          // px downward to move facet to adjacent column
+  const MOVE_PREVIEW_THRESHOLD = 40;  // px to show move indicator
+  const MOVE_THRESHOLD = 80;          // px to execute move
 
   function setupGlobalPointerHandlers() {
     function onMove(clientX, clientY) {
@@ -92,16 +94,18 @@ export function createFacetManager(options = {}) {
         facet.el.style.pointerEvents = "none";
       }
 
-      // Decide between move-to-column (primarily downward) and reorder (primarily horizontal)
-      const primarilyDown = dy > 0 && dy > Math.abs(dx);
+      // Classify drag direction
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+      const primarilyDown = dy > 0 && absDy > absDx;
+      const primarilyUp = dy < 0 && absDy > absDx;
 
       if (primarilyDown && !activeDrag.moveTriggered) {
-        // Move detection: dragging downward — move facet into adjacent column
-        // Only show preview / trigger move when there are multiple columns
+        // Drag down: move facet into adjacent column (stack)
+        // Only valid when there are multiple columns
         if (columns.length <= 1) return;
 
         if (dy > MOVE_THRESHOLD) {
-          // Find target facet via elementFromPoint (pointer-events:none lets us see through)
           const targetEl = document.elementFromPoint(clientX, clientY);
           const targetFacetEl = targetEl?.closest(".facet");
           if (targetFacetEl && targetFacetEl !== facet.el) {
@@ -119,8 +123,24 @@ export function createFacetManager(options = {}) {
         } else if (dy > MOVE_PREVIEW_THRESHOLD) {
           facet.el.classList.add("facet-move-preview");
         }
+      } else if (primarilyUp && !activeDrag.moveTriggered) {
+        // Drag up: split facet out of stacked column into its own column
+        // Only valid when the facet's column has multiple facets
+        const pos = findFacet(activeDrag.facetId);
+        if (!pos || columns[pos[0]].length <= 1) return;
+
+        if (-dy > MOVE_THRESHOLD) {
+          activeDrag.moveTriggered = true;
+          facet.el.classList.remove("facet-split-out-preview", "facet-reordering", "facet-dragging");
+          facet.el.style.pointerEvents = "";
+          splitFacetToOwnColumn(activeDrag.facetId);
+          activeDrag = null;
+          return;
+        } else if (-dy > MOVE_PREVIEW_THRESHOLD) {
+          facet.el.classList.add("facet-split-out-preview");
+        }
       } else {
-        facet.el.classList.remove("facet-move-preview");
+        facet.el.classList.remove("facet-move-preview", "facet-split-out-preview");
 
         // Hit-test through the dragged facet to find the target for reorder
         const targetEl = document.elementFromPoint(clientX, clientY);
@@ -143,7 +163,7 @@ export function createFacetManager(options = {}) {
         const wasCommitted = activeDrag.committed;
         const facet = facets.get(activeDrag.facetId);
         if (facet) {
-          facet.el.classList.remove("facet-dragging", "facet-reordering", "facet-move-preview");
+          facet.el.classList.remove("facet-dragging", "facet-reordering", "facet-move-preview", "facet-split-out-preview");
           facet.el.style.pointerEvents = "";
         }
         activeDrag = null;
@@ -263,6 +283,22 @@ export function createFacetManager(options = {}) {
         if (targetColIdx > srcCol) adjustedTarget--;
       }
       columns[adjustedTarget].push(facetId);
+    });
+  }
+
+  /**
+   * Split a facet out of a multi-facet column into its own new column
+   * (inserted to the right of the source column). FLIP animated.
+   */
+  function splitFacetToOwnColumn(facetId) {
+    const srcPos = findFacet(facetId);
+    if (!srcPos) return;
+    const [srcCol, srcRow] = srcPos;
+    if (columns[srcCol].length <= 1) return;
+
+    flipAnimate(null, () => {
+      columns[srcCol].splice(srcRow, 1);
+      columns.splice(srcCol + 1, 0, [facetId]);
     });
   }
 

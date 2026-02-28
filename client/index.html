@@ -1164,10 +1164,10 @@
       cursor: grabbing;
     }
 
-    .facet-move-preview::after {
+    .facet-move-preview::after,
+    .facet-split-out-preview::after {
       content: '';
       position: absolute;
-      bottom: 0;
       left: 8px;
       right: 8px;
       height: 3px;
@@ -1176,6 +1176,12 @@
       box-shadow: 0 0 8px var(--accent-active);
       z-index: 10;
       pointer-events: none;
+    }
+    .facet-move-preview::after {
+      bottom: 0;
+    }
+    .facet-split-out-preview::after {
+      top: 0;
     }
 
     /* --- Facet tabs in global bar --- */
