@@ -10,7 +10,7 @@ class SessionInfo {
 
   factory SessionInfo.fromJson(Map<String, dynamic> json) => SessionInfo(
         name: json['name'] as String,
-        status: (json['status'] as String?) ?? 'running',
+        status: (json['alive'] as bool? ?? true) ? 'running' : 'exited',
       );
 }
 
@@ -50,13 +50,13 @@ class SessionServiceNotifier extends AsyncNotifier<List<SessionInfo>> {
 
   /// Rename an existing session.
   Future<void> renameSession(String oldName, String newName) async {
-    await _api.put('/sessions/$oldName', {'name': newName});
+    await _api.put('/sessions/${Uri.encodeComponent(oldName)}', {'name': newName});
     state = AsyncData(await listSessions());
   }
 
   /// Delete a session.
   Future<void> deleteSession(String name) async {
-    await _api.delete('/sessions/$name');
+    await _api.delete('/sessions/${Uri.encodeComponent(name)}');
     state = AsyncData(await listSessions());
   }
 

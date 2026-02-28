@@ -28,6 +28,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
     with WidgetsBindingObserver, TickerProviderStateMixin {
   late final DragController _dragController;
 
+  /// Monotonic counter for session naming to avoid collisions after delete.
+  int _nextSessionId = 0;
+
   /// GlobalKeys per facet for FLIP rect tracking.
   final Map<String, GlobalKey> _facetKeys = {};
 
@@ -136,8 +139,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   Future<void> _createNewFacet() async {
     final facetManager = ref.read(facetManagerProvider.notifier);
-    final count = ref.read(facetManagerProvider).count;
-    final sessionName = count == 0 ? 'main' : 'session-$count';
+    final sessionName = _nextSessionId == 0 ? 'main' : 'session-$_nextSessionId';
+    _nextSessionId++;
 
     try {
       await ref.read(sessionServiceProvider.notifier).createSession(sessionName);

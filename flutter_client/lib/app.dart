@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import 'core/auth/auth_provider.dart';
+import 'core/auth/device_utils.dart' show isLocalhost;
 import 'core/theme/abot_theme.dart';
 import 'core/theme/theme_provider.dart';
 import 'features/auth/login_screen.dart';
@@ -47,24 +48,17 @@ class _AuthGuardState extends ConsumerState<AuthGuard> {
   void initState() {
     super.initState();
     // If not localhost, check auth status
-    if (!_isLocalhost) {
+    if (!isLocalhost()) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         ref.read(authProvider.notifier).checkStatus();
       });
     }
   }
 
-  bool get _isLocalhost {
-    final hostname = web.window.location.hostname;
-    return hostname == 'localhost' ||
-        hostname == '127.0.0.1' ||
-        hostname == '::1';
-  }
-
   @override
   Widget build(BuildContext context) {
     // Localhost bypass — show child directly
-    if (_isLocalhost) {
+    if (isLocalhost()) {
       return widget.child;
     }
 

@@ -36,6 +36,15 @@ fn inject_csrf_meta(html: &str) -> String {
     )
 }
 
+/// Serve index.html with CSRF token injection.
+fn serve_index_with_csrf() -> Option<Response> {
+    ClientAssets::get("index.html").map(|file| {
+        let html = String::from_utf8_lossy(&file.data).into_owned();
+        let html = inject_csrf_meta(&html);
+        Html(html).into_response()
+    })
+}
+
 pub async fn index(
     State(app): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -45,28 +54,15 @@ pub async fn index(
         return Redirect::to("/login").into_response();
     }
 
-    match ClientAssets::get("index.html") {
-        Some(file) => {
-            let html = String::from_utf8_lossy(&file.data).into_owned();
-            let html = inject_csrf_meta(&html);
-            Html(html).into_response()
-        }
-        None => Html("<h1>abot: client not found</h1>".to_string()).into_response(),
-    }
+    serve_index_with_csrf()
+        .unwrap_or_else(|| Html("<h1>abot: client not found</h1>".to_string()).into_response())
 }
 
 pub async fn login() -> Response {
     #[cfg(feature = "flutter")]
     {
         // Flutter SPA handles login route internally
-        match ClientAssets::get("index.html") {
-            Some(file) => {
-                let html = String::from_utf8_lossy(&file.data).into_owned();
-                let html = inject_csrf_meta(&html);
-                Html(html).into_response()
-            }
-            None => StatusCode::NOT_FOUND.into_response(),
-        }
+        serve_index_with_csrf().unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
     }
     #[cfg(not(feature = "flutter"))]
     {

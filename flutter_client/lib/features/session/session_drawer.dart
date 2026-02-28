@@ -20,7 +20,6 @@ class _SessionDrawerState extends ConsumerState<SessionDrawer> {
   void initState() {
     super.initState();
     // Refresh session list when drawer opens
-    ref.listenManual(sessionServiceProvider, (_, _) {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(sessionServiceProvider.notifier).refresh();
     });

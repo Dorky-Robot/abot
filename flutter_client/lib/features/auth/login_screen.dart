@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:web/web.dart' as web;
 import '../../core/auth/auth_provider.dart';
+import '../../core/auth/device_utils.dart' show isLocalhost;
 import '../../core/theme/abot_theme.dart';
 
 /// Login/setup screen — matches the vanilla client's login.html flow.
@@ -31,16 +31,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     super.dispose();
   }
 
-  bool get _isLocalhost {
-    final hostname = web.window.location.hostname;
-    return hostname == 'localhost' ||
-        hostname == '127.0.0.1' ||
-        hostname == '::1';
-  }
-
   Future<void> _handleRegister() async {
     final token = _tokenController.text.trim();
-    if (token.isEmpty && !_isLocalhost) {
+    if (token.isEmpty && !isLocalhost()) {
       ref.read(authProvider.notifier).setError(
           'Setup token is required for remote registration.');
       return;
@@ -80,6 +73,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 ? _buildLoading(subtextColor)
                 : auth.isSetup
                     ? _buildLoginView(
+                        isDark: isDark,
                         cardColor: cardColor,
                         textColor: textColor,
                         subtextColor: subtextColor,
@@ -88,6 +82,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         error: auth.error,
                       )
                     : _buildSetupView(
+                        isDark: isDark,
                         cardColor: cardColor,
                         textColor: textColor,
                         subtextColor: subtextColor,
@@ -120,6 +115,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Widget _buildSetupView({
+    required bool isDark,
     required Color cardColor,
     required Color textColor,
     required Color subtextColor,
@@ -158,15 +154,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             textAlign: TextAlign.center,
           ),
           const SizedBox(height: AbotSpacing.xl),
-          if (!_isLocalhost) ...[
-            _buildTokenField(textColor, subtextColor, cardColor),
+          if (!isLocalhost()) ...[
+            _buildTokenField(isDark: isDark, textColor: textColor, subtextColor: subtextColor),
             const SizedBox(height: AbotSpacing.md),
           ],
           _buildButton(
             label: 'Register Passkey',
             onPressed: _isLoading ? null : _handleRegister,
+            isDark: isDark,
             accentColor: accentColor,
-            textColor: textColor,
           ),
           if (error != null) ...[
             const SizedBox(height: AbotSpacing.md),
@@ -186,6 +182,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Widget _buildLoginView({
+    required bool isDark,
     required Color cardColor,
     required Color textColor,
     required Color subtextColor,
@@ -227,8 +224,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           _buildButton(
             label: 'Sign In',
             onPressed: _isLoading ? null : _handleLogin,
+            isDark: isDark,
             accentColor: accentColor,
-            textColor: textColor,
           ),
           const SizedBox(height: AbotSpacing.lg),
           // Register new passkey section
@@ -263,13 +260,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           ),
           if (_showRegisterFields) ...[
             const SizedBox(height: AbotSpacing.md),
-            _buildTokenField(textColor, subtextColor, cardColor),
+            _buildTokenField(isDark: isDark, textColor: textColor, subtextColor: subtextColor),
             const SizedBox(height: AbotSpacing.md),
             _buildButton(
               label: 'Register',
               onPressed: _isLoading ? null : _handleRegister,
+              isDark: isDark,
               accentColor: accentColor,
-              textColor: textColor,
             ),
           ],
           if (error != null) ...[
@@ -290,8 +287,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   Widget _buildTokenField(
-      Color textColor, Color subtextColor, Color cardColor) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+      {required bool isDark,
+      required Color textColor,
+      required Color subtextColor}) {
     final fieldBg = isDark ? CatppuccinMocha.mantle : CatppuccinLatte.mantle;
     final borderColor =
         isDark ? CatppuccinMocha.surface1 : CatppuccinLatte.surface1;
@@ -336,10 +334,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget _buildButton({
     required String label,
     required VoidCallback? onPressed,
+    required bool isDark,
     required Color accentColor,
-    required Color textColor,
   }) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     final onAccent = isDark ? CatppuccinMocha.base : CatppuccinLatte.base;
 
     return SizedBox(
