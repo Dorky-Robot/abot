@@ -26,8 +26,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build Flutter web client
+        run: |
+          cd flutter_client
+          flutter pub get
+          flutter build web --wasm
+
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --features flutter --target ${{ matrix.target }}
 
       - name: Package binary
         run: |
@@ -67,6 +78,10 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: abot-source
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
@@ -86,11 +101,11 @@ jobs:
 
           cd homebrew-tap
           mkdir -p Formula
-          if [ -f ../homebrew/abot.rb ]; then
+          if [ -f ../abot-source/homebrew/abot.rb ]; then
             sed -e "s/VERSION/${VERSION}/g" \
                 -e "s/SHA256_ARM64/${SHA_ARM64}/g" \
                 -e "s/SHA256_X86_64/${SHA_X86_64}/g" \
-                ../homebrew/abot.rb > Formula/abot.rb
+                ../abot-source/homebrew/abot.rb > Formula/abot.rb
           fi
 
           # If template wasn't available, build from scratch
