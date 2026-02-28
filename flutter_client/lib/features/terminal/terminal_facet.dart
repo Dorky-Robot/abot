@@ -44,6 +44,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   XtermFitAddon? _fitAddon;
   XtermSearchAddon? _searchAddon;
   web.ResizeObserver? _resizeObserver;
+  web.HTMLElement? _container;
   bool _registered = false;
   Timer? _fitDebounce;
   bool _showSearch = false;
@@ -73,6 +74,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   }
 
   void _initTerminal(web.HTMLElement container) {
+    _container = container;
     final xtermTheme = ref.read(xtermThemeProvider);
     final themeJs = createXtermThemeJs(
       background: xtermTheme.background,
@@ -145,6 +147,48 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key == 'F') {
         return false.toJS;
       }
+
+      // macOS: translate Cmd+key → Ctrl+key for terminal use.
+      // Native terminal emulators treat Cmd as Ctrl for most keys.
+      // Skip browser-reserved combos (copy/paste/select-all/etc).
+      if (event.metaKey &&
+          !event.ctrlKey &&
+          !event.shiftKey &&
+          event.type == 'keydown') {
+        final key = event.key.toLowerCase();
+        const browserReserved = {
+          'c', 'v', 'a', 'x', 'z', // clipboard / undo
+          'r', 'l', 't', 'q', // browser navigation
+        };
+        if (key.length == 1 && !browserReserved.contains(key)) {
+          final code = key.codeUnitAt(0);
+          if (code >= 97 && code <= 122) {
+            // Send Ctrl+letter (ASCII 1-26)
+            final wsService = ref.read(wsServiceProvider.notifier);
+            wsService.sendInput(
+              String.fromCharCode(code - 96),
+              session: widget.sessionName,
+            );
+            event.preventDefault();
+            return false.toJS;
+          }
+        }
+        // Cmd+Backspace → Ctrl+U (kill line)
+        if (event.key == 'Backspace') {
+          final wsService = ref.read(wsServiceProvider.notifier);
+          wsService.sendInput('\x15', session: widget.sessionName);
+          event.preventDefault();
+          return false.toJS;
+        }
+        // Cmd+Delete → Ctrl+K (kill to end of line)
+        if (event.key == 'Delete') {
+          final wsService = ref.read(wsServiceProvider.notifier);
+          wsService.sendInput('\x0b', session: widget.sessionName);
+          event.preventDefault();
+          return false.toJS;
+        }
+      }
+
       return true.toJS;
     }).toJS);
 
@@ -207,6 +251,45 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   @override
   void toggleSearch() {
     setState(() => _showSearch = !_showSearch);
+  }
+
+  /// Apply a CSS transform to the xterm container for GPU-accelerated animation.
+  /// When [animate] is true, a CSS transition smoothly interpolates the transform.
+  @override
+  void setGenieTransform(String transform, {bool animate = true}) {
+    if (_container == null) return;
+    _container!.style.transformOrigin = '0 0';
+    _container!.style.transition = animate
+        ? 'transform 400ms cubic-bezier(0.4, 0, 0.2, 1)'
+        : 'none';
+    _container!.style.transform = transform;
+    _container!.style.pointerEvents = 'none';
+    _setAncestorOverflow(true);
+  }
+
+  /// Clear CSS transform (restore full-size rendering).
+  @override
+  void clearGenieTransform({bool animate = true}) {
+    if (_container == null) return;
+    _container!.style.transition = animate
+        ? 'transform 400ms cubic-bezier(0.4, 0, 0.2, 1)'
+        : 'none';
+    _container!.style.transform = '';
+    _container!.style.transformOrigin = '';
+    _container!.style.pointerEvents = '';
+    _setAncestorOverflow(false);
+  }
+
+  /// Allow (or restore) CSS overflow on ancestor DOM elements so that
+  /// CSS-transformed content can render outside the platform view bounds.
+  void _setAncestorOverflow(bool allowOverflow) {
+    web.Element? el = _container?.parentElement;
+    for (var i = 0; i < 8 && el != null; i++) {
+      if (el is web.HTMLElement) {
+        el.style.overflow = allowOverflow ? 'visible' : '';
+      }
+      el = el.parentElement;
+    }
   }
 
   @override
@@ -314,6 +397,8 @@ abstract interface class TerminalSink {
   String get sessionName;
   void writeData(String data);
   void toggleSearch();
+  void setGenieTransform(String transform, {bool animate});
+  void clearGenieTransform({bool animate});
 }
 
 /// Global registry so the WS message handler can route output to the right terminal
@@ -323,8 +408,12 @@ class TerminalRegistry {
 
   final Map<String, TerminalSink> _terminals = {};
 
+  /// Called when a new terminal finishes initializing and registers itself.
+  VoidCallback? onRegistered;
+
   void register(String facetId, TerminalSink sink) {
     _terminals[facetId] = sink;
+    onRegistered?.call();
   }
 
   void unregister(String facetId) {
@@ -351,5 +440,16 @@ class TerminalRegistry {
   /// Toggle search on a specific facet
   void toggleSearchOnFacet(String facetId) {
     _terminals[facetId]?.toggleSearch();
+  }
+
+  /// Apply a CSS transform to a facet's terminal container (GPU-accelerated).
+  void setGenieTransform(String facetId, String transform,
+      {bool animate = true}) {
+    _terminals[facetId]?.setGenieTransform(transform, animate: animate);
+  }
+
+  /// Clear CSS transform on a facet's terminal container.
+  void clearGenieTransform(String facetId, {bool animate = true}) {
+    _terminals[facetId]?.clearGenieTransform(animate: animate);
   }
 }

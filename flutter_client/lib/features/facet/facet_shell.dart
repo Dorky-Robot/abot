@@ -25,7 +25,7 @@ class FacetShell extends ConsumerStatefulWidget {
 }
 
 class _FacetShellState extends ConsumerState<FacetShell>
-    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+    with WidgetsBindingObserver {
   /// Monotonic counter for session naming (starts at 1 since 'main' is created in _initialize).
   int _nextSessionId = 1;
 
@@ -33,27 +33,75 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// moves between focused/offstage, preserving the HtmlElementView (xterm).
   final Map<String, GlobalKey> _facetKeys = {};
 
-  /// Swap animation controller (300ms, easeOutCubic).
-  AnimationController? _swapController;
-  String? _swapFromId;
-  String? _swapToId;
+  /// Card position keys for CSS transform calculation.
+  final Map<String, GlobalKey> _cardKeys = {};
+  final GlobalKey _mainAreaKey = GlobalKey();
+
+  /// IDs of terminals currently animating (skip instant transform updates).
+  final Set<String> _animatingIds = {};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
+    // When a terminal finishes initializing, re-apply sidebar transforms.
+    TerminalRegistry.instance.onRegistered = _onTerminalReady;
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initialize();
     });
   }
 
-  void _initialize() {
-    final facetManager = ref.read(facetManagerProvider.notifier);
-    facetManager.create('main');
+  void _onTerminalReady() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _updateSidebarTransforms();
+    });
+  }
 
+  void _initialize() async {
+    final facetManager = ref.read(facetManagerProvider.notifier);
     final wsService = ref.read(wsServiceProvider.notifier);
     wsService.onMessage = _handleServerMessage;
+
+    // Fetch existing sessions from the server and restore facets for them.
+    // On first launch 'main' won't exist yet, so we create it as fallback.
+    try {
+      final sessions = await ref
+          .read(sessionServiceProvider.notifier)
+          .listSessions();
+      final running = sessions.where((s) => s.status == 'running').toList();
+
+      if (running.isNotEmpty) {
+        // Create facets for all running sessions. Focus 'main' if it exists,
+        // otherwise focus the first one.
+        final mainFirst = <SessionInfo>[
+          ...running.where((s) => s.name == 'main'),
+          ...running.where((s) => s.name != 'main'),
+        ];
+        for (final s in mainFirst) {
+          facetManager.create(s.name);
+          // Bump _nextSessionId past existing session-N names
+          final match = RegExp(r'^session-(\d+)$').firstMatch(s.name);
+          if (match != null) {
+            final n = int.parse(match.group(1)!) + 1;
+            if (n > _nextSessionId) _nextSessionId = n;
+          }
+        }
+        // Focus 'main' if present
+        final mainFacet = ref.read(facetManagerProvider).getBySession('main');
+        if (mainFacet != null) {
+          facetManager.focus(mainFacet.id);
+        }
+      } else {
+        // No sessions on server — create 'main'
+        facetManager.create('main');
+      }
+    } catch (_) {
+      // Server unreachable — create 'main' optimistically
+      facetManager.create('main');
+    }
+
     wsService.connect();
 
     ref.listenManual(wsServiceProvider, (prev, next) {
@@ -135,19 +183,54 @@ class _FacetShellState extends ConsumerState<FacetShell>
   }
 
   void _closeFacet(String facetId, String sessionName) {
+    TerminalRegistry.instance.clearGenieTransform(facetId, animate: false);
     final facetManager = ref.read(facetManagerProvider.notifier);
     final wsService = ref.read(wsServiceProvider.notifier);
     wsService.detachSession(sessionName);
     facetManager.remove(facetId);
     _facetKeys.remove(facetId);
+    _cardKeys.remove(facetId);
   }
 
   void _focusFacet(String facetId) {
     final currentFocused = ref.read(facetManagerProvider).focusedId;
     if (facetId == currentFocused) return;
 
-    _startSwapAnimation(currentFocused, facetId);
+    // Capture card rects BEFORE focus changes the sidebar layout.
+    _ensureCardKey(facetId);
+    if (currentFocused != null) _ensureCardKey(currentFocused);
+
+    final mainRect = _getRectForKey(_mainAreaKey);
+
+    // Animate outgoing terminal: full-size → sidebar card position (CSS transition).
+    if (currentFocused != null && mainRect != null) {
+      final outgoingCardRect = _getRectForKey(_cardKeys[currentFocused]!);
+      if (outgoingCardRect != null) {
+        _animatingIds.add(currentFocused);
+        final tx = outgoingCardRect.left - mainRect.left;
+        final ty = outgoingCardRect.top - mainRect.top;
+        final sx = outgoingCardRect.width / mainRect.width;
+        final sy = outgoingCardRect.height / mainRect.height;
+        TerminalRegistry.instance.setGenieTransform(
+          currentFocused,
+          'translate(${tx}px, ${ty}px) scale($sx, $sy)',
+        );
+      }
+    }
+
+    // Animate incoming terminal: sidebar card → full-size (CSS transition).
+    _animatingIds.add(facetId);
+    TerminalRegistry.instance.clearGenieTransform(facetId);
+
+    // Change focus instantly (terminal input works immediately).
     ref.read(facetManagerProvider.notifier).focus(facetId);
+
+    // After CSS transition completes, refresh all transforms.
+    Future.delayed(const Duration(milliseconds: 450), () {
+      if (!mounted) return;
+      _animatingIds.clear();
+      _updateSidebarTransforms();
+    });
   }
 
   /// Open or focus a server session from the strip.
@@ -206,35 +289,56 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  // --- Swap animation ---
+  // --- CSS transform positioning ---
 
-  void _startSwapAnimation(String? fromId, String toId) {
-    _swapFromId = fromId;
-    _swapToId = toId;
+  Rect? _getRectForKey(GlobalKey key) {
+    final renderBox = key.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null || !renderBox.hasSize) return null;
+    final position = renderBox.localToGlobal(Offset.zero);
+    return position & renderBox.size;
+  }
 
-    _swapController?.dispose();
-    _swapController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 300),
-    );
-    _swapController!.addListener(() {
-      setState(() {});
-    });
-    _swapController!.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        setState(() {
-          _swapFromId = null;
-          _swapToId = null;
-        });
-      }
-    });
-    _swapController!.forward(from: 0);
+  void _ensureCardKey(String facetId) {
+    _cardKeys.putIfAbsent(facetId, () => GlobalKey());
+  }
+
+  /// Compute and apply CSS transforms for all non-focused terminals so they
+  /// appear at their sidebar card positions. Called after each layout.
+  void _updateSidebarTransforms() {
+    final state = ref.read(facetManagerProvider);
+    final mainRect = _getRectForKey(_mainAreaKey);
+    if (mainRect == null || mainRect.width == 0 || mainRect.height == 0) return;
+
+    for (final id in state.stripOrder) {
+      if (_animatingIds.contains(id)) continue;
+      _ensureCardKey(id);
+      final cardRect = _getRectForKey(_cardKeys[id]!);
+      if (cardRect == null) continue;
+
+      final tx = cardRect.left - mainRect.left;
+      final ty = cardRect.top - mainRect.top;
+      final sx = cardRect.width / mainRect.width;
+      final sy = cardRect.height / mainRect.height;
+
+      TerminalRegistry.instance.setGenieTransform(
+        id,
+        'translate(${tx}px, ${ty}px) scale($sx, $sy)',
+        animate: false,
+      );
+    }
+
+    // Ensure the focused terminal has no transform.
+    if (state.focusedId != null &&
+        !_animatingIds.contains(state.focusedId)) {
+      TerminalRegistry.instance
+          .clearGenieTransform(state.focusedId!, animate: false);
+    }
   }
 
   @override
   void dispose() {
+    TerminalRegistry.instance.onRegistered = null;
     WidgetsBinding.instance.removeObserver(this);
-    _swapController?.dispose();
     super.dispose();
   }
 
@@ -251,23 +355,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
           const SingleActivator(LogicalKeyboardKey.backquote,
               control: true): () {
             final state = ref.read(facetManagerProvider);
-            final currentFocused = state.focusedId;
-            ref.read(facetManagerProvider.notifier).cycleFocus();
-            final newFocused = ref.read(facetManagerProvider).focusedId;
-            if (currentFocused != newFocused && newFocused != null) {
-              _startSwapAnimation(currentFocused, newFocused);
-            }
+            if (state.order.length <= 1) return;
+            final idx = state.order.indexOf(state.focusedId ?? '');
+            _focusFacet(state.order[(idx + 1) % state.order.length]);
           },
           // Ctrl+Tab — cycle focus (alias)
           const SingleActivator(LogicalKeyboardKey.tab,
               control: true): () {
             final state = ref.read(facetManagerProvider);
-            final currentFocused = state.focusedId;
-            ref.read(facetManagerProvider.notifier).cycleFocus();
-            final newFocused = ref.read(facetManagerProvider).focusedId;
-            if (currentFocused != newFocused && newFocused != null) {
-              _startSwapAnimation(currentFocused, newFocused);
-            }
+            if (state.order.length <= 1) return;
+            final idx = state.order.indexOf(state.focusedId ?? '');
+            _focusFacet(state.order[(idx + 1) % state.order.length]);
           },
           // Ctrl+N — new session
           SingleActivator(LogicalKeyboardKey.keyN,
@@ -317,10 +415,14 @@ class _FacetShellState extends ConsumerState<FacetShell>
       );
     }
 
-    final stripFacets = state.stripOrder
+    final allFacets = state.order
         .map((id) => state.facets[id])
         .whereType<FacetData>()
         .toList();
+
+    for (final facet in allFacets) {
+      _ensureCardKey(facet.id);
+    }
 
     final serverSessions = sessionsAsync.when(
       data: (list) => list,
@@ -344,12 +446,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
         return Row(
           children: [
             StageStrip(
-              focusedFacet: state.focused,
-              stripFacets: stripFacets,
+              allFacets: allFacets,
+              focusedId: state.focusedId,
+              cardKeys: _cardKeys,
               serverSessions: serverSessions,
               openSessionNames: openSessionNames,
               onFocusFacet: _focusFacet,
               onCloseFacet: _closeFacet,
+              onReorder: (oldIndex, newIndex) {
+                ref.read(facetManagerProvider.notifier)
+                    .reorder(oldIndex, newIndex);
+              },
               onOpenSession: _onOpenSession,
               onDeleteSession: _onDeleteSession,
               onNewSession: _createNewFacet,
@@ -361,43 +468,42 @@ class _FacetShellState extends ConsumerState<FacetShell>
     );
   }
 
-  /// Build the focused terminal area with unfocused terminals kept alive
-  /// via Offstage (preserves xterm.js state).
+  /// Build the focused terminal area. ALL terminals are full-size
+  /// (Positioned.fill) so their xterm.js WebGL canvases render at full
+  /// resolution. Unfocused terminals are CSS-transformed to their sidebar
+  /// card positions (GPU-accelerated).
   Widget _buildFocusedArea(FacetManagerState state) {
     final focusedId = state.focusedId;
     if (focusedId == null) return const SizedBox.shrink();
 
-    _ensureKey(focusedId);
-    for (final id in state.stripOrder) {
+    for (final id in state.order) {
       _ensureKey(id);
     }
 
-    // Compute swap animation values
-    final swapT = _swapController != null
-        ? Curves.easeOutCubic.transform(_swapController!.value)
-        : 1.0;
-    final isSwapping = _swapFromId != null && _swapToId != null;
+    // After layout, compute CSS transforms for sidebar positioning.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _updateSidebarTransforms();
+    });
 
     return Stack(
+      key: _mainAreaKey,
+      clipBehavior: Clip.none,
       children: [
-        // Focused terminal — visible, full size, with swap-in animation
-        AnimatedBuilder(
-          animation: _swapController ?? const AlwaysStoppedAnimation(1.0),
-          builder: (context, child) {
-            final scale = isSwapping && _swapToId == focusedId
-                ? 0.95 + 0.05 * swapT
-                : 1.0;
-            final opacity = isSwapping && _swapToId == focusedId
-                ? swapT
-                : 1.0;
-            return Opacity(
-              opacity: opacity,
-              child: Transform.scale(
-                scale: scale,
-                child: child,
+        // Unfocused terminals — full-size, CSS-transformed to sidebar slots.
+        for (final id in state.stripOrder)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: TerminalFacet(
+                key: _facetKeys[id],
+                facetId: id,
+                sessionName: state.facets[id]!.sessionName,
+                isFocused: false,
+                showTitleBar: false,
               ),
-            );
-          },
+            ),
+          ),
+        // Focused terminal — on top, no CSS transform.
+        Positioned.fill(
           child: TerminalFacet(
             key: _facetKeys[focusedId],
             facetId: focusedId,
@@ -410,25 +516,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 : null,
           ),
         ),
-        // Unfocused terminals — alive but hidden (preserves xterm.js state).
-        // Using Positioned off-screen because Offstage may not properly hide
-        // HtmlElementView DOM elements.
-        for (final id in state.stripOrder)
-          Positioned(
-            left: -9999,
-            top: -9999,
-            child: SizedBox(
-              width: 1,
-              height: 1,
-              child: TerminalFacet(
-                key: _facetKeys[id],
-                facetId: id,
-                sessionName: state.facets[id]!.sessionName,
-                isFocused: false,
-                showTitleBar: false,
-              ),
-            ),
-          ),
       ],
     );
   }
