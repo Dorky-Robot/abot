@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1e1e2e">
+  <title>abot</title>
+
+  <!-- xterm.js styles -->
+  <link rel="stylesheet" href="vendor/xterm/xterm.min.css">
+  <!-- Fonts -->
+  <link rel="stylesheet" href="vendor/fonts/fonts.css">
+
+  <!-- xterm.js ESM modules loaded as globals for Dart interop -->
+  <script type="module">
+    import { Terminal } from './vendor/xterm/xterm.esm.js';
+    import { FitAddon } from './vendor/xterm/addon-fit.esm.js';
+    import { WebLinksAddon } from './vendor/xterm/addon-web-links.esm.js';
+    import { SearchAddon } from './vendor/xterm/addon-search.esm.js';
+
+    // Expose to globalThis for Dart JS interop
+    globalThis.xtermJs = {
+      Terminal,
+      FitAddon,
+      WebLinksAddon,
+      SearchAddon,
+    };
+  </script>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #1e1e2e;
+    }
+    /* Ensure xterm containers fill their space */
+    .xterm-container {
+      width: 100%;
+      height: 100%;
+    }
+    .xterm-container .xterm {
+      height: 100%;
+    }
+  </style>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

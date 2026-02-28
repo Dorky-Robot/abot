@@ -27,7 +27,10 @@ let facetIdCounter = 0;
 const NARROW_BREAKPOINT = 768;
 const DRAG_THRESHOLD = 8;
 
-function gcd(a, b) { while (b !== 0) { [a, b] = [b, a % b]; } return a; }
+function gcd(a, b) {
+  while (b !== 0) { [a, b] = [b, a % b]; }
+  return a;
+}
 function lcm(a, b) { return (a * b) / gcd(a, b); }
 
 /**
@@ -94,6 +97,9 @@ export function createFacetManager(options = {}) {
 
       if (primarilyDown && !activeDrag.moveTriggered) {
         // Move detection: dragging downward — move facet into adjacent column
+        // Only show preview / trigger move when there are multiple columns
+        if (columns.length <= 1) return;
+
         if (dy > MOVE_THRESHOLD) {
           // Find target facet via elementFromPoint (pointer-events:none lets us see through)
           const targetEl = document.elementFromPoint(clientX, clientY);
@@ -166,13 +172,12 @@ export function createFacetManager(options = {}) {
 
   setupGlobalPointerHandlers();
 
-  // --- FLIP animation helper ---
+  // --- FLIP animation ---
 
   /**
-   * Snapshot facet rects, run a mutation callback, apply layout, then
-   * FLIP-animate all facets that moved.
-   * @param {Set<string>|null} skipIds - facet IDs to exclude from snapshot
-   * @param {() => void} mutate - callback that modifies `columns`
+   * Snapshot facet rects, run a mutation callback, apply layout, then FLIP animate.
+   * @param {Set<string>|null} skipIds - facet IDs to exclude from the snapshot (e.g. the dragged facet)
+   * @param {() => void} mutate - callback that changes `columns` before layout is applied
    */
   function flipAnimate(skipIds, mutate) {
     const allIds = getAllTiledIds();
@@ -220,10 +225,11 @@ export function createFacetManager(options = {}) {
     }
   }
 
-  // --- Column reorder / move ---
+  // --- Column operations ---
 
   /**
    * Swap the columns containing draggedId and targetId with FLIP animation.
+   * The dragged facet is excluded from the animation (it's under the pointer).
    */
   function reorderColumns(draggedId, targetId) {
     const dragPos = findFacet(draggedId);
@@ -240,7 +246,8 @@ export function createFacetManager(options = {}) {
 
   /**
    * Move a facet from its current column into another column (appended at bottom).
-   * If the source column becomes empty, it is removed. FLIP animated.
+   * If the source column becomes empty, it is removed. All facets animate (the
+   * moved facet's pointer-events and classes are already cleared by the caller).
    */
   function moveFacetToColumn(facetId, targetColIdx) {
     const srcPos = findFacet(facetId);
@@ -250,12 +257,12 @@ export function createFacetManager(options = {}) {
 
     flipAnimate(null, () => {
       columns[srcCol].splice(srcRow, 1);
-      let adjusted = targetColIdx;
+      let adjustedTarget = targetColIdx;
       if (columns[srcCol].length === 0) {
         columns.splice(srcCol, 1);
-        if (targetColIdx > srcCol) adjusted--;
+        if (targetColIdx > srcCol) adjustedTarget--;
       }
-      columns[adjusted].push(facetId);
+      columns[adjustedTarget].push(facetId);
     });
   }
 
@@ -330,7 +337,7 @@ export function createFacetManager(options = {}) {
       let i = 0;
       const areas = [];
       for (const col of cols) {
-        for (let j = 0; j < col.length; j++) {
+        for (let r = 0; r < col.length; r++) {
           areas.push({ gridColumn: "1", gridRow: `${++i}` });
         }
       }
@@ -619,6 +626,10 @@ export function createFacetManager(options = {}) {
 
   // --- Windowing queries ---
 
+  function has(id) {
+    return facets.has(id);
+  }
+
   function getTiledFacets() {
     return getAllTiledIds().map(id => facets.get(id)).filter(Boolean);
   }
@@ -682,6 +693,7 @@ export function createFacetManager(options = {}) {
     getAll,
     count,
     applyThemeToAll,
+    has,
     getTiledFacets,
   };
 }
