@@ -15,9 +15,8 @@ import 'stage_strip.dart';
 
 const double _narrowBreakpoint = 768;
 
-/// The main app shell that holds facets and the shortcut bar.
-/// Uses an iPad Stage Manager-style layout: one focused facet takes center
-/// stage while others appear as perspective-tilted cards in a side strip.
+/// The main app shell — iPad Stage Manager-style layout: one focused facet
+/// takes center stage while others appear as live-preview cards in a side strip.
 class FacetShell extends ConsumerStatefulWidget {
   const FacetShell({super.key});
 
@@ -43,6 +42,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   /// Timer for post-animation cleanup (cancelled on rapid re-focus).
   Timer? _animationCleanup;
+
+  /// Subscription from ref.listenManual — cancelled in dispose.
+  ProviderSubscription? _wsSubscription;
 
   @override
   void initState() {
@@ -111,7 +113,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
     if (!mounted) return;
     wsService.connect();
 
-    ref.listenManual(wsServiceProvider, (prev, next) {
+    _wsSubscription = ref.listenManual(wsServiceProvider, (prev, next) {
+      if (!mounted) return;
       if (prev?.connectionState != WsConnectionState.connected &&
           next.connectionState == WsConnectionState.connected) {
         final facets = ref.read(facetManagerProvider).orderedFacets;
@@ -360,6 +363,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   @override
   void dispose() {
     _animationCleanup?.cancel();
+    _wsSubscription?.close();
     TerminalRegistry.instance.onRegistered = null;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();

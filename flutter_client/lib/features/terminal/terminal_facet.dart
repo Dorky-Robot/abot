@@ -45,6 +45,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   web.HTMLElement? _container;
   bool _registered = false;
   Timer? _fitDebounce;
+  Timer? _initialFit;
   bool _showSearch = false;
 
   @override
@@ -213,8 +214,8 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     }).toJS);
     _resizeObserver!.observe(container);
 
-    // Initial fit
-    Future.delayed(const Duration(milliseconds: 50), () {
+    // Initial fit (cancellable in dispose)
+    _initialFit = Timer(const Duration(milliseconds: 50), () {
       _fitAddon?.fit();
     });
 
@@ -296,6 +297,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   void dispose() {
     TerminalRegistry.instance.unregister(widget.facetId);
     _fitDebounce?.cancel();
+    _initialFit?.cancel();
     _resizeObserver?.disconnect();
     _terminal?.dispose();
     super.dispose();
