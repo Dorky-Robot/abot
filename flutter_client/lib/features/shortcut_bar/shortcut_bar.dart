@@ -4,7 +4,7 @@ import '../../core/theme/abot_theme.dart';
 import '../../core/network/websocket_service.dart';
 import '../facet/facet.dart';
 
-/// Bottom shortcut bar: [+ New] [tab1] [tab2] ... [spacer] [Esc] [Tab]
+/// Bottom shortcut bar: [+ New] [tab1] [tab2] ... [spacer] [sessions] [Esc] [Tab]
 class ShortcutBar extends ConsumerWidget {
   final List<FacetData> facets;
   final String? focusedId;
@@ -120,19 +120,33 @@ class ShortcutBar extends ConsumerWidget {
             ),
           ),
 
+          // Sessions drawer button
+          _BarButton(
+            onTap: () {
+              Scaffold.of(context).openEndDrawer();
+            },
+            isDark: isDark,
+            child: Icon(Icons.dashboard_outlined, size: 16, color: textColor),
+          ),
+          const SizedBox(width: AbotSpacing.xs),
+
           // Pinned shortcuts
           _ShortcutButton(
             label: 'Esc',
-            sequence: '\x1b',
             isDark: isDark,
-            ref: ref,
+            onTap: () {
+              final wsService = ref.read(wsServiceProvider.notifier);
+              wsService.sendInput('\x1b');
+            },
           ),
           const SizedBox(width: AbotSpacing.xs),
           _ShortcutButton(
             label: 'Tab',
-            sequence: '\t',
             isDark: isDark,
-            ref: ref,
+            onTap: () {
+              final wsService = ref.read(wsServiceProvider.notifier);
+              wsService.sendInput('\t');
+            },
           ),
 
           const SizedBox(width: AbotSpacing.sm),
@@ -181,15 +195,13 @@ class _BarButton extends StatelessWidget {
 
 class _ShortcutButton extends StatelessWidget {
   final String label;
-  final String sequence;
   final bool isDark;
-  final WidgetRef ref;
+  final VoidCallback onTap;
 
   const _ShortcutButton({
     required this.label,
-    required this.sequence,
     required this.isDark,
-    required this.ref,
+    required this.onTap,
   });
 
   @override
@@ -202,10 +214,7 @@ class _ShortcutButton extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () {
-          final wsService = ref.read(wsServiceProvider.notifier);
-          wsService.sendInput(sequence);
-        },
+        onTap: onTap,
         borderRadius: BorderRadius.circular(AbotRadius.sm),
         child: Container(
           padding: const EdgeInsets.symmetric(

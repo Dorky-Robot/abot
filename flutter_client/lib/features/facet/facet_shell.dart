@@ -1,9 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/network/api_client.dart';
+import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
 import '../../core/theme/abot_theme.dart';
+import '../session/session_drawer.dart';
 import '../terminal/terminal_facet.dart';
 import '../shortcut_bar/shortcut_bar.dart';
 import 'drag_controller.dart';
@@ -24,6 +28,9 @@ class FacetShell extends ConsumerStatefulWidget {
 class _FacetShellState extends ConsumerState<FacetShell>
     with WidgetsBindingObserver, TickerProviderStateMixin {
   late final DragController _dragController;
+
+  /// Monotonic counter for session naming (starts at 1 since 'main' is created in _initialize).
+  int _nextSessionId = 1;
 
   /// GlobalKeys per facet for FLIP rect tracking.
   final Map<String, GlobalKey> _facetKeys = {};
@@ -131,12 +138,19 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   // --- Facet lifecycle ---
 
-  void _createNewFacet() {
+  Future<void> _createNewFacet() async {
     final facetManager = ref.read(facetManagerProvider.notifier);
-    final count = ref.read(facetManagerProvider).count;
-    final sessionName = count == 0 ? 'main' : 'session-$count';
-    facetManager.create(sessionName);
+    final sessionName = 'session-$_nextSessionId';
+    _nextSessionId++;
 
+    try {
+      await ref.read(sessionServiceProvider.notifier).createSession(sessionName);
+    } on ApiException catch (e) {
+      // 409 Conflict means session already exists — safe to proceed with attach
+      if (e.statusCode != null && e.statusCode != 409) rethrow;
+    }
+
+    facetManager.create(sessionName);
     final wsService = ref.read(wsServiceProvider.notifier);
     wsService.attachSession(sessionName);
   }
@@ -147,6 +161,28 @@ class _FacetShellState extends ConsumerState<FacetShell>
     wsService.detachSession(sessionName);
     facetManager.remove(facetId);
     _facetKeys.remove(facetId);
+  }
+
+  /// Open or focus a session from the session drawer.
+  void _onSessionTap(String sessionName) {
+    final facetState = ref.read(facetManagerProvider);
+    final existing = facetState.getBySession(sessionName);
+    if (existing != null) {
+      ref.read(facetManagerProvider.notifier).focus(existing.id);
+    } else {
+      final facetManager = ref.read(facetManagerProvider.notifier);
+      facetManager.create(sessionName);
+      final wsService = ref.read(wsServiceProvider.notifier);
+      wsService.attachSession(sessionName);
+    }
+  }
+
+  /// Toggle search on the focused terminal.
+  void _toggleSearch() {
+    final focusedId = ref.read(facetManagerProvider).focusedId;
+    if (focusedId != null) {
+      TerminalRegistry.instance.toggleSearchOnFacet(focusedId);
+    }
   }
 
   // --- FLIP animation helpers ---
@@ -319,11 +355,43 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
     return Scaffold(
       backgroundColor: isDark ? CatppuccinMocha.base : CatppuccinLatte.base,
+      endDrawer: SessionDrawer(onSessionTap: _onSessionTap),
       body: CallbackShortcuts(
         bindings: {
+          // Ctrl+` — cycle focus
           const SingleActivator(LogicalKeyboardKey.backquote,
               control: true): () {
             ref.read(facetManagerProvider.notifier).cycleFocus();
+          },
+          // Ctrl+Tab — cycle focus (alias)
+          const SingleActivator(LogicalKeyboardKey.tab,
+              control: true): () {
+            ref.read(facetManagerProvider.notifier).cycleFocus();
+          },
+          // Ctrl+N — new session
+          SingleActivator(LogicalKeyboardKey.keyN,
+              control: defaultTargetPlatform != TargetPlatform.macOS,
+              meta: defaultTargetPlatform == TargetPlatform.macOS): () {
+            _createNewFacet();
+          },
+          // Ctrl+W — close current facet
+          SingleActivator(LogicalKeyboardKey.keyW,
+              control: defaultTargetPlatform != TargetPlatform.macOS,
+              meta: defaultTargetPlatform == TargetPlatform.macOS): () {
+            final state = ref.read(facetManagerProvider);
+            if (state.focusedId != null && state.count > 1) {
+              final facet = state.facets[state.focusedId!];
+              if (facet != null) {
+                _closeFacet(facet.id, facet.sessionName);
+              }
+            }
+          },
+          // Ctrl+Shift+F / Cmd+Shift+F — toggle search
+          SingleActivator(LogicalKeyboardKey.keyF,
+              control: defaultTargetPlatform != TargetPlatform.macOS,
+              meta: defaultTargetPlatform == TargetPlatform.macOS,
+              shift: true): () {
+            _toggleSearch();
           },
         },
         child: Focus(

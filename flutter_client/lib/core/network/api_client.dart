@@ -25,7 +25,8 @@ class ApiClient {
     final response =
         await web.window.fetch(url.toJS).toDart;
     if (!response.ok) {
-      throw ApiException('GET $url failed (${response.status})');
+      throw ApiException('GET $url failed (${response.status})',
+          statusCode: response.status);
     }
     final text = (await response.text().toDart).toDart;
     if (text.isEmpty) return null;
@@ -74,7 +75,7 @@ class ApiClient {
           message = body['error'] as String;
         }
       } catch (_) {}
-      throw ApiException(message);
+      throw ApiException(message, statusCode: response.status);
     }
     final text = (await response.text().toDart).toDart;
     if (text.isEmpty) return null;
@@ -84,7 +85,8 @@ class ApiClient {
 
 class ApiException implements Exception {
   final String message;
-  const ApiException(this.message);
+  final int? statusCode;
+  const ApiException(this.message, {this.statusCode});
   @override
   String toString() => message;
 }
