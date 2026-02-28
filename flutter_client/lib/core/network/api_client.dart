@@ -25,7 +25,8 @@ class ApiClient {
     final response =
         await web.window.fetch(url.toJS).toDart;
     if (!response.ok) {
-      throw ApiException('GET $url failed (${response.status})');
+      throw ApiException('GET $url failed (${response.status})',
+          statusCode: response.status);
     }
     final text = (await response.text().toDart).toDart;
     if (text.isEmpty) return null;
