@@ -137,40 +137,4 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     state = state.copyWith(order: newOrder);
   }
 
-  /// Reorder within the strip (non-focused items only).
-  /// Converts strip indices to full order indices.
-  void reorderStrip(int oldStripIndex, int newStripIndex) {
-    final strip = state.stripOrder;
-    if (oldStripIndex < 0 || oldStripIndex >= strip.length) return;
-    if (newStripIndex < 0 || newStripIndex > strip.length) return;
-
-    final movedId = strip[oldStripIndex];
-    final targetId = newStripIndex < strip.length
-        ? strip[newStripIndex > oldStripIndex ? newStripIndex : newStripIndex]
-        : null;
-
-    final newOrder = List<String>.from(state.order);
-    newOrder.remove(movedId);
-
-    if (targetId != null) {
-      final targetIdx = newOrder.indexOf(targetId);
-      if (newStripIndex > oldStripIndex) {
-        newOrder.insert(targetIdx + 1, movedId);
-      } else {
-        newOrder.insert(targetIdx, movedId);
-      }
-    } else {
-      newOrder.add(movedId);
-    }
-
-    state = state.copyWith(order: newOrder);
-  }
-
-  /// Cycle focus to the next facet in order.
-  void cycleFocus() {
-    if (state.order.length <= 1) return;
-    final currentIdx = state.order.indexOf(state.focusedId ?? '');
-    final nextIdx = (currentIdx + 1) % state.order.length;
-    state = state.copyWith(focusedId: state.order[nextIdx]);
-  }
 }

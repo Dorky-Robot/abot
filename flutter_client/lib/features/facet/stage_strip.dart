@@ -13,7 +13,6 @@ class StageStrip extends StatelessWidget {
   final List<SessionInfo> serverSessions;
   final Set<String> openSessionNames;
   final void Function(String facetId) onFocusFacet;
-  final void Function(String facetId, String sessionName) onCloseFacet;
   final void Function(int oldIndex, int newIndex) onReorder;
   final void Function(String sessionName) onOpenSession;
   final void Function(String sessionName) onDeleteSession;
@@ -27,7 +26,6 @@ class StageStrip extends StatelessWidget {
     required this.serverSessions,
     required this.openSessionNames,
     required this.onFocusFacet,
-    required this.onCloseFacet,
     required this.onReorder,
     required this.onOpenSession,
     required this.onDeleteSession,
@@ -189,26 +187,21 @@ class _FocusedCard extends StatelessWidget {
         border: Border.all(color: p.mauve, width: 1.5),
       ),
       padding: const EdgeInsets.all(AbotSpacing.sm),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Icon(Icons.terminal, size: 14, color: p.mauve),
-              const SizedBox(width: AbotSpacing.xs),
-              Expanded(
-                child: Text(
-                  facet.sessionName,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: p.text,
-                    fontFamily: AbotFonts.mono,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
+          Icon(Icons.terminal, size: 14, color: p.mauve),
+          const SizedBox(width: AbotSpacing.xs),
+          Expanded(
+            child: Text(
+              facet.sessionName,
+              style: TextStyle(
+                fontSize: 11,
+                color: p.text,
+                fontFamily: AbotFonts.mono,
+                fontWeight: FontWeight.w600,
               ),
-            ],
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         ],
       ),

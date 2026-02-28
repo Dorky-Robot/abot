@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -40,6 +41,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// IDs of terminals currently animating (skip instant transform updates).
   final Set<String> _animatingIds = {};
 
+  /// Timer for post-animation cleanup (cancelled on rapid re-focus).
+  Timer? _animationCleanup;
+
   @override
   void initState() {
     super.initState();
@@ -59,7 +63,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     });
   }
 
-  void _initialize() async {
+  Future<void> _initialize() async {
     final facetManager = ref.read(facetManagerProvider.notifier);
     final wsService = ref.read(wsServiceProvider.notifier);
     wsService.onMessage = _handleServerMessage;
@@ -70,6 +74,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       final sessions = await ref
           .read(sessionServiceProvider.notifier)
           .listSessions();
+      if (!mounted) return;
       final running = sessions.where((s) => s.status == 'running').toList();
 
       if (running.isNotEmpty) {
@@ -97,11 +102,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
         // No sessions on server — create 'main'
         facetManager.create('main');
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[FacetShell] Failed to fetch sessions: $e');
       // Server unreachable — create 'main' optimistically
       facetManager.create('main');
     }
 
+    if (!mounted) return;
     wsService.connect();
 
     ref.listenManual(wsServiceProvider, (prev, next) {
@@ -226,7 +233,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
     ref.read(facetManagerProvider.notifier).focus(facetId);
 
     // After CSS transition completes, refresh all transforms.
-    Future.delayed(const Duration(milliseconds: 450), () {
+    // Cancel any previous cleanup timer (handles rapid focus cycling).
+    _animationCleanup?.cancel();
+    _animationCleanup = Timer(const Duration(milliseconds: 450), () {
       if (!mounted) return;
       _animatingIds.clear();
       _updateSidebarTransforms();
@@ -279,6 +288,14 @@ class _FacetShellState extends ConsumerState<FacetShell>
         }
       }
     }
+  }
+
+  /// Cycle focus to the next facet in order.
+  void _cycleFocus() {
+    final state = ref.read(facetManagerProvider);
+    if (state.order.length <= 1) return;
+    final idx = state.order.indexOf(state.focusedId ?? '');
+    _focusFacet(state.order[(idx + 1) % state.order.length]);
   }
 
   /// Toggle search on the focused terminal.
@@ -337,6 +354,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   @override
   void dispose() {
+    _animationCleanup?.cancel();
     TerminalRegistry.instance.onRegistered = null;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -353,20 +371,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
         bindings: {
           // Ctrl+` — cycle focus
           const SingleActivator(LogicalKeyboardKey.backquote,
-              control: true): () {
-            final state = ref.read(facetManagerProvider);
-            if (state.order.length <= 1) return;
-            final idx = state.order.indexOf(state.focusedId ?? '');
-            _focusFacet(state.order[(idx + 1) % state.order.length]);
-          },
+              control: true): _cycleFocus,
           // Ctrl+Tab — cycle focus (alias)
           const SingleActivator(LogicalKeyboardKey.tab,
-              control: true): () {
-            final state = ref.read(facetManagerProvider);
-            if (state.order.length <= 1) return;
-            final idx = state.order.indexOf(state.focusedId ?? '');
-            _focusFacet(state.order[(idx + 1) % state.order.length]);
-          },
+              control: true): _cycleFocus,
           // Ctrl+N — new session
           SingleActivator(LogicalKeyboardKey.keyN,
               control: defaultTargetPlatform != TargetPlatform.macOS,
@@ -452,7 +460,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
               serverSessions: serverSessions,
               openSessionNames: openSessionNames,
               onFocusFacet: _focusFacet,
-              onCloseFacet: _closeFacet,
               onReorder: (oldIndex, newIndex) {
                 ref.read(facetManagerProvider.notifier)
                     .reorder(oldIndex, newIndex);

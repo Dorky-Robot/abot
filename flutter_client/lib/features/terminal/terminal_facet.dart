@@ -282,9 +282,13 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 
   /// Allow (or restore) CSS overflow on ancestor DOM elements so that
   /// CSS-transformed content can render outside the platform view bounds.
+  /// Max DOM ancestor depth to walk when toggling overflow.
+  /// Must be deep enough to escape Flutter's platform view wrappers.
+  static const _ancestorOverflowDepth = 8;
+
   void _setAncestorOverflow(bool allowOverflow) {
     web.Element? el = _container?.parentElement;
-    for (var i = 0; i < 8 && el != null; i++) {
+    for (var i = 0; i < _ancestorOverflowDepth && el != null; i++) {
       if (el is web.HTMLElement) {
         el.style.overflow = allowOverflow ? 'visible' : '';
       }
