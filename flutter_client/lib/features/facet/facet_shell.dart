@@ -7,6 +7,7 @@ import '../../core/theme/abot_theme.dart';
 import '../terminal/terminal_facet.dart';
 import '../shortcut_bar/shortcut_bar.dart';
 import 'drag_controller.dart';
+import 'facet.dart';
 import 'facet_manager.dart';
 
 const double _narrowBreakpoint = 768;
@@ -145,6 +146,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final wsService = ref.read(wsServiceProvider.notifier);
     wsService.detachSession(sessionName);
     facetManager.remove(facetId);
+    _facetKeys.remove(facetId);
   }
 
   // --- FLIP animation helpers ---
@@ -172,6 +174,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     _flipSnapshot = null;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _flipOffsets.clear();
       bool hasMotion = false;
 
@@ -297,7 +300,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   }
 
   void _onTitleDragEnd() {
-    _dragController.onPanEnd();
+    _dragController.onDragEnded();
   }
 
   @override
@@ -380,30 +383,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
         if (narrow) {
           // Vertical stack — all facets in a single column
-          final allFacets = state.orderedFacets;
           return Column(
-            children: allFacets.map((facet) {
-              _ensureKey(facet.id);
+            children: state.orderedFacets.map((facet) {
               return Expanded(
-                child: _buildAnimatedFacet(
-                  facet.id,
-                  TerminalFacet(
-                    key: _facetKeys[facet.id],
-                    facetId: facet.id,
-                    sessionName: facet.sessionName,
-                    isFocused: facet.id == state.focusedId,
-                    showTitleBar: showTitleBar,
-                    dragPreview: _previews[facet.id] ?? DragPreview.none,
-                    isDragging: _draggingId == facet.id,
-                    onFocused: () {
-                      ref.read(facetManagerProvider.notifier).focus(facet.id);
-                    },
-                    onClose: () => _closeFacet(facet.id, facet.sessionName),
-                    onTitleDragStart: _onTitleDragStart,
-                    onTitleDragUpdate: _onTitleDragUpdate,
-                    onTitleDragEnd: _onTitleDragEnd,
-                  ),
-                ),
+                child: _buildFacetTile(facet, state, showTitleBar),
               );
             }).toList(),
           );
@@ -417,31 +400,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 children: columnIds.map((facetId) {
                   final facet = state.facets[facetId];
                   if (facet == null) return const SizedBox.shrink();
-                  _ensureKey(facet.id);
                   return Expanded(
-                    child: _buildAnimatedFacet(
-                      facet.id,
-                      TerminalFacet(
-                        key: _facetKeys[facet.id],
-                        facetId: facet.id,
-                        sessionName: facet.sessionName,
-                        isFocused: facet.id == state.focusedId,
-                        showTitleBar: showTitleBar,
-                        dragPreview:
-                            _previews[facet.id] ?? DragPreview.none,
-                        isDragging: _draggingId == facet.id,
-                        onFocused: () {
-                          ref
-                              .read(facetManagerProvider.notifier)
-                              .focus(facet.id);
-                        },
-                        onClose: () =>
-                            _closeFacet(facet.id, facet.sessionName),
-                        onTitleDragStart: _onTitleDragStart,
-                        onTitleDragUpdate: _onTitleDragUpdate,
-                        onTitleDragEnd: _onTitleDragEnd,
-                      ),
-                    ),
+                    child: _buildFacetTile(facet, state, showTitleBar),
                   );
                 }).toList(),
               ),
@@ -449,6 +409,31 @@ class _FacetShellState extends ConsumerState<FacetShell>
           }).toList(),
         );
       },
+    );
+  }
+
+  /// Build a single facet tile with drag callbacks and FLIP animation.
+  Widget _buildFacetTile(
+      FacetData facet, FacetManagerState state, bool showTitleBar) {
+    _ensureKey(facet.id);
+    return _buildAnimatedFacet(
+      facet.id,
+      TerminalFacet(
+        key: _facetKeys[facet.id],
+        facetId: facet.id,
+        sessionName: facet.sessionName,
+        isFocused: facet.id == state.focusedId,
+        showTitleBar: showTitleBar,
+        dragPreview: _previews[facet.id] ?? DragPreview.none,
+        isDragging: _draggingId == facet.id,
+        onFocused: () {
+          ref.read(facetManagerProvider.notifier).focus(facet.id);
+        },
+        onClose: () => _closeFacet(facet.id, facet.sessionName),
+        onTitleDragStart: _onTitleDragStart,
+        onTitleDragUpdate: _onTitleDragUpdate,
+        onTitleDragEnd: _onTitleDragEnd,
+      ),
     );
   }
 

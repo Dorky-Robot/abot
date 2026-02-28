@@ -103,6 +103,7 @@ class DragController {
           _moveTriggered = true;
           _setPreview(DragPreview.none);
           onMoveFacetToColumn?.call(_activeFacetId!, targetId);
+          onDragEnd?.call();
           _reset();
           return;
         }
@@ -117,6 +118,7 @@ class DragController {
         _moveTriggered = true;
         _setPreview(DragPreview.none);
         onSplitFacetToOwnColumn?.call(_activeFacetId!);
+        onDragEnd?.call();
         _reset();
         return;
       } else if (-dy > _previewThreshold) {
@@ -137,7 +139,7 @@ class DragController {
     }
   }
 
-  void onPanEnd() {
+  void onDragEnded() {
     if (_activeFacetId != null) {
       _setPreview(DragPreview.none);
       onDragEnd?.call();

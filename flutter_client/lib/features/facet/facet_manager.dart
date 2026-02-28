@@ -16,13 +16,17 @@ class FacetManagerState {
   FacetManagerState copyWith({
     Map<String, FacetData>? facets,
     List<List<String>>? columns,
-    String? focusedId,
+    Object? focusedId = _sentinel,
   }) =>
       FacetManagerState(
         facets: facets ?? this.facets,
         columns: columns ?? this.columns,
-        focusedId: focusedId ?? this.focusedId,
+        focusedId: focusedId == _sentinel
+            ? this.focusedId
+            : focusedId as String?,
       );
+
+  static const Object _sentinel = Object();
 
   FacetData? get focused => facets[focusedId];
 
