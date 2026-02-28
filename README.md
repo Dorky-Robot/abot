@@ -204,7 +204,9 @@ docker build -t abot-session -f Dockerfile.session .
 
 ## Status
 
-abot is in active development. The Rust backend is functional with auth, multi-session management, WebRTC, Docker isolation, and rolling updates. The vanilla JS client is feature-complete. See [BRAINSTORM.md](BRAINSTORM.md) for the full vision.
+> **Under active development.** APIs, protocols, and the client UI may change without notice.
+
+The Rust backend is functional with auth, multi-session management, WebRTC, Docker isolation, and rolling updates. The vanilla JS client is feature-complete. See [BRAINSTORM.md](BRAINSTORM.md) for the full vision.
 
 ## License
 
