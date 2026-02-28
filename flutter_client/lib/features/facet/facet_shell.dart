@@ -184,7 +184,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       await ref.read(sessionServiceProvider.notifier).createSession(sessionName);
     } on ApiException catch (e) {
       // 409 Conflict means session already exists — safe to proceed with attach
-      if (e.statusCode != null && e.statusCode != 409) rethrow;
+      if (e.statusCode != 409) rethrow;
     }
 
     if (!mounted) return;
