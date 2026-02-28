@@ -46,6 +46,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Subscription from ref.listenManual — cancelled in dispose.
   ProviderSubscription? _wsSubscription;
 
+  /// Whether the sidebar is collapsed to a thin sliver.
+  bool _sidebarCollapsed = false;
+
   @override
   void initState() {
     super.initState();
@@ -171,6 +174,36 @@ class _FacetShellState extends ConsumerState<FacetShell>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final wsService = ref.read(wsServiceProvider.notifier);
     wsService.onVisibilityChange(state != AppLifecycleState.resumed);
+  }
+
+  // --- Sidebar collapse ---
+
+  void _toggleSidebar() {
+    setState(() => _sidebarCollapsed = !_sidebarCollapsed);
+    if (_sidebarCollapsed) {
+      _hideOffstageTerminals();
+    } else {
+      // Wait for animation + layout settle, then recalculate transforms
+      _animationCleanup?.cancel();
+      // Wait for sidebar AnimatedContainer to finish + layout settle
+      _animationCleanup = Timer(AbotSizes.sidebarAnimDuration + const Duration(milliseconds: 50), () {
+        if (!mounted) return;
+        _updateSidebarTransforms();
+      });
+    }
+  }
+
+  /// Move all non-focused terminals offscreen via CSS transform.
+  /// They stay in the widget tree (GlobalKey preserves xterm.js state).
+  void _hideOffstageTerminals() {
+    final state = ref.read(facetManagerProvider);
+    for (final id in state.stripOrder) {
+      TerminalRegistry.instance.setGenieTransform(
+        id,
+        'translate(-9999px, 0) scale(0.01, 0.01)',
+        animate: false,
+      );
+    }
   }
 
   // --- Facet lifecycle ---
@@ -330,6 +363,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Compute and apply CSS transforms for all non-focused terminals so they
   /// appear at their sidebar card positions. Called after each layout.
   void _updateSidebarTransforms() {
+    if (_sidebarCollapsed) {
+      _hideOffstageTerminals();
+      return;
+    }
+
     final state = ref.read(facetManagerProvider);
     final mainRect = _getRectForKey(_mainAreaKey);
     if (mainRect == null || mainRect.width == 0 || mainRect.height == 0) return;
@@ -373,6 +411,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   Widget build(BuildContext context) {
     final facetState = ref.watch(facetManagerProvider);
     final sessionsAsync = ref.watch(sessionServiceProvider);
+    final wsState = ref.watch(wsServiceProvider);
 
     return Scaffold(
       backgroundColor: context.palette.base,
@@ -409,17 +448,23 @@ class _FacetShellState extends ConsumerState<FacetShell>
               shift: true): () {
             _toggleSearch();
           },
+          // Ctrl+B / Cmd+B — toggle sidebar
+          SingleActivator(LogicalKeyboardKey.keyB,
+              control: defaultTargetPlatform != TargetPlatform.macOS,
+              meta: defaultTargetPlatform == TargetPlatform.macOS):
+              _toggleSidebar,
         },
         child: Focus(
           autofocus: true,
-          child: _buildFacetLayout(facetState, sessionsAsync),
+          child: _buildFacetLayout(facetState, sessionsAsync, wsState),
         ),
       ),
     );
   }
 
   Widget _buildFacetLayout(
-      FacetManagerState state, AsyncValue<List<SessionInfo>> sessionsAsync) {
+      FacetManagerState state, AsyncValue<List<SessionInfo>> sessionsAsync,
+      WsState wsState) {
     if (state.facets.isEmpty) {
       return const Center(
         child: Text(
@@ -476,6 +521,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onOpenSession: _onOpenSession,
               onDeleteSession: _onDeleteSession,
               onNewSession: _createNewFacet,
+              connectionState: wsState.connectionState,
+              collapsed: _sidebarCollapsed,
+              onToggleCollapse: _toggleSidebar,
             ),
             Expanded(child: _buildFocusedArea(state)),
           ],

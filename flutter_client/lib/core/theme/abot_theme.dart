@@ -85,6 +85,10 @@ class AbotSizes {
   static const double buttonSmHeight = 32;
   static const double buttonMdHeight = 44; // iOS touch target
   static const double titleBarHeight = 32;
+  static const double sidebarExpandedWidth = 200;
+  static const double sidebarCollapsedWidth = 44;
+  static const double statusDotSize = 8;
+  static const Duration sidebarAnimDuration = Duration(milliseconds: 250);
 }
 
 class AbotFonts {
@@ -108,7 +112,10 @@ class CatPalette {
   Color get blue => isDark ? CatppuccinMocha.blue : CatppuccinLatte.blue;
   Color get red => isDark ? CatppuccinMocha.red : CatppuccinLatte.red;
   Color get green => isDark ? CatppuccinMocha.green : CatppuccinLatte.green;
+  Color get yellow => isDark ? CatppuccinMocha.yellow : CatppuccinLatte.yellow;
   Color get mauve => isDark ? CatppuccinMocha.mauve : CatppuccinLatte.mauve;
+  Color get overlay0 => isDark ? CatppuccinMocha.overlay0 : CatppuccinLatte.overlay0;
+  Color get overlay1 => isDark ? CatppuccinMocha.overlay1 : CatppuccinLatte.overlay1;
 }
 
 extension AbotColors on BuildContext {
