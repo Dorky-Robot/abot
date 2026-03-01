@@ -21,6 +21,7 @@ class StageStrip extends StatelessWidget {
   final WsConnectionState connectionState;
   final bool collapsed;
   final VoidCallback onToggleCollapse;
+  final VoidCallback? onSettingsTap;
 
   const StageStrip({
     super.key,
@@ -37,6 +38,7 @@ class StageStrip extends StatelessWidget {
     required this.connectionState,
     required this.collapsed,
     required this.onToggleCollapse,
+    this.onSettingsTap,
   });
 
   @override
@@ -200,7 +202,10 @@ class StageStrip extends StatelessWidget {
             ),
 
           // Footer: gear above dot (both states)
-          _SidebarFooter(connectionState: connectionState),
+          _SidebarFooter(
+            connectionState: connectionState,
+            onSettingsTap: onSettingsTap,
+          ),
         ],
       ),
     );
@@ -246,8 +251,12 @@ class _IconBtn extends StatelessWidget {
 /// Sidebar footer showing gear icon above connection status dot.
 class _SidebarFooter extends StatelessWidget {
   final WsConnectionState connectionState;
+  final VoidCallback? onSettingsTap;
 
-  const _SidebarFooter({required this.connectionState});
+  const _SidebarFooter({
+    required this.connectionState,
+    this.onSettingsTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -284,6 +293,7 @@ class _SidebarFooter extends StatelessWidget {
               size: 16,
               color: p.overlay1,
               tooltip: 'Settings',
+              onTap: onSettingsTap,
             ),
             const SizedBox(height: AbotSpacing.sm),
             Padding(

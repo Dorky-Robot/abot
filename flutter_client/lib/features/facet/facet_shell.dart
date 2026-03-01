@@ -12,6 +12,7 @@ import '../terminal/terminal_facet.dart';
 import 'facet.dart';
 import 'facet_manager.dart';
 import 'stage_strip.dart';
+import '../settings/settings_panel.dart';
 
 const double _narrowBreakpoint = 768;
 
@@ -48,6 +49,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   /// Whether the sidebar is collapsed to a thin sliver.
   bool _sidebarCollapsed = false;
+
+  /// Whether the settings panel overlay is visible.
+  bool _showSettings = false;
 
   @override
   void initState() {
@@ -415,49 +419,57 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
     return Scaffold(
       backgroundColor: context.palette.base,
-      body: CallbackShortcuts(
-        bindings: {
-          // Ctrl+` — cycle focus
-          const SingleActivator(LogicalKeyboardKey.backquote,
-              control: true): _cycleFocus,
-          // Ctrl+Tab — cycle focus (alias)
-          const SingleActivator(LogicalKeyboardKey.tab,
-              control: true): _cycleFocus,
-          // Ctrl+N — new session
-          SingleActivator(LogicalKeyboardKey.keyN,
-              control: defaultTargetPlatform != TargetPlatform.macOS,
-              meta: defaultTargetPlatform == TargetPlatform.macOS): () {
-            _createNewFacet();
-          },
-          // Ctrl+W — close current facet
-          SingleActivator(LogicalKeyboardKey.keyW,
-              control: defaultTargetPlatform != TargetPlatform.macOS,
-              meta: defaultTargetPlatform == TargetPlatform.macOS): () {
-            final state = ref.read(facetManagerProvider);
-            if (state.focusedId != null && state.count > 1) {
-              final facet = state.facets[state.focusedId!];
-              if (facet != null) {
-                _closeFacet(facet.id, facet.sessionName);
-              }
-            }
-          },
-          // Ctrl+Shift+F / Cmd+Shift+F — toggle search
-          SingleActivator(LogicalKeyboardKey.keyF,
-              control: defaultTargetPlatform != TargetPlatform.macOS,
-              meta: defaultTargetPlatform == TargetPlatform.macOS,
-              shift: true): () {
-            _toggleSearch();
-          },
-          // Ctrl+B / Cmd+B — toggle sidebar
-          SingleActivator(LogicalKeyboardKey.keyB,
-              control: defaultTargetPlatform != TargetPlatform.macOS,
-              meta: defaultTargetPlatform == TargetPlatform.macOS):
-              _toggleSidebar,
-        },
-        child: Focus(
-          autofocus: true,
-          child: _buildFacetLayout(facetState, sessionsAsync, wsState),
-        ),
+      body: Stack(
+        children: [
+          CallbackShortcuts(
+            bindings: {
+              // Ctrl+` — cycle focus
+              const SingleActivator(LogicalKeyboardKey.backquote,
+                  control: true): _cycleFocus,
+              // Ctrl+Tab — cycle focus (alias)
+              const SingleActivator(LogicalKeyboardKey.tab,
+                  control: true): _cycleFocus,
+              // Ctrl+N — new session
+              SingleActivator(LogicalKeyboardKey.keyN,
+                  control: defaultTargetPlatform != TargetPlatform.macOS,
+                  meta: defaultTargetPlatform == TargetPlatform.macOS): () {
+                _createNewFacet();
+              },
+              // Ctrl+W — close current facet
+              SingleActivator(LogicalKeyboardKey.keyW,
+                  control: defaultTargetPlatform != TargetPlatform.macOS,
+                  meta: defaultTargetPlatform == TargetPlatform.macOS): () {
+                final state = ref.read(facetManagerProvider);
+                if (state.focusedId != null && state.count > 1) {
+                  final facet = state.facets[state.focusedId!];
+                  if (facet != null) {
+                    _closeFacet(facet.id, facet.sessionName);
+                  }
+                }
+              },
+              // Ctrl+Shift+F / Cmd+Shift+F — toggle search
+              SingleActivator(LogicalKeyboardKey.keyF,
+                  control: defaultTargetPlatform != TargetPlatform.macOS,
+                  meta: defaultTargetPlatform == TargetPlatform.macOS,
+                  shift: true): () {
+                _toggleSearch();
+              },
+              // Ctrl+B / Cmd+B — toggle sidebar
+              SingleActivator(LogicalKeyboardKey.keyB,
+                  control: defaultTargetPlatform != TargetPlatform.macOS,
+                  meta: defaultTargetPlatform == TargetPlatform.macOS):
+                  _toggleSidebar,
+            },
+            child: Focus(
+              autofocus: true,
+              child: _buildFacetLayout(facetState, sessionsAsync, wsState),
+            ),
+          ),
+          if (_showSettings)
+            SettingsPanel(
+              onClose: () => setState(() => _showSettings = false),
+            ),
+        ],
       ),
     );
   }
@@ -524,6 +536,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
               connectionState: wsState.connectionState,
               collapsed: _sidebarCollapsed,
               onToggleCollapse: _toggleSidebar,
+              onSettingsTap: () =>
+                  setState(() => _showSettings = !_showSettings),
             ),
             Expanded(child: _buildFocusedArea(state)),
           ],

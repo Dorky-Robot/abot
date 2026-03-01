@@ -16,6 +16,14 @@ struct ClientInfo {
     /// Sessions this client is attached to (supports multi-facet)
     attached_sessions: HashSet<String>,
     p2p_sender: Option<Arc<RTCDataChannel>>,
+    /// Credential ID from the session cookie (for revocation)
+    credential_id: Option<String>,
+}
+
+impl Default for ClientTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ClientTracker {
@@ -25,7 +33,12 @@ impl ClientTracker {
         }
     }
 
-    pub async fn add(&self, client_id: String, tx: mpsc::Sender<ServerMessage>) {
+    pub async fn add(
+        &self,
+        client_id: String,
+        tx: mpsc::Sender<ServerMessage>,
+        credential_id: Option<String>,
+    ) {
         let mut clients = self.clients.write().await;
         clients.insert(
             client_id,
@@ -33,6 +46,7 @@ impl ClientTracker {
                 tx,
                 attached_sessions: HashSet::new(),
                 p2p_sender: None,
+                credential_id,
             },
         );
     }
@@ -121,4 +135,19 @@ impl ClientTracker {
         }
     }
 
+    /// Close all WebSocket connections for a given credential ID.
+    /// Drops the sender channels which causes the WS send loop to terminate.
+    /// Returns the IDs of removed clients.
+    pub async fn close_by_credential(&self, credential_id: &str) -> Vec<String> {
+        let mut clients = self.clients.write().await;
+        let to_remove: Vec<String> = clients
+            .iter()
+            .filter(|(_, info)| info.credential_id.as_deref() == Some(credential_id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &to_remove {
+            clients.remove(id);
+        }
+        to_remove
+    }
 }

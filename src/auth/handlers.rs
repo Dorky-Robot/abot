@@ -24,7 +24,11 @@ pub async fn status(
     let is_local = middleware::is_local_request(&addr, host, origin);
 
     let (cred_count, session_valid) = {
-        let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         let count = state::credential_count(&db)?;
 
         let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
@@ -57,14 +61,19 @@ pub async fn register_options(
     let is_local = middleware::is_local_request(&addr, host, origin);
 
     // All DB work in a sync block — drop lock before any .await
-    let (user_id, user_name, existing_creds) = {
-        let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let (user_id, user_name, existing_creds, found_token_id) = {
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         let cred_count = state::credential_count(&db)?;
 
         // First registration: localhost only. Subsequent: need setup token or localhost.
         if cred_count == 0 && !is_local {
             return Err(AppError::Unauthorized);
         }
+        let mut setup_token_id: Option<String> = None;
         if cred_count > 0 && !is_local {
             let setup_token = body.get("setupToken").and_then(|v| v.as_str());
             if setup_token.is_none() {
@@ -72,16 +81,15 @@ pub async fn register_options(
             }
             let token_value = setup_token.unwrap();
             let token_rows = state::get_setup_tokens(&db)?;
-            let mut found = false;
             for row in &token_rows {
                 if let Some(hash) = state::get_setup_token_hash(&db, &row.id)? {
                     if tokens::verify_token(token_value, &hash)? {
-                        found = true;
+                        setup_token_id = Some(row.id.clone());
                         break;
                     }
                 }
             }
-            if !found {
+            if setup_token_id.is_none() {
                 return Err(AppError::Unauthorized);
             }
         }
@@ -97,7 +105,7 @@ pub async fn register_options(
         };
 
         let creds = state::get_credentials(&db)?;
-        (uid, uname, creds)
+        (uid, uname, creds, setup_token_id)
     }; // db lock dropped here
 
     let exclude: Vec<Passkey> = existing_creds
@@ -122,9 +130,16 @@ pub async fn register_options(
     // Store challenge state with per-attempt key (async, db lock is already dropped)
     let challenge_id = uuid::Uuid::new_v4().to_string();
     let challenge_key = format!("reg:{}", challenge_id);
-    let state_json = serde_json::to_value(&reg_state)
+    let reg_state_json = serde_json::to_value(&reg_state)
         .map_err(|e| AppError::Internal(format!("serialize error: {}", e)))?;
-    app.auth.challenges.store(challenge_key, state_json).await;
+    let challenge_data = json!({
+        "regState": reg_state_json,
+        "setupTokenId": found_token_id,
+    });
+    app.auth
+        .challenges
+        .store(challenge_key, challenge_data)
+        .await;
 
     Ok(Json(json!({
         "options": ccr,
@@ -165,7 +180,13 @@ pub async fn register_verify(
         .await
         .ok_or(AppError::BadRequest("invalid or expired challenge".into()))?;
 
-    let reg_state: PasskeyRegistration = serde_json::from_value(state_json)
+    // Extract regState and setupTokenId from challenge data
+    let setup_token_id = state_json
+        .get("setupTokenId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let reg_state_value = state_json.get("regState").cloned().unwrap_or(state_json);
+    let reg_state: PasskeyRegistration = serde_json::from_value(reg_state_value)
         .map_err(|e| AppError::Internal(format!("deserialize state: {}", e)))?;
 
     let passkey = app
@@ -184,14 +205,17 @@ pub async fn register_verify(
     let device_name = body.get("deviceName").and_then(|v| v.as_str());
     let device_id = body.get("deviceId").and_then(|v| v.as_str());
     let user_agent = headers.get("user-agent").and_then(|v| v.to_str().ok());
-    let setup_token_id = body.get("setupTokenId").and_then(|v| v.as_str());
 
     let session_token = tokens::generate_token();
     let csrf_token = tokens::generate_token();
     let expiry = chrono::Utc::now().timestamp() + 30 * 24 * 60 * 60;
 
     {
-        let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         state::add_credential(
             &db,
             &cred_id,
@@ -201,7 +225,7 @@ pub async fn register_verify(
             device_id,
             device_name,
             user_agent,
-            setup_token_id,
+            setup_token_id.as_deref(),
         )?;
         state::create_session(&db, &session_token, &cred_id, &csrf_token, expiry)?;
     }
@@ -224,7 +248,11 @@ pub async fn login_options(
     State(app): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let passkeys: Vec<Passkey> = {
-        let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         let cred_rows = state::get_credentials(&db)?;
         if cred_rows.is_empty() {
             return Err(AppError::BadRequest("not set up".into()));
@@ -283,7 +311,10 @@ pub async fn login_verify(
     let (locked, retry_after) = app.auth.lockout.is_locked("_global").await;
     if locked {
         let secs = retry_after.unwrap_or(60);
-        return Err(AppError::BadRequest(format!("too many failed attempts, try again in {} seconds", secs)));
+        return Err(AppError::BadRequest(format!(
+            "too many failed attempts, try again in {} seconds",
+            secs
+        )));
     }
 
     let auth_result = match app
@@ -294,7 +325,10 @@ pub async fn login_verify(
         Ok(result) => result,
         Err(e) => {
             app.auth.lockout.record_failure("_global").await;
-            return Err(AppError::BadRequest(format!("authentication failed: {}", e)));
+            return Err(AppError::BadRequest(format!(
+                "authentication failed: {}",
+                e
+            )));
         }
     };
 
@@ -310,7 +344,11 @@ pub async fn login_verify(
     let expiry = chrono::Utc::now().timestamp() + 30 * 24 * 60 * 60;
 
     {
-        let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         state::update_credential_counter(&db, &cred_id, auth_result.counter())?;
         state::create_session(&db, &session_token, &cred_id, &csrf_token, expiry)?;
     }
@@ -335,7 +373,11 @@ pub async fn logout(
 ) -> Result<impl IntoResponse, AppError> {
     let cookie_header = headers.get("cookie").and_then(|v| v.to_str().ok());
     if let Some(token) = middleware::get_session_token(cookie_header) {
-        let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
         state::delete_session(&db, &token)?;
     }
 
@@ -346,16 +388,66 @@ pub async fn logout(
     ))
 }
 
-/// GET /auth/tokens — list setup tokens
+/// GET /auth/tokens — list setup tokens enriched with linked credentials
 pub async fn list_tokens(
     State(app): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
-    let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let db = app
+        .auth
+        .db
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     let token_rows = state::get_setup_tokens(&db)?;
-    Ok(Json(json!({ "tokens": token_rows })))
+    let all_creds = state::get_credentials(&db)?;
+
+    // Build set of credential IDs that are linked to a token
+    let mut linked_cred_ids = std::collections::HashSet::new();
+
+    let tokens: Vec<serde_json::Value> = token_rows
+        .iter()
+        .map(|t| {
+            let cred = state::get_credential_for_token(&db, &t.id).ok().flatten();
+            if let Some(ref c) = cred {
+                linked_cred_ids.insert(c.id.clone());
+            }
+            json!({
+                "id": t.id,
+                "name": t.name,
+                "createdAt": t.created_at,
+                "expiresAt": t.expires_at,
+                "credential": cred.map(|c| json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "createdAt": c.created_at,
+                    "lastUsedAt": c.last_used_at,
+                    "userAgent": c.user_agent,
+                })),
+            })
+        })
+        .collect();
+
+    // Orphaned credentials: have no matching setup token
+    let orphaned: Vec<serde_json::Value> = all_creds
+        .iter()
+        .filter(|c| !linked_cred_ids.contains(&c.id) && c.setup_token_id.is_none())
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "name": c.name,
+                "createdAt": c.created_at,
+                "lastUsedAt": c.last_used_at,
+                "userAgent": c.user_agent,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "tokens": tokens,
+        "orphanedCredentials": orphaned,
+    })))
 }
 
 /// POST /auth/tokens — create a setup token
@@ -376,7 +468,11 @@ pub async fn create_token(
     let id = uuid::Uuid::new_v4().to_string();
     let expires_at = chrono::Utc::now().timestamp() + 24 * 60 * 60;
 
-    let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let db = app
+        .auth
+        .db
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     state::add_setup_token(&db, &id, name, &hash, expires_at)?;
 
     Ok(Json(json!({
@@ -393,7 +489,11 @@ pub async fn list_credentials(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
-    let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+    let db = app
+        .auth
+        .db
+        .lock()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     let cred_rows = state::get_credentials(&db)?;
     let credentials: Vec<serde_json::Value> = cred_rows
         .iter()
@@ -410,15 +510,92 @@ pub async fn list_credentials(
     Ok(Json(json!({ "credentials": credentials })))
 }
 
-/// DELETE /auth/tokens/:id
+/// DELETE /auth/tokens/:id — cascade: delete linked credential + sessions + close WS
 pub async fn delete_token(
     State(app): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+    let is_local = middleware::is_local_request(&addr, host, origin);
     middleware::require_auth(&app, &addr, &headers)?;
-    let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
-    state::delete_setup_token(&db, &id)?;
+
+    let credential_id_to_close = {
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        // Find linked credential
+        if let Some(cred) = state::get_credential_for_token(&db, &id)? {
+            // Check not last credential (unless localhost)
+            let cred_count = state::credential_count(&db)?;
+            if cred_count <= 1 && !is_local {
+                return Err(AppError::Forbidden);
+            }
+            // Cascade: delete sessions, then credential
+            state::delete_sessions_for_credential(&db, &cred.id)?;
+            state::delete_credential(&db, &cred.id)?;
+            state::delete_setup_token(&db, &id)?;
+            Some(cred.id)
+        } else {
+            state::delete_setup_token(&db, &id)?;
+            None
+        }
+    }; // db lock dropped
+
+    // Close WS connections outside db lock
+    if let Some(cred_id) = credential_id_to_close {
+        let removed = app.stream_clients.close_by_credential(&cred_id).await;
+        if !removed.is_empty() {
+            tracing::info!(
+                "revoked credential {}: closed {} WS connections",
+                cred_id,
+                removed.len()
+            );
+        }
+    }
+
+    Ok(Json(json!({ "success": true })))
+}
+
+/// DELETE /api/credentials/:id — delete an orphaned credential + its sessions + close WS
+pub async fn delete_credential(
+    State(app): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+    let is_local = middleware::is_local_request(&addr, host, origin);
+    middleware::require_auth(&app, &addr, &headers)?;
+
+    {
+        let db = app
+            .auth
+            .db
+            .lock()
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let cred_count = state::credential_count(&db)?;
+        if cred_count <= 1 && !is_local {
+            return Err(AppError::Forbidden);
+        }
+        state::delete_sessions_for_credential(&db, &id)?;
+        state::delete_credential(&db, &id)?;
+    }
+
+    let removed = app.stream_clients.close_by_credential(&id).await;
+    if !removed.is_empty() {
+        tracing::info!(
+            "deleted credential {}: closed {} WS connections",
+            id,
+            removed.len()
+        );
+    }
+
     Ok(Json(json!({ "success": true })))
 }

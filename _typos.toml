@@ -1,0 +1,6 @@
+[files]
+extend-exclude = [
+    "client/vendor/",
+    "flutter_client/web/vendor/",
+    "flutter_client/build/",
+]

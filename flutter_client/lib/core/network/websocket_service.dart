@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'api_client.dart';
 import 'ws_messages.dart';
 
 /// Connection state
@@ -42,6 +43,7 @@ class WsServiceNotifier extends Notifier<WsState> {
   int _reconnectDelay = 1000;
   bool _isConnecting = false;
   DateTime? _hiddenAt;
+  int _consecutiveFailures = 0;
 
   MessageCallback? onMessage;
 
@@ -71,6 +73,7 @@ class WsServiceNotifier extends Notifier<WsState> {
     _channel!.ready.then((_) {
       _isConnecting = false;
       _reconnectDelay = 1000;
+      _consecutiveFailures = 0;
       state = state.copyWith(connectionState: WsConnectionState.connected);
 
       // Re-attach all sessions
@@ -133,7 +136,32 @@ class WsServiceNotifier extends Notifier<WsState> {
   }
 
   void _scheduleReconnect() {
+    _consecutiveFailures++;
     _reconnectTimer?.cancel();
+
+    if (_consecutiveFailures >= 2) {
+      // Check if we've been kicked (credential revoked)
+      _checkAuthAndMaybeRedirect();
+      return;
+    }
+
+    _reconnectTimer = Timer(Duration(milliseconds: _reconnectDelay), connect);
+    _reconnectDelay = (_reconnectDelay * 2).clamp(1000, 10000);
+  }
+
+  Future<void> _checkAuthAndMaybeRedirect() async {
+    try {
+      final data = await const ApiClient().get('/auth/status')
+          as Map<String, dynamic>;
+      final authenticated = data['authenticated'] as bool? ?? false;
+      if (!authenticated) {
+        web.window.location.href = '/login';
+        return;
+      }
+    } catch (_) {
+      // Network error — keep trying
+    }
+    // Still authenticated, keep reconnecting
     _reconnectTimer = Timer(Duration(milliseconds: _reconnectDelay), connect);
     _reconnectDelay = (_reconnectDelay * 2).clamp(1000, 10000);
   }

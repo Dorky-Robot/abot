@@ -14,6 +14,7 @@ pub struct LockoutTracker {
 }
 
 impl LockoutTracker {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let tracker = Self {
             failures: Arc::new(Mutex::new(HashMap::new())),

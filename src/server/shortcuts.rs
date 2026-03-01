@@ -37,8 +37,8 @@ pub async fn set_shortcuts(
     middleware::require_auth(&app, &addr, &headers)?;
 
     let path = app.data_dir.join("shortcuts.json");
-    let json = serde_json::to_string_pretty(&shortcuts)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let json =
+        serde_json::to_string_pretty(&shortcuts).map_err(|e| AppError::Internal(e.to_string()))?;
 
     std::fs::write(&path, json).map_err(|e| AppError::Internal(e.to_string()))?;
 
