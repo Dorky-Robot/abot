@@ -65,7 +65,11 @@ pub(crate) fn require_auth(
     if !is_local {
         let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
         let authenticated = if let Some(token) = get_session_token(cookie) {
-            let db = app.auth.db.lock().map_err(|e| AppError::Internal(e.to_string()))?;
+            let db = app
+                .auth
+                .db
+                .lock()
+                .map_err(|e| AppError::Internal(e.to_string()))?;
             state::validate_session(&db, &token)?
         } else {
             false
@@ -117,10 +121,7 @@ pub fn clear_session_cookie() -> String {
 }
 
 /// Validate CSRF token from request header against session
-pub fn validate_csrf(
-    csrf_header: Option<&str>,
-    expected: &str,
-) -> bool {
+pub fn validate_csrf(csrf_header: Option<&str>, expected: &str) -> bool {
     match csrf_header {
         Some(token) => constant_time_eq(token.as_bytes(), expected.as_bytes()),
         None => false,
@@ -147,11 +148,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
         assert!(is_local_request(&addr, Some("localhost:6969"), None));
         assert!(is_local_request(&addr, Some("127.0.0.1:6969"), None));
-        assert!(!is_local_request(
-            &addr,
-            Some("example.ngrok.app"),
-            None
-        ));
+        assert!(!is_local_request(&addr, Some("example.ngrok.app"), None));
     }
 
     #[test]

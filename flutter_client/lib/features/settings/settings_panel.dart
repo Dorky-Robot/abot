@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
-import '../../core/auth/auth_provider.dart';
 import '../../core/auth/device_utils.dart' show isLocalhost;
 import '../../core/network/config_service.dart';
 import '../../core/theme/abot_theme.dart';
@@ -55,7 +54,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
   Widget build(BuildContext context) {
     final p = context.palette;
     final configAsync = ref.watch(configProvider);
-    final authState = ref.watch(authProvider);
     final isLocal = isLocalhost();
 
     // Initialize name controller from config once loaded
@@ -181,7 +179,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
 
                   // Footer
                   Divider(color: p.surface1, height: 1),
-                  _buildFooter(p, isLocal, authState),
+                  _buildFooter(p, isLocal),
                 ],
               ),
             ),
@@ -251,7 +249,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     );
   }
 
-  Widget _buildFooter(CatPalette p, bool isLocal, AuthState authState) {
+  Widget _buildFooter(CatPalette p, bool isLocal) {
     return Padding(
       padding: const EdgeInsets.all(AbotSpacing.lg),
       child: Row(

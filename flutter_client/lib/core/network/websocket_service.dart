@@ -139,7 +139,7 @@ class WsServiceNotifier extends Notifier<WsState> {
     _consecutiveFailures++;
     _reconnectTimer?.cancel();
 
-    if (_consecutiveFailures >= 2) {
+    if (_consecutiveFailures == 2) {
       // Check if we've been kicked (credential revoked)
       _checkAuthAndMaybeRedirect();
       return;

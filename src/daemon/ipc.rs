@@ -139,7 +139,11 @@ pub enum OutputEvent {
 }
 
 /// Resolve session name: use explicit name if provided, otherwise fall back to client attachment.
-async fn resolve_session(state: &Arc<DaemonState>, client_id: &str, explicit: Option<String>) -> Option<String> {
+async fn resolve_session(
+    state: &Arc<DaemonState>,
+    client_id: &str,
+    explicit: Option<String>,
+) -> Option<String> {
     if let Some(s) = explicit {
         Some(s)
     } else {
@@ -148,7 +152,10 @@ async fn resolve_session(state: &Arc<DaemonState>, client_id: &str, explicit: Op
     }
 }
 
-pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Option<DaemonResponse> {
+pub async fn handle_request(
+    state: &Arc<DaemonState>,
+    req: DaemonRequest,
+) -> Option<DaemonResponse> {
     match req {
         DaemonRequest::ListSessions { id } => {
             let sessions = state.sessions.lock().await;
@@ -299,7 +306,11 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
         }
 
         // Fire-and-forget messages — no response
-        DaemonRequest::Input { client_id, session, data } => {
+        DaemonRequest::Input {
+            client_id,
+            session,
+            data,
+        } => {
             let session_name = resolve_session(state, &client_id, session).await;
 
             if let Some(session_name) = session_name {
@@ -308,17 +319,29 @@ pub async fn handle_request(state: &Arc<DaemonState>, req: DaemonRequest) -> Opt
                     if session.alive {
                         match session.write(data.as_bytes()) {
                             Ok(_) => {
-                                tracing::debug!("daemon: wrote {} bytes to session '{}'", data.len(), session.name);
+                                tracing::debug!(
+                                    "daemon: wrote {} bytes to session '{}'",
+                                    data.len(),
+                                    session.name
+                                );
                             }
                             Err(e) => {
-                                tracing::error!("daemon: write to session '{}' failed: {}", session.name, e);
+                                tracing::error!(
+                                    "daemon: write to session '{}' failed: {}",
+                                    session.name,
+                                    e
+                                );
                             }
                         }
                     } else {
                         tracing::warn!("daemon: session '{}' is not alive", session_name);
                     }
                 } else {
-                    tracing::warn!("daemon: session '{}' not found for client '{}'", session_name, client_id);
+                    tracing::warn!(
+                        "daemon: session '{}' not found for client '{}'",
+                        session_name,
+                        client_id
+                    );
                 }
             } else {
                 tracing::warn!("daemon: no session attached for client '{}'", client_id);

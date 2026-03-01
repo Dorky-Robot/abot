@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type")]
 pub enum ClientMessage {
     // --- Namespaced protocol (abot native) ---
-
     #[serde(rename = "session.create")]
     SessionCreate {
         kind: String,
@@ -41,7 +40,6 @@ pub enum ClientMessage {
     P2pSignal { data: serde_json::Value },
 
     // --- Flat protocol (backwards compatibility) ---
-
     /// Flat: { type: "input", data: "..." }
     #[serde(rename = "input")]
     FlatInput {
@@ -104,7 +102,6 @@ pub struct Viewport {
 #[serde(tag = "type")]
 pub enum ServerMessage {
     // --- Namespaced protocol (abot native) ---
-
     #[serde(rename = "session.created")]
     SessionCreated { id: String, kind: String },
 
@@ -121,9 +118,7 @@ pub enum ServerMessage {
     SessionRemoved { id: String },
 
     #[serde(rename = "session.list")]
-    SessionListReply {
-        sessions: Vec<serde_json::Value>,
-    },
+    SessionListReply { sessions: Vec<serde_json::Value> },
 
     #[serde(rename = "p2p.signal")]
     P2pSignal { data: serde_json::Value },
@@ -144,12 +139,8 @@ pub enum ServerMessage {
     Error { message: String },
 
     // --- Flat protocol (backwards compatibility) ---
-
     #[serde(rename = "attached")]
-    FlatAttached {
-        session: String,
-        buffer: String,
-    },
+    FlatAttached { session: String, buffer: String },
 
     #[serde(rename = "output")]
     FlatOutput {

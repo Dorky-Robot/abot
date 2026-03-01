@@ -129,7 +129,6 @@ class _TokenManagerState extends State<TokenManager> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _creating = false);
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to create token: $e')),
       );

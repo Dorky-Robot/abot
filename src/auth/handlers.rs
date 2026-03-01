@@ -388,6 +388,32 @@ pub async fn logout(
     ))
 }
 
+fn credential_to_json(c: &state::CredentialRow) -> serde_json::Value {
+    json!({
+        "id": c.id,
+        "name": c.name,
+        "createdAt": c.created_at,
+        "lastUsedAt": c.last_used_at,
+        "userAgent": c.user_agent,
+    })
+}
+
+/// Revoke a credential: check not-last guard, delete sessions + credential.
+/// Returns Ok(true) if a credential was deleted, Ok(false) if not found.
+fn revoke_credential(
+    db: &rusqlite::Connection,
+    credential_id: &str,
+    is_local: bool,
+) -> Result<(), AppError> {
+    let cred_count = state::credential_count(db)?;
+    if cred_count <= 1 && !is_local {
+        return Err(AppError::Forbidden);
+    }
+    state::delete_sessions_for_credential(db, credential_id)?;
+    state::delete_credential(db, credential_id)?;
+    Ok(())
+}
+
 /// GET /auth/tokens — list setup tokens enriched with linked credentials
 pub async fn list_tokens(
     State(app): State<Arc<AppState>>,
@@ -406,42 +432,26 @@ pub async fn list_tokens(
     // Build set of credential IDs that are linked to a token
     let mut linked_cred_ids = std::collections::HashSet::new();
 
-    let tokens: Vec<serde_json::Value> = token_rows
-        .iter()
-        .map(|t| {
-            let cred = state::get_credential_for_token(&db, &t.id).ok().flatten();
-            if let Some(ref c) = cred {
-                linked_cred_ids.insert(c.id.clone());
-            }
-            json!({
-                "id": t.id,
-                "name": t.name,
-                "createdAt": t.created_at,
-                "expiresAt": t.expires_at,
-                "credential": cred.map(|c| json!({
-                    "id": c.id,
-                    "name": c.name,
-                    "createdAt": c.created_at,
-                    "lastUsedAt": c.last_used_at,
-                    "userAgent": c.user_agent,
-                })),
-            })
-        })
-        .collect();
+    let mut tokens: Vec<serde_json::Value> = Vec::with_capacity(token_rows.len());
+    for t in &token_rows {
+        let cred = state::get_credential_for_token(&db, &t.id)?;
+        if let Some(ref c) = cred {
+            linked_cred_ids.insert(c.id.clone());
+        }
+        tokens.push(json!({
+            "id": t.id,
+            "name": t.name,
+            "createdAt": t.created_at,
+            "expiresAt": t.expires_at,
+            "credential": cred.map(|c| credential_to_json(&c)),
+        }));
+    }
 
     // Orphaned credentials: have no matching setup token
     let orphaned: Vec<serde_json::Value> = all_creds
         .iter()
         .filter(|c| !linked_cred_ids.contains(&c.id) && c.setup_token_id.is_none())
-        .map(|c| {
-            json!({
-                "id": c.id,
-                "name": c.name,
-                "createdAt": c.created_at,
-                "lastUsedAt": c.last_used_at,
-                "userAgent": c.user_agent,
-            })
-        })
+        .map(credential_to_json)
         .collect();
 
     Ok(Json(json!({
@@ -495,18 +505,7 @@ pub async fn list_credentials(
         .lock()
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let cred_rows = state::get_credentials(&db)?;
-    let credentials: Vec<serde_json::Value> = cred_rows
-        .iter()
-        .map(|c| {
-            json!({
-                "id": c.id,
-                "name": c.name,
-                "createdAt": c.created_at,
-                "lastUsedAt": c.last_used_at,
-                "userAgent": c.user_agent,
-            })
-        })
-        .collect();
+    let credentials: Vec<serde_json::Value> = cred_rows.iter().map(credential_to_json).collect();
     Ok(Json(json!({ "credentials": credentials })))
 }
 
@@ -529,22 +528,15 @@ pub async fn delete_token(
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        // Find linked credential
-        if let Some(cred) = state::get_credential_for_token(&db, &id)? {
-            // Check not last credential (unless localhost)
-            let cred_count = state::credential_count(&db)?;
-            if cred_count <= 1 && !is_local {
-                return Err(AppError::Forbidden);
-            }
-            // Cascade: delete sessions, then credential
-            state::delete_sessions_for_credential(&db, &cred.id)?;
-            state::delete_credential(&db, &cred.id)?;
-            state::delete_setup_token(&db, &id)?;
+        // Find linked credential and cascade
+        let cred_id = if let Some(cred) = state::get_credential_for_token(&db, &id)? {
+            revoke_credential(&db, &cred.id, is_local)?;
             Some(cred.id)
         } else {
-            state::delete_setup_token(&db, &id)?;
             None
-        }
+        };
+        state::delete_setup_token(&db, &id)?;
+        cred_id
     }; // db lock dropped
 
     // Close WS connections outside db lock
@@ -580,12 +572,7 @@ pub async fn delete_credential(
             .db
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let cred_count = state::credential_count(&db)?;
-        if cred_count <= 1 && !is_local {
-            return Err(AppError::Forbidden);
-        }
-        state::delete_sessions_for_credential(&db, &id)?;
-        state::delete_credential(&db, &id)?;
+        revoke_credential(&db, &id, is_local)?;
     }
 
     let removed = app.stream_clients.close_by_credential(&id).await;
