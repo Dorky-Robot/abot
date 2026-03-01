@@ -132,12 +132,13 @@ class StageStrip extends StatelessWidget {
                             ),
                             child: SizedBox(
                               key: cardKeys?[facet.id],
-                              child: isFocused
-                                  ? _FocusedCard(facet: facet)
-                                  : _StripCard(
-                                      facet: facet,
-                                      onTap: () => onFocusFacet(facet.id),
-                                    ),
+                              child: _StripCard(
+                                facet: facet,
+                                isFocused: isFocused,
+                                onTap: isFocused
+                                    ? null
+                                    : () => onFocusFacet(facet.id),
+                              ),
                             ),
                           ),
                         );
@@ -319,57 +320,18 @@ class _SidebarFooter extends StatelessWidget {
   }
 }
 
-/// Highlighted indicator for the focused facet — terminal content is in the
-/// main area so this card just shows a label.
-class _FocusedCard extends StatelessWidget {
-  final FacetData facet;
-
-  const _FocusedCard({required this.facet});
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-
-    return Container(
-      height: 100,
-      decoration: BoxDecoration(
-        color: p.surface0,
-        borderRadius: BorderRadius.circular(AbotRadius.md),
-        border: Border.all(color: p.mauve, width: 1.5),
-      ),
-      padding: const EdgeInsets.all(AbotSpacing.sm),
-      child: Row(
-        children: [
-          Icon(Icons.terminal, size: 14, color: p.mauve),
-          const SizedBox(width: AbotSpacing.xs),
-          Expanded(
-            child: Text(
-              facet.sessionName,
-              style: TextStyle(
-                fontSize: 11,
-                color: p.text,
-                fontFamily: AbotFonts.mono,
-                fontWeight: FontWeight.w600,
-              ),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Slot for a non-focused facet. The actual terminal content is rendered on
-/// top of this card via CSS-transformed xterm.js DOM element (GPU-accelerated).
-/// This widget provides the click target and background.
+/// Sidebar card for a facet. Non-focused cards show a live terminal preview
+/// via CSS-transformed xterm.js overlay. Focused card has a mauve border.
+/// Session name is overlaid at the bottom-right.
 class _StripCard extends StatelessWidget {
   final FacetData facet;
-  final VoidCallback onTap;
+  final bool isFocused;
+  final VoidCallback? onTap;
 
   const _StripCard({
     required this.facet,
-    required this.onTap,
+    this.isFocused = false,
+    this.onTap,
   });
 
   @override
@@ -384,8 +346,8 @@ class _StripCard extends StatelessWidget {
           color: p.surface0,
           borderRadius: BorderRadius.circular(AbotRadius.md),
           border: Border.all(
-            color: p.surface1,
-            width: 0.5,
+            color: isFocused ? p.mauve : p.surface1,
+            width: isFocused ? 1.5 : 0.5,
           ),
         ),
       ),

@@ -51,8 +51,15 @@ extension type XtermBuffer._(JSObject _) implements JSObject {
 }
 
 extension type XtermBufferState._(JSObject _) implements JSObject {
+  external int get cursorY;
   external int get viewportY;
   external int get baseY;
+  external int get length;
+  external XtermBufferLine? getLine(int y);
+}
+
+extension type XtermBufferLine._(JSObject _) implements JSObject {
+  external JSString translateToString([JSBoolean? trimRight]);
 }
 
 /// FitAddon wrapper

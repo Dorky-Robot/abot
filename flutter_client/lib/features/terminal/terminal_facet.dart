@@ -16,6 +16,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
   final String facetId;
   final String sessionName;
   final bool isFocused;
+  final bool isMirror;
   final VoidCallback? onClose;
   final bool showTitleBar;
 
@@ -24,6 +25,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
     required this.facetId,
     required this.sessionName,
     this.isFocused = false,
+    this.isMirror = false,
     this.onClose,
     this.showTitleBar = true,
   });
@@ -37,6 +39,39 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   @override
   String get sessionName => widget.sessionName;
 
+  @override
+  double get contentFraction {
+    final t = _terminal;
+    if (t == null || t.rows == 0) return 1.0;
+    final cursorY = t.buffer.active.cursorY;
+    return ((cursorY + 1) / t.rows).clamp(0.0, 1.0);
+  }
+
+  @override
+  web.HTMLElement? get container => _container;
+
+  @override
+  bool get isMirror => widget.isMirror;
+
+  @override
+  String getBufferContent() {
+    final t = _terminal;
+    if (t == null) return '';
+    final buf = t.buffer.active;
+    final sb = StringBuffer();
+    final start = buf.baseY;
+    final end = start + t.rows;
+    for (var i = start; i < end && i < buf.length; i++) {
+      final line = buf.getLine(i);
+      if (line != null) {
+        if (i > start) sb.write('\r\n');
+        sb.write(line.translateToString(true.toJS).toDart);
+      }
+    }
+    return sb.toString();
+  }
+
+  static int _viewIdCounter = 0;
   late final String _viewId;
   XtermTerminal? _terminal;
   XtermFitAddon? _fitAddon;
@@ -51,7 +86,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   @override
   void initState() {
     super.initState();
-    _viewId = 'xterm-${widget.facetId}';
+    _viewId = 'xterm-${widget.facetId}-${_viewIdCounter++}';
     _registerView();
   }
 
@@ -128,88 +163,91 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     // Open terminal in container
     _terminal!.open(container);
 
-    // Intercept app-level shortcuts so xterm doesn't consume them.
-    // Return false to block xterm from processing, true to let through.
-    _terminal!.attachCustomKeyEventHandler(((web.KeyboardEvent event) {
-      // Ctrl+Tab / Ctrl+` — cycle focus
-      if (event.ctrlKey && (event.key == 'Tab' || event.key == '`')) {
-        return false.toJS;
-      }
-      // Ctrl+N / Cmd+N — new session
-      if ((event.ctrlKey || event.metaKey) && event.key == 'n') {
-        return false.toJS;
-      }
-      // Ctrl+W / Cmd+W — close facet
-      if ((event.ctrlKey || event.metaKey) && event.key == 'w') {
-        return false.toJS;
-      }
-      // Ctrl+Shift+F / Cmd+Shift+F — search
-      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key == 'F') {
-        return false.toJS;
-      }
-      // Ctrl+B / Cmd+B — toggle sidebar
-      if ((event.ctrlKey || event.metaKey) && event.key == 'b') {
-        return false.toJS;
-      }
+    // Mirrors are read-only: skip input, resize, and key handlers.
+    if (!widget.isMirror) {
+      // Intercept app-level shortcuts so xterm doesn't consume them.
+      // Return false to block xterm from processing, true to let through.
+      _terminal!.attachCustomKeyEventHandler(((web.KeyboardEvent event) {
+        // Ctrl+Tab / Ctrl+` — cycle focus
+        if (event.ctrlKey && (event.key == 'Tab' || event.key == '`')) {
+          return false.toJS;
+        }
+        // Ctrl+N / Cmd+N — new session
+        if ((event.ctrlKey || event.metaKey) && event.key == 'n') {
+          return false.toJS;
+        }
+        // Ctrl+W / Cmd+W — close facet
+        if ((event.ctrlKey || event.metaKey) && event.key == 'w') {
+          return false.toJS;
+        }
+        // Ctrl+Shift+F / Cmd+Shift+F — search
+        if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key == 'F') {
+          return false.toJS;
+        }
+        // Ctrl+B / Cmd+B — toggle sidebar
+        if ((event.ctrlKey || event.metaKey) && event.key == 'b') {
+          return false.toJS;
+        }
 
-      // macOS: translate Cmd+key → Ctrl+key for terminal use.
-      // Native terminal emulators treat Cmd as Ctrl for most keys.
-      // Skip browser-reserved combos (copy/paste/select-all/etc).
-      if (event.metaKey &&
-          !event.ctrlKey &&
-          !event.shiftKey &&
-          event.type == 'keydown') {
-        final key = event.key.toLowerCase();
-        const browserReserved = {
-          'c', 'v', 'a', 'x', 'z', // clipboard / undo
-          'r', 'l', 't', 'q', // browser navigation
-          'b', // sidebar toggle
-        };
-        if (key.length == 1 && !browserReserved.contains(key)) {
-          final code = key.codeUnitAt(0);
-          if (code >= 97 && code <= 122) {
-            // Send Ctrl+letter (ASCII 1-26)
+        // macOS: translate Cmd+key → Ctrl+key for terminal use.
+        // Native terminal emulators treat Cmd as Ctrl for most keys.
+        // Skip browser-reserved combos (copy/paste/select-all/etc).
+        if (event.metaKey &&
+            !event.ctrlKey &&
+            !event.shiftKey &&
+            event.type == 'keydown') {
+          final key = event.key.toLowerCase();
+          const browserReserved = {
+            'c', 'v', 'a', 'x', 'z', // clipboard / undo
+            'r', 'l', 't', 'q', // browser navigation
+            'b', // sidebar toggle
+          };
+          if (key.length == 1 && !browserReserved.contains(key)) {
+            final code = key.codeUnitAt(0);
+            if (code >= 97 && code <= 122) {
+              // Send Ctrl+letter (ASCII 1-26)
+              final wsService = ref.read(wsServiceProvider.notifier);
+              wsService.sendInput(
+                String.fromCharCode(code - 96),
+                session: widget.sessionName,
+              );
+              event.preventDefault();
+              return false.toJS;
+            }
+          }
+          // Cmd+Backspace → Ctrl+U (kill line)
+          if (event.key == 'Backspace') {
             final wsService = ref.read(wsServiceProvider.notifier);
-            wsService.sendInput(
-              String.fromCharCode(code - 96),
-              session: widget.sessionName,
-            );
+            wsService.sendInput('\x15', session: widget.sessionName);
+            event.preventDefault();
+            return false.toJS;
+          }
+          // Cmd+Delete → Ctrl+K (kill to end of line)
+          if (event.key == 'Delete') {
+            final wsService = ref.read(wsServiceProvider.notifier);
+            wsService.sendInput('\x0b', session: widget.sessionName);
             event.preventDefault();
             return false.toJS;
           }
         }
-        // Cmd+Backspace → Ctrl+U (kill line)
-        if (event.key == 'Backspace') {
-          final wsService = ref.read(wsServiceProvider.notifier);
-          wsService.sendInput('\x15', session: widget.sessionName);
-          event.preventDefault();
-          return false.toJS;
-        }
-        // Cmd+Delete → Ctrl+K (kill to end of line)
-        if (event.key == 'Delete') {
-          final wsService = ref.read(wsServiceProvider.notifier);
-          wsService.sendInput('\x0b', session: widget.sessionName);
-          event.preventDefault();
-          return false.toJS;
-        }
-      }
 
-      return true.toJS;
-    }).toJS);
+        return true.toJS;
+      }).toJS);
 
-    // Wire up data handler -> send input to server
-    _terminal!.onData(((JSString data) {
-      final wsService = ref.read(wsServiceProvider.notifier);
-      wsService.sendInput(data.toDart, session: widget.sessionName);
-    }).toJS);
+      // Wire up data handler -> send input to server
+      _terminal!.onData(((JSString data) {
+        final wsService = ref.read(wsServiceProvider.notifier);
+        wsService.sendInput(data.toDart, session: widget.sessionName);
+      }).toJS);
 
-    // Wire up resize handler -> notify server
-    _terminal!.onResize(((JSObject event) {
-      final cols = (event['cols'] as JSNumber).toDartInt;
-      final rows = (event['rows'] as JSNumber).toDartInt;
-      final wsService = ref.read(wsServiceProvider.notifier);
-      wsService.resizeSession(widget.sessionName, cols, rows);
-    }).toJS);
+      // Wire up resize handler -> notify server
+      _terminal!.onResize(((JSObject event) {
+        final cols = (event['cols'] as JSNumber).toDartInt;
+        final rows = (event['rows'] as JSNumber).toDartInt;
+        final wsService = ref.read(wsServiceProvider.notifier);
+        wsService.resizeSession(widget.sessionName, cols, rows);
+      }).toJS);
+    }
 
     // Observe container size changes for fit
     _resizeObserver = web.ResizeObserver(
@@ -226,6 +264,15 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 
     // Register this terminal with the facet registry
     TerminalRegistry.instance.register(widget.facetId, this);
+
+    // Populate mirror from the main terminal's current viewport
+    if (widget.isMirror) {
+      final content = TerminalRegistry.instance
+          .getBufferContentForSession(widget.sessionName);
+      if (content != null && content.isNotEmpty) {
+        _terminal!.write(content.toJS);
+      }
+    }
   }
 
   void _debouncedFit() {
@@ -250,7 +297,8 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   /// Apply a CSS transform to the xterm container for GPU-accelerated animation.
   /// When [animate] is true, a CSS transition smoothly interpolates the transform.
   @override
-  void setGenieTransform(String transform, {bool animate = true}) {
+  void setGenieTransform(String transform,
+      {bool animate = true, String? clipPath}) {
     if (_container == null) return;
     _container!.style.transformOrigin = '0 0';
     _container!.style.transition = animate
@@ -258,6 +306,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
         : 'none';
     _container!.style.transform = transform;
     _container!.style.pointerEvents = 'none';
+    _container!.style.clipPath = clipPath ?? '';
     _setAncestorOverflow(true);
   }
 
@@ -271,6 +320,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _container!.style.transform = '';
     _container!.style.transformOrigin = '';
     _container!.style.pointerEvents = '';
+    _container!.style.clipPath = '';
     _setAncestorOverflow(false);
   }
 
@@ -314,13 +364,19 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
       onTap: () => _terminal?.focus(),
       child: Column(
         children: [
-          // Title bar (hidden when single facet)
-          if (widget.showTitleBar)
-            _TitleBar(
-              sessionName: widget.sessionName,
-              isFocused: widget.isFocused,
-              onClose: widget.onClose,
-            ),
+          // Always reserve title bar height for consistent xterm rows.
+          // When hidden, the empty SizedBox keeps the terminal the same
+          // height so contentFraction doesn't change on focus transitions.
+          SizedBox(
+            height: AbotSizes.titleBarHeight,
+            child: widget.showTitleBar
+                ? _TitleBar(
+                    sessionName: widget.sessionName,
+                    isFocused: widget.isFocused,
+                    onClose: widget.onClose,
+                  )
+                : null,
+          ),
           // Search bar overlay
           if (_showSearch && _searchAddon != null)
             TerminalSearchBar(
@@ -391,9 +447,23 @@ class _TitleBar extends StatelessWidget {
 /// A terminal that can receive data and report its session name.
 abstract interface class TerminalSink {
   String get sessionName;
+
+  /// Fraction of the viewport that contains content (0..1).
+  /// Based on the cursor row: (cursorY + 1) / rows.
+  double get contentFraction;
+
+  /// The xterm container div (for accessing canvas layers).
+  web.HTMLElement? get container;
+
+  /// Whether this is a read-only mirror (sidebar preview of focused terminal).
+  bool get isMirror;
+
+  /// Plain-text content of the visible viewport (for mirror initial population).
+  String getBufferContent();
+
   void writeData(String data);
   void toggleSearch();
-  void setGenieTransform(String transform, {bool animate});
+  void setGenieTransform(String transform, {bool animate, String? clipPath});
   void clearGenieTransform({bool animate});
 }
 
@@ -416,12 +486,11 @@ class TerminalRegistry {
     _terminals.remove(facetId);
   }
 
-  /// Write data to a terminal by its session name
+  /// Write data to all terminals matching a session name (main + mirrors).
   void writeToSession(String sessionName, String data) {
     for (final sink in _terminals.values) {
       if (sink.sessionName == sessionName) {
         sink.writeData(data);
-        return;
       }
     }
   }
@@ -438,10 +507,32 @@ class TerminalRegistry {
     _terminals[facetId]?.toggleSearch();
   }
 
+  /// Fraction of the viewport with content for a given facet.
+  double contentFraction(String facetId) {
+    return _terminals[facetId]?.contentFraction ?? 1.0;
+  }
+
+  /// The xterm container for a given facet.
+  web.HTMLElement? getContainer(String facetId) {
+    return _terminals[facetId]?.container;
+  }
+
+  /// Plain-text viewport content from the primary (non-mirror) terminal
+  /// for a given session. Used to populate mirrors on creation.
+  String? getBufferContentForSession(String sessionName) {
+    for (final sink in _terminals.values) {
+      if (sink.sessionName == sessionName && !sink.isMirror) {
+        return sink.getBufferContent();
+      }
+    }
+    return null;
+  }
+
   /// Apply a CSS transform to a facet's terminal container (GPU-accelerated).
   void setGenieTransform(String facetId, String transform,
-      {bool animate = true}) {
-    _terminals[facetId]?.setGenieTransform(transform, animate: animate);
+      {bool animate = true, String? clipPath}) {
+    _terminals[facetId]
+        ?.setGenieTransform(transform, animate: animate, clipPath: clipPath);
   }
 
   /// Clear CSS transform on a facet's terminal container.
