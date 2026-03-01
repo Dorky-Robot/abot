@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:js_interop';
-import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
@@ -47,11 +45,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// DOM label overlays positioned above the CSS-transformed terminal layer.
   final Map<String, web.HTMLElement> _labelOverlays = {};
 
-  /// Image thumbnail for the focused terminal's sidebar preview.
-  web.HTMLImageElement? _focusedThumbnail;
-  String? _focusedThumbnailId;
-  Timer? _thumbnailTimer;
-
   /// Subscription from ref.listenManual — cancelled in dispose.
   ProviderSubscription? _wsSubscription;
 
@@ -68,12 +61,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
     // When a terminal finishes initializing, re-apply sidebar transforms.
     TerminalRegistry.instance.onRegistered = _onTerminalReady;
-
-    // Periodically refresh the focused terminal's sidebar thumbnail.
-    _thumbnailTimer = Timer.periodic(
-      const Duration(milliseconds: 500),
-      (_) => _refreshFocusedThumbnail(),
-    );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initialize();
@@ -211,7 +198,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  /// Move all non-focused terminals offscreen via CSS transform.
+  /// Move all non-focused terminals (and the mirror) offscreen via CSS transform.
   /// They stay in the widget tree (GlobalKey preserves xterm.js state).
   void _hideOffstageTerminals() {
     final state = ref.read(facetManagerProvider);
@@ -222,8 +209,15 @@ class _FacetShellState extends ConsumerState<FacetShell>
         animate: false,
       );
     }
+    // Also hide the mirror of the focused terminal
+    if (state.focusedId != null) {
+      TerminalRegistry.instance.setGenieTransform(
+        '${state.focusedId!}_mirror',
+        'translate(-9999px, 0) scale(0.01, 0.01)',
+        animate: false,
+      );
+    }
     _removeAllLabelOverlays();
-    _removeFocusedThumbnail();
   }
 
   // --- Facet lifecycle ---
@@ -357,47 +351,79 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final mainRect = _getRectForKey(_mainAreaKey);
     if (mainRect == null || mainRect.width == 0 || mainRect.height == 0) return;
 
+    // Helper: apply cursor-aware CSS transform to position a terminal at a card.
+    // [contentFraction] overrides the terminal's own fraction (used for mirrors
+    // so they match the main terminal's cursor position, not their own).
+    void applyCardTransform(String terminalId, Rect cardRect,
+        {double? contentFraction}) {
+      final s = cardRect.width / mainRect.width;
+      final frac = contentFraction ??
+          TerminalRegistry.instance.contentFraction(terminalId);
+
+      // The xterm container sits below a 32px title bar SizedBox in the
+      // Column layout. Its natural screen position is (mainRect.left,
+      // mainRect.top + titleBarH). The clip-path operates in the container's
+      // local coordinates which only contain xterm content, not the title bar.
+      final titleBarH = AbotSizes.titleBarHeight;
+      final xtermH = mainRect.height - titleBarH;
+
+      // How much xterm content overflows the card (in source pixels).
+      final overflow =
+          (xtermH * frac - cardRect.height / s).clamp(0.0, double.infinity);
+
+      final tx = cardRect.left - mainRect.left;
+      // The container is naturally 32px below mainRect.top (Column layout).
+      // titleBarH is a fixed pixel offset (not scaled).
+      final ty = cardRect.top - mainRect.top - titleBarH - overflow * s;
+
+      // Clip within the xterm container only (no title bar to skip).
+      final topClip = overflow;
+      final bottomClip = xtermH - overflow - cardRect.height / s;
+
+      // Inset by card border width + border-radius so the card border
+      // and rounded corners remain visible beneath the terminal content.
+      final borderInset = 2.0 / s;
+      final clipRadius = 8.0 / s; // AbotRadius.md
+
+      TerminalRegistry.instance.setGenieTransform(
+        terminalId,
+        'translate(${tx}px, ${ty}px) scale($s)',
+        animate: false,
+        clipPath: 'inset(${topClip + borderInset}px ${borderInset}px '
+            '${bottomClip + borderInset}px ${borderInset}px '
+            'round ${clipRadius}px)',
+      );
+    }
+
+    // Transform unfocused terminals to their sidebar card positions.
     for (final id in state.stripOrder) {
       _ensureCardKey(id);
       final cardRect = _getRectForKey(_cardKeys[id]!);
       if (cardRect == null) continue;
-
-      // Uniform scale matching card width. Align to cursor row (not absolute
-      // bottom) so the preview shows content, not empty rows.
-      final s = cardRect.width / mainRect.width;
-      final frac = TerminalRegistry.instance.contentFraction(id);
-      final contentH = mainRect.height * frac; // local px with content
-      final scaledContentH = contentH * s;
-      final tx = cardRect.left - mainRect.left;
-
-      // Bottom-align to cursor if content overflows card, else top-align.
-      final overflow = (scaledContentH - cardRect.height)
-          .clamp(0.0, double.infinity);
-      final ty = cardRect.top - mainRect.top - overflow;
-
-      // Clip to card bounds: hide overflow above and below the card.
-      final topClip = overflow / s;
-      final bottomClip = mainRect.height - topClip - cardRect.height / s;
-
-      TerminalRegistry.instance.setGenieTransform(
-        id,
-        'translate(${tx}px, ${ty}px) scale($s)',
-        animate: false,
-        clipPath: 'inset(${topClip}px 0 ${bottomClip}px 0)',
-      );
+      applyCardTransform(id, cardRect);
     }
 
-    // Focused terminal: clear CSS transform (renders full-size in main area)
-    // and draw a canvas thumbnail in the sidebar instead.
+    // Focused terminal: clear CSS transform (renders full-size in main area).
+    // Its mirror is CSS-transformed to the focused sidebar card instead.
     if (state.focusedId != null) {
       TerminalRegistry.instance
           .clearGenieTransform(state.focusedId!, animate: false);
-      _refreshFocusedThumbnail();
-    } else {
-      _removeFocusedThumbnail();
+
+      if (state.count > 1) {
+        _ensureCardKey(state.focusedId!);
+        final cardRect = _getRectForKey(_cardKeys[state.focusedId!]!);
+        if (cardRect != null) {
+          // Use the main terminal's contentFraction so the mirror's crop
+          // matches the real cursor position, not the mirror's own cursor.
+          final mainFrac = TerminalRegistry.instance
+              .contentFraction(state.focusedId!);
+          applyCardTransform('${state.focusedId!}_mirror', cardRect,
+              contentFraction: mainFrac);
+        }
+      }
     }
 
-    // Update DOM label overlays for all cards.
+    // Update DOM label overlays for all cards (including focused).
     final activeIds = <String>{};
     for (final id in state.stripOrder) {
       final cardRect = _getRectForKey(_cardKeys[id]!);
@@ -405,6 +431,16 @@ class _FacetShellState extends ConsumerState<FacetShell>
       final name = state.facets[id]?.sessionName ?? id;
       activeIds.add(id);
       _upsertLabelOverlay(id, cardRect, name);
+    }
+    if (state.focusedId != null && state.count > 1) {
+      final id = state.focusedId!;
+      _ensureCardKey(id);
+      final cardRect = _getRectForKey(_cardKeys[id]!);
+      if (cardRect != null) {
+        final name = state.facets[id]?.sessionName ?? id;
+        activeIds.add(id);
+        _upsertLabelOverlay(id, cardRect, name);
+      }
     }
     // Remove stale labels.
     _labelOverlays.keys
@@ -448,57 +484,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
     _labelOverlays.clear();
   }
 
-  // --- Focused terminal thumbnail ---
-
-  void _refreshFocusedThumbnail() {
-    if (_sidebarCollapsed) return;
-    final state = ref.read(facetManagerProvider);
-    if (state.focusedId == null) return;
-    final focusedId = state.focusedId!;
-
-    _ensureCardKey(focusedId);
-    final cardRect = _getRectForKey(_cardKeys[focusedId]!);
-    if (cardRect == null || cardRect.width == 0 || cardRect.height == 0) return;
-
-    final source = TerminalRegistry.instance.getRenderCanvas(focusedId);
-    if (source == null || source.width == 0 || source.height == 0) return;
-
-    var img = _focusedThumbnail;
-    if (img == null || _focusedThumbnailId != focusedId) {
-      _removeFocusedThumbnail();
-      img = web.document.createElement('img') as web.HTMLImageElement;
-      img.style
-        ..position = 'fixed'
-        ..pointerEvents = 'none'
-        ..zIndex = '9999'
-        ..objectFit = 'cover'
-        ..objectPosition = 'bottom left';
-      web.document.body!.append(img);
-      _focusedThumbnail = img;
-      _focusedThumbnailId = focusedId;
-    }
-
-    img.src = source.toDataURL('image/png');
-    img.style
-      ..left = '${cardRect.left}px'
-      ..top = '${cardRect.top}px'
-      ..width = '${cardRect.width}px'
-      ..height = '${cardRect.height}px';
-  }
-
-  void _removeFocusedThumbnail() {
-    (_focusedThumbnail as web.HTMLElement?)?.remove();
-    _focusedThumbnail = null;
-    _focusedThumbnailId = null;
-  }
-
   @override
   void dispose() {
-    _thumbnailTimer?.cancel();
     _animationCleanup?.cancel();
     _wsSubscription?.close();
     _removeAllLabelOverlays();
-    _removeFocusedThumbnail();
     TerminalRegistry.instance.onRegistered = null;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -669,6 +659,22 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 facetId: id,
                 sessionName: state.facets[id]!.sessionName,
                 isFocused: false,
+                showTitleBar: false,
+              ),
+            ),
+          ),
+        // Mirror of the focused terminal — a second read-only xterm.js instance
+        // connected to the same daemon session, CSS-transformed to the focused
+        // sidebar card. Recreated on focus change via ValueKey.
+        if (state.count > 1)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: TerminalFacet(
+                key: ValueKey('mirror_$focusedId'),
+                facetId: '${focusedId}_mirror',
+                sessionName: state.facets[focusedId]!.sessionName,
+                isFocused: false,
+                isMirror: true,
                 showTitleBar: false,
               ),
             ),
