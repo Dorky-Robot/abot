@@ -104,7 +104,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
             if (n > _nextSessionId) _nextSessionId = n;
           }
         }
-        // Focus 'main' if present
+        // Restore persisted sidebar order, then focus 'main'.
+        facetManager.loadPersistedOrder();
         final mainFacet = ref.read(facetManagerProvider).getBySession('main');
         if (mainFacet != null) {
           facetManager.focus(mainFacet.id);
@@ -431,7 +432,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (cardRect == null) continue;
       final name = state.facets[id]?.sessionName ?? id;
       activeIds.add(id);
-      _upsertLabelOverlay(id, cardRect, name);
+      _upsertLabelOverlay(id, cardRect, name, isFocused: false);
     }
     if (state.focusedId != null && state.count > 1) {
       final id = state.focusedId!;
@@ -440,7 +441,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (cardRect != null) {
         final name = state.facets[id]?.sessionName ?? id;
         activeIds.add(id);
-        _upsertLabelOverlay(id, cardRect, name);
+        _upsertLabelOverlay(id, cardRect, name, isFocused: true);
       }
     }
     // Remove stale labels.
@@ -450,7 +451,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
         .forEach(_removeLabelOverlay);
   }
 
-  void _upsertLabelOverlay(String id, Rect cardRect, String name) {
+  void _upsertLabelOverlay(String id, Rect cardRect, String name,
+      {bool isFocused = false}) {
     var el = _labelOverlays[id];
     if (el == null) {
       el = web.document.createElement('div') as web.HTMLDivElement;
@@ -467,8 +469,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
     el.textContent = name;
     el.style
-      ..color = 'rgba(180, 180, 200, 0.8)'
-      ..backgroundColor = 'rgba(0, 0, 0, 0.5)'
+      ..color = isFocused ? 'rgba(203, 166, 247, 0.95)' : 'rgba(180, 180, 200, 0.8)'
+      ..backgroundColor = isFocused ? 'rgba(30, 30, 46, 0.8)' : 'rgba(0, 0, 0, 0.5)'
       ..left = '${cardRect.right - 6}px'
       ..top = '${cardRect.bottom - 6}px'
       ..transform = 'translate(-100%, -100%)';
@@ -622,6 +624,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onToggleCollapse: _toggleSidebar,
               onSettingsTap: () =>
                   setState(() => _showSettings = !_showSettings),
+              onScroll: _updateSidebarTransforms,
             ),
             Expanded(child: _buildFocusedArea(state)),
           ],

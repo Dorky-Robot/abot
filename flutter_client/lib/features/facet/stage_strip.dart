@@ -22,6 +22,7 @@ class StageStrip extends StatelessWidget {
   final bool collapsed;
   final VoidCallback onToggleCollapse;
   final VoidCallback? onSettingsTap;
+  final VoidCallback? onScroll;
 
   const StageStrip({
     super.key,
@@ -39,6 +40,7 @@ class StageStrip extends StatelessWidget {
     required this.collapsed,
     required this.onToggleCollapse,
     this.onSettingsTap,
+    this.onScroll,
   });
 
   @override
@@ -108,7 +110,12 @@ class StageStrip extends StatelessWidget {
             const Spacer()
           else
             Expanded(
-              child: CustomScrollView(
+              child: NotificationListener<ScrollNotification>(
+                onNotification: (notification) {
+                  onScroll?.call();
+                  return false;
+                },
+                child: CustomScrollView(
                 slivers: [
                   // All facets in stable order — reorderable
                   SliverPadding(
@@ -119,6 +126,18 @@ class StageStrip extends StatelessWidget {
                     sliver: SliverReorderableList(
                       itemCount: allFacets.length,
                       onReorder: onReorder,
+                      proxyDecorator: (child, index, animation) {
+                        return AnimatedBuilder(
+                          animation: animation,
+                          builder: (context, child) => Material(
+                            elevation: 4,
+                            color: context.palette.surface0,
+                            borderRadius: BorderRadius.circular(AbotRadius.md),
+                            child: child,
+                          ),
+                          child: child,
+                        );
+                      },
                       itemBuilder: (context, index) {
                         final facet = allFacets[index];
                         final isFocused = facet.id == focusedId;
@@ -199,6 +218,7 @@ class StageStrip extends StatelessWidget {
                       ),
                     ),
                 ],
+              ),
               ),
             ),
 
@@ -320,9 +340,9 @@ class _SidebarFooter extends StatelessWidget {
   }
 }
 
-/// Sidebar card for a facet. Non-focused cards show a live terminal preview
-/// via CSS-transformed xterm.js overlay. Focused card has a mauve border.
-/// Session name is overlaid at the bottom-right.
+/// Sidebar card for a facet. The CSS-transformed xterm.js overlay provides the
+/// visual preview. This widget is near-invisible — it only provides layout
+/// sizing, tap hit-testing, and a painted surface for drag proxy creation.
 class _StripCard extends StatelessWidget {
   final FacetData facet;
   final bool isFocused;
@@ -336,20 +356,12 @@ class _StripCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final p = context.palette;
-
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: Container(
+      child: const SizedBox(
         height: 100,
-        decoration: BoxDecoration(
-          color: p.surface0,
-          borderRadius: BorderRadius.circular(AbotRadius.md),
-          border: Border.all(
-            color: isFocused ? p.mauve : p.surface1,
-            width: isFocused ? 1.5 : 0.5,
-          ),
-        ),
+        child: ColoredBox(color: Color(0x01000000)),
       ),
     );
   }

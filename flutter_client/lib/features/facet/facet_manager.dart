@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:web/web.dart' as web;
 import 'facet.dart';
 
 /// State for the facet manager — Stage Manager model.
@@ -115,6 +117,7 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
       order: newOrder,
       focusedId: newFocused,
     );
+    _persistOrder();
   }
 
   /// Focus a specific facet — just changes focusedId, order is stable.
@@ -135,6 +138,54 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     newOrder.insert(insertAt, id);
 
     state = state.copyWith(order: newOrder);
+    _persistOrder();
   }
 
+  /// Persist current facet order as session names to localStorage.
+  void _persistOrder() {
+    final names = state.order
+        .map((id) => state.facets[id]?.sessionName)
+        .whereType<String>()
+        .toList();
+    web.window.localStorage
+        .setItem('abot_facet_order', jsonEncode(names));
+  }
+
+  /// Restore persisted sidebar order after facets have been created.
+  void loadPersistedOrder() {
+    final raw = web.window.localStorage.getItem('abot_facet_order');
+    if (raw == null) return;
+
+    final List<String> savedNames;
+    try {
+      savedNames = (jsonDecode(raw) as List).cast<String>();
+    } catch (_) {
+      return;
+    }
+
+    // Build a name→id lookup from current facets.
+    final nameToId = <String, String>{};
+    for (final entry in state.facets.entries) {
+      nameToId[entry.value.sessionName] = entry.key;
+    }
+
+    // Saved sessions first (in saved order), then any new sessions appended.
+    final newOrder = <String>[];
+    final placed = <String>{};
+    for (final name in savedNames) {
+      final id = nameToId[name];
+      if (id != null && !placed.contains(id)) {
+        newOrder.add(id);
+        placed.add(id);
+      }
+    }
+    for (final id in state.order) {
+      if (!placed.contains(id)) {
+        newOrder.add(id);
+      }
+    }
+
+    state = state.copyWith(order: newOrder);
+    _persistOrder();
+  }
 }
