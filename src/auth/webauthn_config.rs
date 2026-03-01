@@ -22,8 +22,7 @@ pub fn build_webauthn(addr: &str) -> Result<Webauthn> {
 
     let rp_origin = Url::parse(&rp_origin)?;
 
-    let builder = WebauthnBuilder::new(&rp_id, &rp_origin)?
-        .rp_name("abot");
+    let builder = WebauthnBuilder::new(&rp_id, &rp_origin)?.rp_name("abot");
 
     Ok(builder.build()?)
 }

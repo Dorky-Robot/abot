@@ -57,7 +57,9 @@ pub fn init_db(path: &Path) -> Result<Connection> {
 pub fn get_user(db: &Connection) -> Result<Option<(String, String)>> {
     let mut stmt = db.prepare("SELECT id, name FROM users LIMIT 1")?;
     let result = stmt
-        .query_row([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .query_row([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .ok();
     Ok(result)
 }
@@ -73,6 +75,7 @@ pub fn create_user(db: &Connection, id: &str, name: &str) -> Result<()> {
 
 // --- Credential CRUD ---
 
+#[allow(clippy::too_many_arguments)]
 pub fn add_credential(
     db: &Connection,
     id: &str,
@@ -203,7 +206,13 @@ pub fn prune_expired_sessions(db: &Connection) -> Result<()> {
 
 // --- Setup Token CRUD ---
 
-pub fn add_setup_token(db: &Connection, id: &str, name: &str, hash: &str, expires_at: i64) -> Result<()> {
+pub fn add_setup_token(
+    db: &Connection,
+    id: &str,
+    name: &str,
+    hash: &str,
+    expires_at: i64,
+) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     db.execute(
         "INSERT INTO setup_tokens (id, name, hash, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -237,6 +246,61 @@ pub fn get_setup_token_hash(db: &Connection, id: &str) -> Result<Option<String>>
 pub fn delete_setup_token(db: &Connection, id: &str) -> Result<()> {
     db.execute("DELETE FROM setup_tokens WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+// --- Credential queries ---
+
+pub fn get_credential_for_token(db: &Connection, token_id: &str) -> Result<Option<CredentialRow>> {
+    let mut stmt = db.prepare(
+        "SELECT id, user_id, public_key, counter, device_id, name, user_agent, setup_token_id, created_at, last_used_at
+         FROM credentials WHERE setup_token_id = ?1"
+    )?;
+    let result = stmt
+        .query_row(params![token_id], |row| {
+            Ok(CredentialRow {
+                id: row.get(0)?,
+                user_id: row.get(1)?,
+                public_key: row.get(2)?,
+                counter: row.get(3)?,
+                device_id: row.get(4)?,
+                name: row.get(5)?,
+                user_agent: row.get(6)?,
+                setup_token_id: row.get(7)?,
+                created_at: row.get(8)?,
+                last_used_at: row.get(9)?,
+            })
+        })
+        .ok();
+    Ok(result)
+}
+
+pub fn delete_sessions_for_credential(db: &Connection, credential_id: &str) -> Result<Vec<String>> {
+    let mut stmt = db.prepare("SELECT token FROM sessions WHERE credential_id = ?1")?;
+    let tokens: Vec<String> = stmt
+        .query_map(params![credential_id], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    db.execute(
+        "DELETE FROM sessions WHERE credential_id = ?1",
+        params![credential_id],
+    )?;
+    Ok(tokens)
+}
+
+pub fn delete_credential(db: &Connection, credential_id: &str) -> Result<()> {
+    db.execute(
+        "DELETE FROM credentials WHERE id = ?1",
+        params![credential_id],
+    )?;
+    Ok(())
+}
+
+pub fn get_session_credential_id(db: &Connection, token: &str) -> Result<Option<String>> {
+    let mut stmt = db.prepare("SELECT credential_id FROM sessions WHERE token = ?1")?;
+    let result = stmt
+        .query_row(params![token], |row| row.get::<_, String>(0))
+        .ok();
+    Ok(result)
 }
 
 // --- Row types ---

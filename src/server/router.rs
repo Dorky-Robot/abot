@@ -44,17 +44,28 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/shortcuts", get(shortcuts::get_shortcuts))
         .route("/shortcuts", put(shortcuts::set_shortcuts))
         // Health
-        .route("/health", get(|| async { axum::Json(serde_json::json!({"ok": true})) }))
+        .route(
+            "/health",
+            get(|| async { axum::Json(serde_json::json!({"ok": true})) }),
+        )
         // Config
         .route("/api/config", get(config_routes::get_config))
-        .route("/api/config/instance-name", put(config_routes::set_instance_name))
-        .route("/api/config/instance-icon", put(config_routes::set_instance_icon))
-        .route("/api/config/toolbar-color", put(config_routes::set_toolbar_color))
+        .route(
+            "/api/config/instance-name",
+            put(config_routes::set_instance_name),
+        )
         // Token/credential API aliases (legacy client uses /api/tokens, /api/credentials)
         .route("/api/tokens", get(auth_handlers::list_tokens))
         .route("/api/credentials", get(auth_handlers::list_credentials))
+        .route(
+            "/api/credentials/{id}",
+            delete(auth_handlers::delete_credential),
+        )
         // Stub endpoint for client compatibility
-        .route("/connect/info", get(|| async { axum::Json(serde_json::json!({})) }))
+        .route(
+            "/connect/info",
+            get(|| async { axum::Json(serde_json::json!({})) }),
+        )
         // Fallback: serve embedded assets at root paths (e.g. /lib/..., /vendor/...)
         .fallback(get(assets::serve_asset_root))
         .with_state(state)

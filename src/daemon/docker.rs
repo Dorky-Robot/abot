@@ -8,8 +8,8 @@ use bollard::container::{
     AttachContainerOptions, Config, CreateContainerOptions, RemoveContainerOptions,
     ResizeContainerTtyOptions,
 };
-use bollard::models::HostConfig;
 use bollard::image::CreateImageOptions;
+use bollard::models::HostConfig;
 use bollard::Docker;
 use futures_util::{StreamExt, TryStreamExt};
 use std::pin::Pin;
@@ -79,17 +79,17 @@ impl DockerBackend {
                 "COLORTERM=truecolor".to_string(),
                 "LANG=en_US.UTF-8".to_string(),
             ]),
-            user: Some("1000:1000".to_string()),     // Run as non-root
+            user: Some("1000:1000".to_string()), // Run as non-root
             host_config: Some(HostConfig {
-                memory: Some(512 * 1024 * 1024),        // 512 MB
-                memory_swap: Some(512 * 1024 * 1024),   // No swap
+                memory: Some(512 * 1024 * 1024),         // 512 MB
+                memory_swap: Some(512 * 1024 * 1024),    // No swap
                 cpu_period: Some(100_000),               // 100ms period
                 cpu_quota: Some(50_000),                 // 50% of one CPU
                 pids_limit: Some(256),                   // Max 256 processes
                 cap_drop: Some(vec!["ALL".to_string()]), // Drop all capabilities
                 security_opt: Some(vec!["no-new-privileges".to_string()]),
-                network_mode: Some("none".to_string()),  // No network access
-                readonly_rootfs: Some(false),             // Writable for shell use
+                network_mode: Some("none".to_string()), // No network access
+                readonly_rootfs: Some(false),           // Writable for shell use
                 ..Default::default()
             }),
             ..Default::default()

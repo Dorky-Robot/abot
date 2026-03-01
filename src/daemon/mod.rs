@@ -143,10 +143,7 @@ async fn detect_backend() -> BackendKind {
     BackendKind::Local
 }
 
-async fn handle_connection(
-    state: Arc<DaemonState>,
-    stream: tokio::net::UnixStream,
-) -> Result<()> {
+async fn handle_connection(state: Arc<DaemonState>, stream: tokio::net::UnixStream) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let reader = BufReader::new(reader);
     let writer = Arc::new(Mutex::new(writer));

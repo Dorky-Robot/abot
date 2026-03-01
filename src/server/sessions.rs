@@ -23,10 +23,7 @@ pub async fn list_sessions(
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    let sessions = resp
-        .get("sessions")
-        .cloned()
-        .unwrap_or(json!([]));
+    let sessions = resp.get("sessions").cloned().unwrap_or(json!([]));
 
     Ok(Json(sessions))
 }
@@ -60,10 +57,7 @@ pub async fn create_session(
     if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
         Err(AppError::BadRequest(error.to_string()))
     } else {
-        let session_name = resp
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&name);
+        let session_name = resp.get("name").and_then(|v| v.as_str()).unwrap_or(&name);
         Ok(Json(json!({ "name": session_name })))
     }
 }

@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use super::messages::{ClientMessage, ServerMessage};
 use super::p2p::{P2pEvent, ServerPeer};
-use crate::auth::middleware;
+use crate::auth::{middleware, state as auth_state};
 use crate::server::AppState;
 
 /// WebSocket upgrade handler with auth + origin check
@@ -36,19 +36,36 @@ pub async fn ws_upgrade(
             Some(o) => o,
             None => return axum::http::StatusCode::FORBIDDEN.into_response(),
         };
-        let allowed = host.map(|h| {
-            let host_without_port = h.split(':').next().unwrap_or(h);
-            let expected = format!("https://{}", host_without_port);
-            let expected_http = format!("http://{}", host_without_port);
-            origin == expected || origin == expected_http
-        }).unwrap_or(false);
+        let allowed = host
+            .map(|h| {
+                let host_without_port = h.split(':').next().unwrap_or(h);
+                let expected = format!("https://{}", host_without_port);
+                let expected_http = format!("http://{}", host_without_port);
+                origin == expected || origin == expected_http
+            })
+            .unwrap_or(false);
 
         if !allowed {
             return axum::http::StatusCode::FORBIDDEN.into_response();
         }
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, app))
+    // Extract credential_id from session cookie for revocation tracking
+    let credential_id = {
+        let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
+        if let Some(token) = middleware::get_session_token(cookie) {
+            let db = app.auth.db.lock().ok();
+            db.and_then(|db| {
+                auth_state::get_session_credential_id(&db, &token)
+                    .ok()
+                    .flatten()
+            })
+        } else {
+            None
+        }
+    };
+
+    ws.on_upgrade(move |socket| handle_socket(socket, app, credential_id))
 }
 
 /// Per-client P2P peer state, shared between message handler and event task
@@ -68,13 +85,15 @@ enum ClientProtocol {
     Flat,
 }
 
-async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
+async fn handle_socket(socket: WebSocket, app: Arc<AppState>, credential_id: Option<String>) {
     let client_id = uuid::Uuid::new_v4().to_string();
     let (mut ws_sink, mut ws_stream) = socket.split();
 
     // Channel for sending messages to this client
     let (tx, mut rx) = mpsc::channel::<ServerMessage>(256);
-    app.stream_clients.add(client_id.clone(), tx).await;
+    app.stream_clients
+        .add(client_id.clone(), tx, credential_id)
+        .await;
 
     // P2P peers for this client connection
     let peers: PeerMap = Arc::new(Mutex::new(HashMap::new()));
@@ -117,7 +136,9 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                         }
                                     };
                                     // Try P2P first, fall back to WS
-                                    clients.send_to_prefer_p2p(&relay_client_id, server_msg).await;
+                                    clients
+                                        .send_to_prefer_p2p(&relay_client_id, server_msg)
+                                        .await;
                                 }
                             }
                             "exit" => {
@@ -144,9 +165,7 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>) {
                                 }
                             }
                             "session-removed" => {
-                                if let Some(session) =
-                                    msg.get("session").and_then(|v| v.as_str())
-                                {
+                                if let Some(session) = msg.get("session").and_then(|v| v.as_str()) {
                                     let proto = *relay_protocol.lock().await;
                                     let server_msg = if proto == ClientProtocol::Flat {
                                         ServerMessage::FlatSessionRemoved {
@@ -222,8 +241,11 @@ async fn handle_client_message(
 
     match msg {
         // --- Flat protocol handlers ---
-
-        ClientMessage::FlatAttach { session, cols, rows } => {
+        ClientMessage::FlatAttach {
+            session,
+            cols,
+            rows,
+        } => {
             // Mark this client as using flat protocol
             *protocol.lock().await = ClientProtocol::Flat;
 
@@ -286,13 +308,7 @@ async fn handle_client_message(
 
                 app.stream_clients.attach(client_id, session.clone()).await;
                 app.stream_clients
-                    .send_to(
-                        client_id,
-                        ServerMessage::FlatAttached {
-                            session,
-                            buffer,
-                        },
-                    )
+                    .send_to(client_id, ServerMessage::FlatAttached { session, buffer })
                     .await;
             }
         }
@@ -309,7 +325,11 @@ async fn handle_client_message(
                 .await?;
         }
 
-        ClientMessage::FlatResize { cols, rows, session } => {
+        ClientMessage::FlatResize {
+            cols,
+            rows,
+            session,
+        } => {
             app.daemon_client
                 .send(&json!({
                     "type": "resize",
@@ -340,7 +360,6 @@ async fn handle_client_message(
         }
 
         // --- Namespaced protocol handlers (abot native) ---
-
         ClientMessage::SessionCreate { kind, config } => {
             let name = config
                 .get("name")
@@ -369,21 +388,13 @@ async fn handle_client_message(
                     .await;
             } else {
                 app.stream_clients
-                    .send_to(
-                        client_id,
-                        ServerMessage::SessionCreated {
-                            id: name,
-                            kind,
-                        },
-                    )
+                    .send_to(client_id, ServerMessage::SessionCreated { id: name, kind })
                     .await;
             }
         }
 
         ClientMessage::SessionAttach { id, viewport } => {
-            let (cols, rows) = viewport
-                .map(|v| (v.cols, v.rows))
-                .unwrap_or((120, 40));
+            let (cols, rows) = viewport.map(|v| (v.cols, v.rows)).unwrap_or((120, 40));
 
             let resp = app
                 .daemon_client
@@ -414,10 +425,7 @@ async fn handle_client_message(
 
                 app.stream_clients.attach(client_id, id.clone()).await;
                 app.stream_clients
-                    .send_to(
-                        client_id,
-                        ServerMessage::SessionAttached { id, buffer },
-                    )
+                    .send_to(client_id, ServerMessage::SessionAttached { id, buffer })
                     .await;
             }
         }
@@ -488,8 +496,7 @@ async fn handle_client_message(
                 .await;
         }
 
-        ClientMessage::FlatP2pSignal { data } |
-        ClientMessage::P2pSignal { data } => {
+        ClientMessage::FlatP2pSignal { data } | ClientMessage::P2pSignal { data } => {
             let signal_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
             let is_offer = signal_type == "offer";
 
@@ -548,9 +555,8 @@ async fn handle_client_message(
                                                 .unwrap_or("");
                                             match msg_type {
                                                 "session.input" | "input" => {
-                                                    if let Some(input_data) = parsed
-                                                        .get("data")
-                                                        .and_then(|v| v.as_str())
+                                                    if let Some(input_data) =
+                                                        parsed.get("data").and_then(|v| v.as_str())
                                                     {
                                                         let session = parsed
                                                             .get("session")
@@ -603,10 +609,7 @@ async fn handle_client_message(
                                         }
                                     }
                                     P2pEvent::Closed => {
-                                        tracing::info!(
-                                            "P2P DataChannel closed for client {}",
-                                            cid
-                                        );
+                                        tracing::info!("P2P DataChannel closed for client {}", cid);
                                         clients.clear_p2p_sender(&cid).await;
                                         let msg = if proto == ClientProtocol::Flat {
                                             ServerMessage::FlatP2pClosed
@@ -624,13 +627,7 @@ async fn handle_client_message(
                             tracing::warn!("P2P signal error: {}", e);
                         }
 
-                        map.insert(
-                            client_id.to_string(),
-                            PeerState {
-                                peer,
-                                event_tx,
-                            },
-                        );
+                        map.insert(client_id.to_string(), PeerState { peer, event_tx });
                     }
                     Err(e) => {
                         tracing::warn!("Failed to create WebRTC peer: {}", e);
@@ -643,8 +640,10 @@ async fn handle_client_message(
                 // ICE candidate — feed to existing peer
                 let map = peers.lock().await;
                 if let Some(peer_state) = map.get(client_id) {
-                    if let Err(e) =
-                        peer_state.peer.handle_signal(&data, &peer_state.event_tx).await
+                    if let Err(e) = peer_state
+                        .peer
+                        .handle_signal(&data, &peer_state.event_tx)
+                        .await
                     {
                         tracing::warn!("P2P signal error: {}", e);
                     }

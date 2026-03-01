@@ -15,12 +15,7 @@ pub struct PtyHandle {
 }
 
 impl PtyHandle {
-    pub fn spawn(
-        shell: &str,
-        cols: u16,
-        rows: u16,
-        home: &str,
-    ) -> Result<Self> {
+    pub fn spawn(shell: &str, cols: u16, rows: u16, home: &str) -> Result<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system.openpty(PtySize {
@@ -50,7 +45,10 @@ impl PtyHandle {
         cmd.env("TERM_PROGRAM", "abot");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("HOME", home);
-        cmd.env("LANG", std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".into()));
+        cmd.env(
+            "LANG",
+            std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".into()),
+        );
 
         let child = pair.slave.spawn_command(cmd)?;
         let writer = pair.master.take_writer()?;

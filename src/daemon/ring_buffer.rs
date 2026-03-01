@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt;
 
 /// Front-evicting circular buffer for terminal output.
 /// Ring buffer with max items and max bytes.
@@ -35,14 +36,6 @@ impl RingBuffer {
         }
     }
 
-    pub fn to_string(&self) -> String {
-        let mut out = String::with_capacity(self.current_bytes);
-        for item in &self.items {
-            out.push_str(item);
-        }
-        out
-    }
-
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.items.clear();
@@ -55,6 +48,15 @@ impl RingBuffer {
 
     pub fn bytes(&self) -> usize {
         self.current_bytes
+    }
+}
+
+impl fmt::Display for RingBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for item in &self.items {
+            f.write_str(item)?;
+        }
+        Ok(())
     }
 }
 

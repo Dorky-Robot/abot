@@ -11,6 +11,7 @@ pub struct ChallengeStore {
 }
 
 impl ChallengeStore {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let store = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),

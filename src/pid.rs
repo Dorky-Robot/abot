@@ -33,13 +33,8 @@ pub fn daemon_is_running(data_dir: &Path) -> bool {
 #[cfg(target_os = "macos")]
 pub fn is_abot_process(pid: i32) -> bool {
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-    let ret = unsafe {
-        libc::proc_pidpath(
-            pid,
-            buf.as_mut_ptr() as *mut libc::c_void,
-            buf.len() as u32,
-        )
-    };
+    let ret =
+        unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
     if ret <= 0 {
         // Can't determine — be conservative, assume it's ours
         return true;
@@ -52,10 +47,7 @@ pub fn is_abot_process(pid: i32) -> bool {
 pub fn is_abot_process(pid: i32) -> bool {
     // On Linux, check /proc/<pid>/exe
     if let Ok(exe) = std::fs::read_link(format!("/proc/{}/exe", pid)) {
-        return exe
-            .file_name()
-            .map(|n| n == "abot")
-            .unwrap_or(true);
+        return exe.file_name().map(|n| n == "abot").unwrap_or(true);
     }
     true // Conservative fallback
 }
