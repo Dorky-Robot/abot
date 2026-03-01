@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import '../../core/auth/device_utils.dart' show isLocalhost;
+import '../../core/network/api_client.dart';
 import '../../core/network/config_service.dart';
 import '../../core/theme/abot_theme.dart';
 import '../../core/theme/theme_provider.dart';
@@ -280,8 +281,14 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     );
   }
 
-  void _logout() {
-    web.window.location.href = '/auth/logout';
+  Future<void> _logout() async {
+    try {
+      await const ApiClient().post('/auth/logout');
+    } catch (_) {
+      // Best-effort logout
+    }
+    if (!mounted) return;
+    web.window.location.href = '/login';
   }
 }
 

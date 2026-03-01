@@ -399,7 +399,6 @@ fn credential_to_json(c: &state::CredentialRow) -> serde_json::Value {
 }
 
 /// Revoke a credential: check not-last guard, delete sessions + credential.
-/// Returns Ok(true) if a credential was deleted, Ok(false) if not found.
 fn revoke_credential(
     db: &rusqlite::Connection,
     credential_id: &str,
