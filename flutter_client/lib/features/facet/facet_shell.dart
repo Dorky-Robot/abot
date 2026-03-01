@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:js_interop';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
+import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,6 +44,14 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Timer for post-sidebar-toggle cleanup (cancelled on rapid re-toggle).
   Timer? _animationCleanup;
 
+  /// DOM label overlays positioned above the CSS-transformed terminal layer.
+  final Map<String, web.HTMLElement> _labelOverlays = {};
+
+  /// Image thumbnail for the focused terminal's sidebar preview.
+  web.HTMLImageElement? _focusedThumbnail;
+  String? _focusedThumbnailId;
+  Timer? _thumbnailTimer;
+
   /// Subscription from ref.listenManual — cancelled in dispose.
   ProviderSubscription? _wsSubscription;
 
@@ -57,6 +68,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
     // When a terminal finishes initializing, re-apply sidebar transforms.
     TerminalRegistry.instance.onRegistered = _onTerminalReady;
+
+    // Periodically refresh the focused terminal's sidebar thumbnail.
+    _thumbnailTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) => _refreshFocusedThumbnail(),
+    );
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initialize();
@@ -205,6 +222,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
         animate: false,
       );
     }
+    _removeAllLabelOverlays();
+    _removeFocusedThumbnail();
   }
 
   // --- Facet lifecycle ---
@@ -343,29 +362,143 @@ class _FacetShellState extends ConsumerState<FacetShell>
       final cardRect = _getRectForKey(_cardKeys[id]!);
       if (cardRect == null) continue;
 
+      // Uniform scale matching card width. Align to cursor row (not absolute
+      // bottom) so the preview shows content, not empty rows.
+      final s = cardRect.width / mainRect.width;
+      final frac = TerminalRegistry.instance.contentFraction(id);
+      final contentH = mainRect.height * frac; // local px with content
+      final scaledContentH = contentH * s;
       final tx = cardRect.left - mainRect.left;
-      final ty = cardRect.top - mainRect.top;
-      final sx = cardRect.width / mainRect.width;
-      final sy = cardRect.height / mainRect.height;
+
+      // Bottom-align to cursor if content overflows card, else top-align.
+      final overflow = (scaledContentH - cardRect.height)
+          .clamp(0.0, double.infinity);
+      final ty = cardRect.top - mainRect.top - overflow;
+
+      // Clip to card bounds: hide overflow above and below the card.
+      final topClip = overflow / s;
+      final bottomClip = mainRect.height - topClip - cardRect.height / s;
 
       TerminalRegistry.instance.setGenieTransform(
         id,
-        'translate(${tx}px, ${ty}px) scale($sx, $sy)',
+        'translate(${tx}px, ${ty}px) scale($s)',
         animate: false,
+        clipPath: 'inset(${topClip}px 0 ${bottomClip}px 0)',
       );
     }
 
-    // Ensure the focused terminal has no transform.
+    // Focused terminal: clear CSS transform (renders full-size in main area)
+    // and draw a canvas thumbnail in the sidebar instead.
     if (state.focusedId != null) {
       TerminalRegistry.instance
           .clearGenieTransform(state.focusedId!, animate: false);
+      _refreshFocusedThumbnail();
+    } else {
+      _removeFocusedThumbnail();
     }
+
+    // Update DOM label overlays for all cards.
+    final activeIds = <String>{};
+    for (final id in state.stripOrder) {
+      final cardRect = _getRectForKey(_cardKeys[id]!);
+      if (cardRect == null) continue;
+      final name = state.facets[id]?.sessionName ?? id;
+      activeIds.add(id);
+      _upsertLabelOverlay(id, cardRect, name);
+    }
+    // Remove stale labels.
+    _labelOverlays.keys
+        .where((id) => !activeIds.contains(id))
+        .toList()
+        .forEach(_removeLabelOverlay);
+  }
+
+  void _upsertLabelOverlay(String id, Rect cardRect, String name) {
+    var el = _labelOverlays[id];
+    if (el == null) {
+      el = web.document.createElement('div') as web.HTMLDivElement;
+      el.style
+        ..position = 'fixed'
+        ..pointerEvents = 'none'
+        ..fontFamily = 'JetBrains Mono, monospace'
+        ..fontSize = '9px'
+        ..padding = '2px 4px'
+        ..borderRadius = '3px'
+        ..zIndex = '10000';
+      web.document.body!.append(el);
+      _labelOverlays[id] = el;
+    }
+    el.textContent = name;
+    el.style
+      ..color = 'rgba(180, 180, 200, 0.8)'
+      ..backgroundColor = 'rgba(0, 0, 0, 0.5)'
+      ..left = '${cardRect.right - 6}px'
+      ..top = '${cardRect.bottom - 6}px'
+      ..transform = 'translate(-100%, -100%)';
+  }
+
+  void _removeLabelOverlay(String id) {
+    _labelOverlays.remove(id)?.remove();
+  }
+
+  void _removeAllLabelOverlays() {
+    for (final el in _labelOverlays.values) {
+      el.remove();
+    }
+    _labelOverlays.clear();
+  }
+
+  // --- Focused terminal thumbnail ---
+
+  void _refreshFocusedThumbnail() {
+    if (_sidebarCollapsed) return;
+    final state = ref.read(facetManagerProvider);
+    if (state.focusedId == null) return;
+    final focusedId = state.focusedId!;
+
+    _ensureCardKey(focusedId);
+    final cardRect = _getRectForKey(_cardKeys[focusedId]!);
+    if (cardRect == null || cardRect.width == 0 || cardRect.height == 0) return;
+
+    final source = TerminalRegistry.instance.getRenderCanvas(focusedId);
+    if (source == null || source.width == 0 || source.height == 0) return;
+
+    var img = _focusedThumbnail;
+    if (img == null || _focusedThumbnailId != focusedId) {
+      _removeFocusedThumbnail();
+      img = web.document.createElement('img') as web.HTMLImageElement;
+      img.style
+        ..position = 'fixed'
+        ..pointerEvents = 'none'
+        ..zIndex = '9999'
+        ..objectFit = 'cover'
+        ..objectPosition = 'bottom left';
+      web.document.body!.append(img);
+      _focusedThumbnail = img;
+      _focusedThumbnailId = focusedId;
+    }
+
+    img.src = source.toDataURL('image/png');
+    img.style
+      ..left = '${cardRect.left}px'
+      ..top = '${cardRect.top}px'
+      ..width = '${cardRect.width}px'
+      ..height = '${cardRect.height}px';
+  }
+
+  void _removeFocusedThumbnail() {
+    (_focusedThumbnail as web.HTMLElement?)?.remove();
+    _focusedThumbnail = null;
+    _focusedThumbnailId = null;
   }
 
   @override
   void dispose() {
+    _thumbnailTimer?.cancel();
     _animationCleanup?.cancel();
     _wsSubscription?.close();
+    _removeAllLabelOverlays();
+    _removeFocusedThumbnail();
     TerminalRegistry.instance.onRegistered = null;
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -559,3 +692,4 @@ class _FacetShellState extends ConsumerState<FacetShell>
   }
 
 }
+

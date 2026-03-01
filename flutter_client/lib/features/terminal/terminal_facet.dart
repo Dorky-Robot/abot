@@ -37,6 +37,31 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   @override
   String get sessionName => widget.sessionName;
 
+  @override
+  double get contentFraction {
+    final t = _terminal;
+    if (t == null || t.rows == 0) return 1.0;
+    final cursorY = t.buffer.active.cursorY;
+    return ((cursorY + 1) / t.rows).clamp(0.0, 1.0);
+  }
+
+  @override
+  web.HTMLCanvasElement? get renderCanvas {
+    if (_container == null) return null;
+    final canvases = _container!.querySelectorAll('canvas');
+    web.HTMLCanvasElement? largest;
+    int maxArea = 0;
+    for (var i = 0; i < canvases.length; i++) {
+      final c = canvases.item(i)! as web.HTMLCanvasElement;
+      final area = c.width * c.height;
+      if (area > maxArea) {
+        maxArea = area;
+        largest = c;
+      }
+    }
+    return largest;
+  }
+
   late final String _viewId;
   XtermTerminal? _terminal;
   XtermFitAddon? _fitAddon;
@@ -250,7 +275,8 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   /// Apply a CSS transform to the xterm container for GPU-accelerated animation.
   /// When [animate] is true, a CSS transition smoothly interpolates the transform.
   @override
-  void setGenieTransform(String transform, {bool animate = true}) {
+  void setGenieTransform(String transform,
+      {bool animate = true, String? clipPath}) {
     if (_container == null) return;
     _container!.style.transformOrigin = '0 0';
     _container!.style.transition = animate
@@ -258,6 +284,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
         : 'none';
     _container!.style.transform = transform;
     _container!.style.pointerEvents = 'none';
+    _container!.style.clipPath = clipPath ?? '';
     _setAncestorOverflow(true);
   }
 
@@ -271,6 +298,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _container!.style.transform = '';
     _container!.style.transformOrigin = '';
     _container!.style.pointerEvents = '';
+    _container!.style.clipPath = '';
     _setAncestorOverflow(false);
   }
 
@@ -391,9 +419,17 @@ class _TitleBar extends StatelessWidget {
 /// A terminal that can receive data and report its session name.
 abstract interface class TerminalSink {
   String get sessionName;
+
+  /// Fraction of the viewport that contains content (0..1).
+  /// Based on the cursor row: (cursorY + 1) / rows.
+  double get contentFraction;
+
+  /// The largest canvas element inside the xterm container (for thumbnails).
+  web.HTMLCanvasElement? get renderCanvas;
+
   void writeData(String data);
   void toggleSearch();
-  void setGenieTransform(String transform, {bool animate});
+  void setGenieTransform(String transform, {bool animate, String? clipPath});
   void clearGenieTransform({bool animate});
 }
 
@@ -438,10 +474,21 @@ class TerminalRegistry {
     _terminals[facetId]?.toggleSearch();
   }
 
+  /// Fraction of the viewport with content for a given facet.
+  double contentFraction(String facetId) {
+    return _terminals[facetId]?.contentFraction ?? 1.0;
+  }
+
+  /// The render canvas for a given facet (for thumbnail capture).
+  web.HTMLCanvasElement? getRenderCanvas(String facetId) {
+    return _terminals[facetId]?.renderCanvas;
+  }
+
   /// Apply a CSS transform to a facet's terminal container (GPU-accelerated).
   void setGenieTransform(String facetId, String transform,
-      {bool animate = true}) {
-    _terminals[facetId]?.setGenieTransform(transform, animate: animate);
+      {bool animate = true, String? clipPath}) {
+    _terminals[facetId]
+        ?.setGenieTransform(transform, animate: animate, clipPath: clipPath);
   }
 
   /// Clear CSS transform on a facet's terminal container.
