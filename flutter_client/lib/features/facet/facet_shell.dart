@@ -16,6 +16,7 @@ import 'stage_strip.dart';
 import '../settings/settings_panel.dart';
 
 const double _narrowBreakpoint = 768;
+const String _offscreenTransform = 'translate(-9999px, 0) scale(0.01, 0.01)';
 
 /// The main app shell — iPad Stage Manager-style layout: one focused facet
 /// takes center stage while others appear as live-preview cards in a side strip.
@@ -205,7 +206,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     for (final id in state.stripOrder) {
       TerminalRegistry.instance.setGenieTransform(
         id,
-        'translate(-9999px, 0) scale(0.01, 0.01)',
+        _offscreenTransform,
         animate: false,
       );
     }
@@ -213,7 +214,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     if (state.focusedId != null) {
       TerminalRegistry.instance.setGenieTransform(
         '${state.focusedId!}_mirror',
-        'translate(-9999px, 0) scale(0.01, 0.01)',
+        _offscreenTransform,
         animate: false,
       );
     }
@@ -382,8 +383,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
       // Inset by card border width + border-radius so the card border
       // and rounded corners remain visible beneath the terminal content.
-      final borderInset = 2.0 / s;
-      final clipRadius = 8.0 / s; // AbotRadius.md
+      final borderInset = 2.0 / s; // card border width headroom
+      final clipRadius = AbotRadius.md / s;
 
       TerminalRegistry.instance.setGenieTransform(
         terminalId,
@@ -456,7 +457,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       el.style
         ..position = 'fixed'
         ..pointerEvents = 'none'
-        ..fontFamily = 'JetBrains Mono, monospace'
+        ..fontFamily = '${AbotFonts.mono}, monospace'
         ..fontSize = '9px'
         ..padding = '2px 4px'
         ..borderRadius = '3px'
@@ -696,6 +697,5 @@ class _FacetShellState extends ConsumerState<FacetShell>
       ],
     );
   }
-
 }
 

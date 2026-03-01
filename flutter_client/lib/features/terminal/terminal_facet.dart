@@ -486,16 +486,11 @@ class TerminalRegistry {
     _terminals.remove(facetId);
   }
 
-  /// Write data to terminals by session name.
-  /// When [fanOut] is true (default), writes to ALL matching terminals
-  /// (main + mirrors). Set to false for attach-buffer replay to avoid
-  /// duplicating content in the primary terminal.
-  void writeToSession(String sessionName, String data,
-      {bool fanOut = true}) {
+  /// Write data to all terminals matching a session name (main + mirrors).
+  void writeToSession(String sessionName, String data) {
     for (final sink in _terminals.values) {
       if (sink.sessionName == sessionName) {
         sink.writeData(data);
-        if (!fanOut) return;
       }
     }
   }
