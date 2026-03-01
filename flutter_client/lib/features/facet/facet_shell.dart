@@ -244,43 +244,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final currentFocused = ref.read(facetManagerProvider).focusedId;
     if (facetId == currentFocused) return;
 
-    // Capture card rects BEFORE focus changes the sidebar layout.
-    _ensureCardKey(facetId);
-    if (currentFocused != null) _ensureCardKey(currentFocused);
-
-    final mainRect = _getRectForKey(_mainAreaKey);
-
-    // Animate outgoing terminal: full-size → sidebar card position (CSS transition).
-    if (currentFocused != null && mainRect != null) {
-      final outgoingCardRect = _getRectForKey(_cardKeys[currentFocused]!);
-      if (outgoingCardRect != null) {
-        _animatingIds.add(currentFocused);
-        final tx = outgoingCardRect.left - mainRect.left;
-        final ty = outgoingCardRect.top - mainRect.top;
-        final sx = outgoingCardRect.width / mainRect.width;
-        final sy = outgoingCardRect.height / mainRect.height;
-        TerminalRegistry.instance.setGenieTransform(
-          currentFocused,
-          'translate(${tx}px, ${ty}px) scale($sx, $sy)',
-        );
-      }
-    }
-
-    // Animate incoming terminal: sidebar card → full-size (CSS transition).
-    _animatingIds.add(facetId);
-    TerminalRegistry.instance.clearGenieTransform(facetId);
-
-    // Change focus instantly (terminal input works immediately).
+    // Instant swap — change focus and recompute transforms without animation.
     ref.read(facetManagerProvider.notifier).focus(facetId);
-
-    // After CSS transition completes, refresh all transforms.
-    // Cancel any previous cleanup timer (handles rapid focus cycling).
-    _animationCleanup?.cancel();
-    _animationCleanup = Timer(const Duration(milliseconds: 450), () {
-      if (!mounted) return;
-      _animatingIds.clear();
-      _updateSidebarTransforms();
-    });
   }
 
   /// Open or focus a server session from the strip.

@@ -74,9 +74,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
             onTap: () {}, // absorb taps on the panel
             child: Container(
               width: 320,
-              margin: const EdgeInsets.symmetric(
-                vertical: AbotSpacing.lg,
-              ),
+              constraints: const BoxConstraints(maxHeight: 480),
               decoration: BoxDecoration(
                 color: p.base,
                 borderRadius: BorderRadius.circular(AbotRadius.lg),
