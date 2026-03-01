@@ -242,7 +242,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     wsService.attachSession(sessionName);
   }
 
-  void _closeFacet(String facetId, String sessionName) {
+  void _minimizeFacet(String facetId, String sessionName) {
     TerminalRegistry.instance.clearGenieTransform(facetId, animate: false);
     final facetManager = ref.read(facetManagerProvider.notifier);
     final wsService = ref.read(wsServiceProvider.notifier);
@@ -250,6 +250,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
     facetManager.remove(facetId);
     _facetKeys.remove(facetId);
     _cardKeys.remove(facetId);
+  }
+
+  void _closeFacet(String facetId, String sessionName) {
+    _minimizeFacet(facetId, sessionName);
+    ref.read(sessionServiceProvider.notifier).deleteSession(sessionName);
   }
 
   void _focusFacet(String facetId) {
@@ -521,7 +526,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   meta: defaultTargetPlatform == TargetPlatform.macOS): () {
                 _createNewFacet();
               },
-              // Ctrl+W — close current facet
+              // Ctrl+W — minimize current facet (detach, keep session alive)
               SingleActivator(LogicalKeyboardKey.keyW,
                   control: defaultTargetPlatform != TargetPlatform.macOS,
                   meta: defaultTargetPlatform == TargetPlatform.macOS): () {
@@ -529,7 +534,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 if (state.focusedId != null && state.count > 1) {
                   final facet = state.facets[state.focusedId!];
                   if (facet != null) {
-                    _closeFacet(facet.id, facet.sessionName);
+                    _minimizeFacet(facet.id, facet.sessionName);
                   }
                 }
               },
@@ -690,11 +695,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
             facetId: focusedId,
             sessionName: state.facets[focusedId]!.sessionName,
             isFocused: true,
-            showTitleBar: state.count > 1,
-            onClose: state.count > 1
-                ? () => _closeFacet(
+            showTitleBar: true,
+            onMinimize: state.count > 1
+                ? () => _minimizeFacet(
                     focusedId, state.facets[focusedId]!.sessionName)
                 : null,
+            onClose: () => _closeFacet(
+                focusedId, state.facets[focusedId]!.sessionName),
           ),
         ),
       ],
