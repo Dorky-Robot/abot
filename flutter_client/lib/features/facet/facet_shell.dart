@@ -38,10 +38,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   final Map<String, GlobalKey> _cardKeys = {};
   final GlobalKey _mainAreaKey = GlobalKey();
 
-  /// IDs of terminals currently animating (skip instant transform updates).
-  final Set<String> _animatingIds = {};
-
-  /// Timer for post-animation cleanup (cancelled on rapid re-focus).
+  /// Timer for post-sidebar-toggle cleanup (cancelled on rapid re-toggle).
   Timer? _animationCleanup;
 
   /// Subscription from ref.listenManual — cancelled in dispose.
@@ -342,7 +339,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
     if (mainRect == null || mainRect.width == 0 || mainRect.height == 0) return;
 
     for (final id in state.stripOrder) {
-      if (_animatingIds.contains(id)) continue;
       _ensureCardKey(id);
       final cardRect = _getRectForKey(_cardKeys[id]!);
       if (cardRect == null) continue;
@@ -360,8 +356,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
 
     // Ensure the focused terminal has no transform.
-    if (state.focusedId != null &&
-        !_animatingIds.contains(state.focusedId)) {
+    if (state.focusedId != null) {
       TerminalRegistry.instance
           .clearGenieTransform(state.focusedId!, animate: false);
     }
