@@ -1,15 +1,16 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
-/// Client for communicating with the daemon over Unix socket NDJSON protocol
+/// Client for communicating with the daemon over Unix socket NDJSON protocol.
+/// Automatically reconnects if the daemon connection drops.
 pub struct DaemonClient {
-    writer: Arc<Mutex<tokio::io::WriteHalf<UnixStream>>>,
+    writer: Arc<Mutex<Option<tokio::io::WriteHalf<UnixStream>>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     /// Broadcast channel for daemon output events (relayed to browser clients)
     pub output_rx: broadcast::Receiver<Value>,
@@ -26,43 +27,113 @@ impl DaemonClient {
 
         let (output_tx, output_rx) = broadcast::channel(4096);
 
-        // Spawn reader task
+        let writer = Arc::new(Mutex::new(Some(writer)));
+
+        // Spawn reader task with reconnection
         let reader_pending = pending.clone();
         let reader_output_tx = output_tx.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(reader).lines();
-            while let Some(line) = lines.next_line().await.unwrap_or(None) {
-                if line.is_empty() {
-                    continue;
-                }
-
-                match serde_json::from_str::<Value>(&line) {
-                    Ok(msg) => {
-                        // If message has an "id" field, it's an RPC response
-                        if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-                            let mut pending = reader_pending.lock().await;
-                            if let Some(tx) = pending.remove(id) {
-                                let _ = tx.send(msg);
-                            }
-                        } else {
-                            // Broadcast event (output, exit, session-removed)
-                            let _ = reader_output_tx.send(msg);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("invalid daemon message: {} — {}", e, line);
-                    }
-                }
-            }
-            tracing::warn!("daemon connection closed");
-        });
+        let reader_writer = writer.clone();
+        let sock_path_owned = sock_path.to_path_buf();
+        tokio::spawn(Self::reader_loop(
+            reader,
+            reader_pending.clone(),
+            reader_output_tx,
+            reader_writer,
+            sock_path_owned,
+        ));
 
         Ok(Self {
-            writer: Arc::new(Mutex::new(writer)),
+            writer,
             pending,
             output_rx,
             output_tx,
         })
+    }
+
+    /// Reader loop that processes daemon messages and reconnects on disconnect.
+    async fn reader_loop(
+        initial_reader: tokio::io::ReadHalf<UnixStream>,
+        pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+        output_tx: broadcast::Sender<Value>,
+        writer: Arc<Mutex<Option<tokio::io::WriteHalf<UnixStream>>>>,
+        sock_path: PathBuf,
+    ) {
+        // Process the initial connection
+        Self::process_reader(initial_reader, &pending, &output_tx).await;
+
+        // Reconnection loop
+        let mut backoff_ms = 500u64;
+        loop {
+            tracing::warn!(
+                "daemon connection lost, reconnecting in {}ms...",
+                backoff_ms
+            );
+
+            // Clear the writer so send_raw fails fast
+            {
+                let mut w = writer.lock().await;
+                *w = None;
+            }
+
+            // Fail all pending RPCs so callers don't hang
+            {
+                let mut p = pending.lock().await;
+                p.clear();
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+
+            match UnixStream::connect(&sock_path).await {
+                Ok(stream) => {
+                    tracing::info!("reconnected to daemon");
+                    let (reader, new_writer) = tokio::io::split(stream);
+
+                    // Replace the writer
+                    {
+                        let mut w = writer.lock().await;
+                        *w = Some(new_writer);
+                    }
+
+                    backoff_ms = 500; // reset backoff
+                    Self::process_reader(reader, &pending, &output_tx).await;
+                    // If we reach here, the connection dropped again — loop
+                }
+                Err(e) => {
+                    tracing::warn!("daemon reconnect failed: {}", e);
+                    backoff_ms = (backoff_ms * 2).min(10_000); // cap at 10s
+                }
+            }
+        }
+    }
+
+    /// Read NDJSON lines from the daemon, dispatching RPCs and broadcasts.
+    async fn process_reader(
+        reader: tokio::io::ReadHalf<UnixStream>,
+        pending: &Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
+        output_tx: &broadcast::Sender<Value>,
+    ) {
+        let mut lines = BufReader::new(reader).lines();
+        while let Some(line) = lines.next_line().await.unwrap_or(None) {
+            if line.is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<Value>(&line) {
+                Ok(msg) => {
+                    if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
+                        let mut pending = pending.lock().await;
+                        if let Some(tx) = pending.remove(id) {
+                            let _ = tx.send(msg);
+                        }
+                    } else {
+                        let _ = output_tx.send(msg);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("invalid daemon message: {} — {}", e, line);
+                }
+            }
+        }
     }
 
     /// Send an RPC request and wait for response
@@ -107,7 +178,10 @@ impl DaemonClient {
 
     async fn send_raw(&self, msg: &Value) -> Result<()> {
         let json = serde_json::to_string(msg)?;
-        let mut writer = self.writer.lock().await;
+        let mut guard = self.writer.lock().await;
+        let writer = guard
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("daemon not connected"))?;
         writer.write_all(json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;
