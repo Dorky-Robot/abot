@@ -393,7 +393,7 @@ class _SessionTileState extends State<_SessionTile> {
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    final statusColor = widget.session.status == 'running' ? p.green : p.subtext0;
+    final statusColor = widget.session.isRunning ? p.green : p.subtext0;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -428,7 +428,7 @@ class _SessionTileState extends State<_SessionTile> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
-                      widget.session.status,
+                      widget.session.status.name,
                       style: TextStyle(
                         fontSize: 9,
                         color: statusColor,

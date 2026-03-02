@@ -1,17 +1,23 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api_client.dart';
 
+enum SessionStatus { running, exited }
+
 /// A server-side session returned from the REST API.
 class SessionInfo {
   final String name;
-  final String status;
+  final SessionStatus status;
 
   const SessionInfo({required this.name, required this.status});
 
   factory SessionInfo.fromJson(Map<String, dynamic> json) => SessionInfo(
         name: json['name'] as String,
-        status: (json['alive'] as bool? ?? true) ? 'running' : 'exited',
+        status: (json['alive'] as bool? ?? true)
+            ? SessionStatus.running
+            : SessionStatus.exited,
       );
+
+  bool get isRunning => status == SessionStatus.running;
 }
 
 /// Session service provider.

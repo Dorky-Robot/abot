@@ -216,6 +216,11 @@ impl SessionBackend for DockerBackend {
         // Can't easily check synchronously. Assume alive until reader closes.
         true
     }
+
+    fn try_exit_code(&mut self) -> Option<u32> {
+        // Docker backend cannot easily get exit code synchronously.
+        None
+    }
 }
 
 impl Drop for DockerBackend {

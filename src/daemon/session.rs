@@ -5,12 +5,17 @@ use anyhow::Result;
 const DEFAULT_MAX_BUFFER_ITEMS: usize = 5000;
 const DEFAULT_MAX_BUFFER_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SessionStatus {
+    Running,
+    Exited(u32),
+}
+
 pub struct Session {
     pub name: String,
     pub backend: Box<dyn SessionBackend>,
     pub buffer: RingBuffer,
-    pub alive: bool,
-    pub exit_code: Option<u32>,
+    pub status: SessionStatus,
 }
 
 impl Session {
@@ -19,13 +24,16 @@ impl Session {
             name,
             backend,
             buffer: RingBuffer::new(DEFAULT_MAX_BUFFER_ITEMS, DEFAULT_MAX_BUFFER_BYTES),
-            alive: true,
-            exit_code: None,
+            status: SessionStatus::Running,
         }
     }
 
+    pub fn is_alive(&self) -> bool {
+        self.status == SessionStatus::Running
+    }
+
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
-        if !self.alive {
+        if !self.is_alive() {
             anyhow::bail!("session '{}' is not alive", self.name);
         }
         self.backend.write(data)
@@ -39,17 +47,19 @@ impl Session {
         self.buffer.to_string()
     }
 
-    #[allow(dead_code)]
     pub fn mark_exited(&mut self, code: u32) {
-        self.alive = false;
-        self.exit_code = Some(code);
+        self.status = SessionStatus::Exited(code);
     }
 
     pub fn to_json(&self) -> serde_json::Value {
+        let (alive, exit_code) = match self.status {
+            SessionStatus::Running => (true, None),
+            SessionStatus::Exited(code) => (false, Some(code)),
+        };
         serde_json::json!({
             "name": self.name,
-            "alive": self.alive,
-            "exitCode": self.exit_code,
+            "alive": alive,
+            "exitCode": exit_code,
             "bufferItems": self.buffer.len(),
             "bufferBytes": self.buffer.bytes(),
         })

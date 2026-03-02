@@ -37,6 +37,10 @@ pub enum DaemonRequest {
         rows: u16,
     },
 
+    /// RPC: get a single session by name
+    #[serde(rename = "get-session")]
+    GetSession { id: String, name: String },
+
     /// RPC: delete a session
     #[serde(rename = "delete-session")]
     DeleteSession { id: String, name: String },
@@ -117,6 +121,10 @@ pub enum DaemonResponse {
         #[serde(rename = "newName")]
         new_name: String,
     },
+    SessionDetail {
+        id: String,
+        session: serde_json::Value,
+    },
     Error {
         id: String,
         error: String,
@@ -163,6 +171,20 @@ pub async fn handle_request(
             Some(DaemonResponse::SessionList { id, sessions: list })
         }
 
+        DaemonRequest::GetSession { id, name } => {
+            let sessions = state.sessions.lock().await;
+            match sessions.get(&name) {
+                Some(s) => Some(DaemonResponse::SessionDetail {
+                    id,
+                    session: s.to_json(),
+                }),
+                None => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("session '{}' not found", name),
+                }),
+            }
+        }
+
         DaemonRequest::CreateSession {
             id,
             name,
@@ -204,6 +226,24 @@ pub async fn handle_request(
                                 let _ = output_tx.send(OutputEvent::Output {
                                     session: reader_name.clone(),
                                     data,
+                                });
+                            }
+
+                            // PTY output ended — mark session as exited and broadcast
+                            let code = {
+                                let mut sessions = state_ref.sessions.lock().await;
+                                if let Some(s) = sessions.get_mut(&buffer_name) {
+                                    let code = s.backend.try_exit_code().unwrap_or(0);
+                                    s.mark_exited(code);
+                                    Some(code)
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(code) = code {
+                                let _ = output_tx.send(OutputEvent::Exit {
+                                    session: reader_name.clone(),
+                                    code,
                                 });
                             }
                         });
@@ -316,7 +356,7 @@ pub async fn handle_request(
             if let Some(session_name) = session_name {
                 let mut sessions = state.sessions.lock().await;
                 if let Some(session) = sessions.get_mut(&session_name) {
-                    if session.alive {
+                    if session.is_alive() {
                         match session.write(data.as_bytes()) {
                             Ok(_) => {
                                 tracing::debug!(

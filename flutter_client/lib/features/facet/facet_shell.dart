@@ -86,7 +86,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
           .read(sessionServiceProvider.notifier)
           .listSessions();
       if (!mounted) return;
-      final running = sessions.where((s) => s.status == 'running').toList();
+      final running = sessions.where((s) => s.isRunning).toList();
 
       if (running.isNotEmpty) {
         // Create facets for all running sessions. Focus 'main' if it exists,
