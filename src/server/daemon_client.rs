@@ -180,6 +180,14 @@ impl DaemonClient {
         self.output_tx.subscribe()
     }
 
+    /// Check if the daemon is alive and responsive.
+    pub async fn ping(&self) -> bool {
+        use crate::daemon::ipc::DaemonRequest;
+        self.rpc(DaemonRequest::Ping { id: String::new() })
+            .await
+            .is_ok()
+    }
+
     async fn send_raw(&self, msg: &Value) -> Result<()> {
         let json = serde_json::to_string(msg)?;
         let mut guard = self.writer.lock().await;

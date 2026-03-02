@@ -87,6 +87,10 @@ pub enum DaemonRequest {
         #[serde(default)]
         session: Option<String>,
     },
+
+    /// RPC: health check
+    #[serde(rename = "ping")]
+    Ping { id: String },
 }
 
 fn default_cols() -> u16 {
@@ -127,6 +131,9 @@ pub enum DaemonResponse {
     SessionDetail {
         id: String,
         session: serde_json::Value,
+    },
+    Pong {
+        id: String,
     },
     Error {
         id: String,
@@ -340,7 +347,6 @@ pub async fn handle_request(
         DaemonRequest::Detach { client_id, session } => {
             let mut attachments = state.client_attachments.lock().await;
             if let Some(session_name) = session {
-                // Detach from specific session
                 if let Some(sessions) = attachments.get_mut(&client_id) {
                     sessions.remove(&session_name);
                     if sessions.is_empty() {
@@ -348,11 +354,12 @@ pub async fn handle_request(
                     }
                 }
             } else {
-                // Detach from all sessions
                 attachments.remove(&client_id);
             }
             None
         }
+
+        DaemonRequest::Ping { id } => Some(DaemonResponse::Pong { id }),
     }
 }
 
