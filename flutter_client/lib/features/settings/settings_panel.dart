@@ -6,6 +6,7 @@ import '../../core/network/api_client.dart';
 import '../../core/network/config_service.dart';
 import '../../core/theme/abot_theme.dart';
 import '../../core/theme/theme_provider.dart';
+import 'anthropic_oauth_manager.dart';
 import 'token_manager.dart';
 
 /// Settings panel overlay — slides in from the sidebar footer gear icon.
@@ -19,7 +20,7 @@ class SettingsPanel extends ConsumerStatefulWidget {
 }
 
 class _SettingsPanelState extends ConsumerState<SettingsPanel> {
-  int _tabIndex = 0; // 0 = Theme, 1 = Remote
+  int _tabIndex = 0; // 0 = Theme, 1 = Remote, 2 = AI
   final _nameController = TextEditingController();
   final _nameFocus = FocusNode();
   bool _nameInitialized = false;
@@ -137,6 +138,12 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
                             isActive: _tabIndex == 1,
                             onTap: () => setState(() => _tabIndex = 1),
                           ),
+                          const SizedBox(width: AbotSpacing.md),
+                          _TabButton(
+                            label: 'AI',
+                            isActive: _tabIndex == 2,
+                            onTap: () => setState(() => _tabIndex = 2),
+                          ),
                         ],
                       ),
                     ),
@@ -150,6 +157,9 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
                       data: (config) {
                         if (_tabIndex == 0) {
                           return _buildThemeTab(p);
+                        }
+                        if (_tabIndex == 2) {
+                          return _buildAiTab(p);
                         }
                         return _buildRemoteTab(p);
                       },
@@ -233,6 +243,17 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         _SectionLabel(label: 'Appearance'),
         const SizedBox(height: AbotSpacing.xs),
         _ThemeToggle(),
+      ],
+    );
+  }
+
+  Widget _buildAiTab(CatPalette p) {
+    return ListView(
+      padding: const EdgeInsets.all(AbotSpacing.lg),
+      children: [
+        _SectionLabel(label: 'Anthropic Account'),
+        const SizedBox(height: AbotSpacing.sm),
+        const AnthropicOAuthManager(),
       ],
     );
   }

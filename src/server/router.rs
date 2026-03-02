@@ -2,6 +2,7 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 use std::sync::Arc;
 
+use super::anthropic_oauth;
 use super::assets;
 use super::config as config_routes;
 use super::sessions;
@@ -60,6 +61,23 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route(
             "/api/credentials/{id}",
             delete(auth_handlers::delete_credential),
+        )
+        // Anthropic OAuth
+        .route(
+            "/api/anthropic/oauth/init",
+            post(anthropic_oauth::init_oauth),
+        )
+        .route(
+            "/api/anthropic/oauth/exchange",
+            post(anthropic_oauth::exchange_code),
+        )
+        .route(
+            "/api/anthropic/oauth/status",
+            get(anthropic_oauth::oauth_status),
+        )
+        .route(
+            "/api/anthropic/oauth",
+            delete(anthropic_oauth::disconnect_oauth),
         )
         // Stub endpoint for client compatibility
         .route(

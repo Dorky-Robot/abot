@@ -46,6 +46,16 @@ pub fn init_db(path: &Path) -> Result<Connection> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS anthropic_oauth (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            access_token TEXT NOT NULL,
+            refresh_token TEXT NOT NULL,
+            scopes TEXT NOT NULL,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         ",
     )?;
 
@@ -337,4 +347,63 @@ pub struct SetupTokenRow {
     pub name: String,
     pub created_at: i64,
     pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AnthropicOAuthRow {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub scopes: String,
+    pub expires_at: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+// --- Anthropic OAuth CRUD ---
+
+pub fn get_anthropic_oauth(db: &Connection) -> Result<Option<AnthropicOAuthRow>> {
+    let mut stmt = db.prepare(
+        "SELECT access_token, refresh_token, scopes, expires_at, created_at, updated_at
+         FROM anthropic_oauth WHERE id = 1",
+    )?;
+    let result = stmt
+        .query_row([], |row| {
+            Ok(AnthropicOAuthRow {
+                access_token: row.get(0)?,
+                refresh_token: row.get(1)?,
+                scopes: row.get(2)?,
+                expires_at: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
+            })
+        })
+        .ok();
+    Ok(result)
+}
+
+pub fn upsert_anthropic_oauth(
+    db: &Connection,
+    access_token: &str,
+    refresh_token: &str,
+    scopes: &str,
+    expires_at: i64,
+) -> Result<()> {
+    let now = chrono::Utc::now().timestamp();
+    db.execute(
+        "INSERT INTO anthropic_oauth (id, access_token, refresh_token, scopes, expires_at, created_at, updated_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?5)
+         ON CONFLICT(id) DO UPDATE SET
+           access_token = excluded.access_token,
+           refresh_token = excluded.refresh_token,
+           scopes = excluded.scopes,
+           expires_at = excluded.expires_at,
+           updated_at = excluded.updated_at",
+        params![access_token, refresh_token, scopes, expires_at, now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_anthropic_oauth(db: &Connection) -> Result<()> {
+    db.execute("DELETE FROM anthropic_oauth WHERE id = 1", [])?;
+    Ok(())
 }

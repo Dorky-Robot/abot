@@ -19,7 +19,8 @@ RUN apk add --no-cache \
     ripgrep \
     fd \
     tree \
-    tmux
+    tmux \
+    && npm install -g @anthropic-ai/claude-code
 
 # Set default shell
 ENV SHELL=/bin/bash

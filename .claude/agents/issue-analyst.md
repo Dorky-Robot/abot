@@ -16,7 +16,7 @@ When clustering issues, consider these subsystems:
 
 - **Daemon** (`src/daemon/`) — PTY sessions, ring buffer (5000 items / 5MB), NDJSON IPC over Unix socket, backend abstraction (local PTY or Docker containers)
 - **Server** (`src/server/`) — HTTP routes, asset serving (rust-embed), daemon client, session/shortcuts/config REST endpoints, graceful shutdown
-- **Auth** (`src/auth/`) — WebAuthn, sessions (SQLite), setup tokens (Argon2), lockout (5 failures / 15min), middleware
+- **Auth** (`src/auth/`) — WebAuthn, sessions (SQLite), setup tokens (Argon2), lockout (5 failures / 15min), middleware, OAuth token exchange
 - **Stream** (`src/stream/`) — WebSocket handler, client tracking, P2P/WebRTC (DataChannel for terminal I/O)
 - **Client** (`client/`) — Vanilla JS, canvas rendering, facet manager (spatial panels), terminal (xterm.js), touch input, virtual keyboard, P2P (SimplePeer), service worker (PWA)
 

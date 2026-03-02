@@ -1,3 +1,4 @@
+pub mod anthropic_oauth;
 pub mod assets;
 pub mod config;
 pub mod daemon_client;
@@ -17,6 +18,8 @@ pub struct AppState {
     pub daemon_client: daemon_client::DaemonClient,
     pub stream_clients: stream::clients::ClientTracker,
     pub data_dir: std::path::PathBuf,
+    pub pkce_challenge: tokio::sync::Mutex<Option<anthropic_oauth::PkceChallenge>>,
+    pub http_client: reqwest::Client,
 }
 
 pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
@@ -33,7 +36,53 @@ pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
         daemon_client,
         stream_clients: stream::clients::ClientTracker::new(),
         data_dir: data_dir.to_path_buf(),
+        pkce_challenge: tokio::sync::Mutex::new(None),
+        http_client: reqwest::Client::new(),
     });
+
+    // Push stored OAuth tokens to daemon at startup
+    {
+        let oauth_env = {
+            let db = state.auth.db.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+            if let Ok(Some(row)) = auth::state::get_anthropic_oauth(&db) {
+                let now = chrono::Utc::now().timestamp();
+                if row.expires_at > now {
+                    Some(anthropic_oauth::build_env_map(
+                        Some(&row.access_token),
+                        Some(&row.refresh_token),
+                        Some(&row.scopes),
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }; // db lock dropped here
+        if let Some(env) = oauth_env {
+            let req = crate::daemon::ipc::DaemonRequest::UpdateAgentEnv {
+                id: uuid::Uuid::new_v4().to_string(),
+                env,
+            };
+            if let Err(e) = state.daemon_client.rpc(req).await {
+                tracing::warn!("failed to push OAuth tokens to daemon at startup: {e}");
+            } else {
+                tracing::info!("pushed stored OAuth tokens to daemon");
+            }
+        }
+    }
+
+    // Spawn background token refresh task (every 30 minutes)
+    {
+        let refresh_state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+            loop {
+                interval.tick().await;
+                anthropic_oauth::refresh_token_if_needed(&refresh_state).await;
+            }
+        });
+    }
 
     let app = router::build(state.clone());
 
