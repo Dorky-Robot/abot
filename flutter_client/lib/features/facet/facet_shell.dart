@@ -86,7 +86,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
           .read(sessionServiceProvider.notifier)
           .listSessions();
       if (!mounted) return;
-      final running = sessions.where((s) => s.status == 'running').toList();
+      final running = sessions.where((s) => s.isRunning).toList();
 
       if (running.isNotEmpty) {
         // Create facets for all running sessions. Focus 'main' if it exists,
@@ -104,7 +104,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
             if (n > _nextSessionId) _nextSessionId = n;
           }
         }
-        // Focus 'main' if present
+        // Restore persisted sidebar order, then focus 'main'.
+        facetManager.loadPersistedOrder();
         final mainFacet = ref.read(facetManagerProvider).getBySession('main');
         if (mainFacet != null) {
           facetManager.focus(mainFacet.id);
@@ -241,7 +242,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     wsService.attachSession(sessionName);
   }
 
-  void _closeFacet(String facetId, String sessionName) {
+  void _minimizeFacet(String facetId, String sessionName) {
     TerminalRegistry.instance.clearGenieTransform(facetId, animate: false);
     final facetManager = ref.read(facetManagerProvider.notifier);
     final wsService = ref.read(wsServiceProvider.notifier);
@@ -249,6 +250,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
     facetManager.remove(facetId);
     _facetKeys.remove(facetId);
     _cardKeys.remove(facetId);
+  }
+
+  void _closeFacet(String facetId, String sessionName) {
+    _minimizeFacet(facetId, sessionName);
+    ref.read(sessionServiceProvider.notifier).deleteSession(sessionName);
   }
 
   void _focusFacet(String facetId) {
@@ -379,7 +385,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
       // Clip within the xterm container only (no title bar to skip).
       final topClip = overflow;
-      final bottomClip = xtermH - overflow - cardRect.height / s;
+      final bottomClip =
+          (xtermH - overflow - cardRect.height / s).clamp(0.0, double.infinity);
 
       // Inset by card border width + border-radius so the card border
       // and rounded corners remain visible beneath the terminal content.
@@ -431,7 +438,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (cardRect == null) continue;
       final name = state.facets[id]?.sessionName ?? id;
       activeIds.add(id);
-      _upsertLabelOverlay(id, cardRect, name);
+      _upsertLabelOverlay(id, cardRect, name, isFocused: false);
     }
     if (state.focusedId != null && state.count > 1) {
       final id = state.focusedId!;
@@ -440,7 +447,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (cardRect != null) {
         final name = state.facets[id]?.sessionName ?? id;
         activeIds.add(id);
-        _upsertLabelOverlay(id, cardRect, name);
+        _upsertLabelOverlay(id, cardRect, name, isFocused: true);
       }
     }
     // Remove stale labels.
@@ -450,7 +457,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
         .forEach(_removeLabelOverlay);
   }
 
-  void _upsertLabelOverlay(String id, Rect cardRect, String name) {
+  void _upsertLabelOverlay(String id, Rect cardRect, String name,
+      {bool isFocused = false}) {
     var el = _labelOverlays[id];
     if (el == null) {
       el = web.document.createElement('div') as web.HTMLDivElement;
@@ -467,8 +475,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
     el.textContent = name;
     el.style
-      ..color = 'rgba(180, 180, 200, 0.8)'
-      ..backgroundColor = 'rgba(0, 0, 0, 0.5)'
+      ..color = isFocused ? 'rgba(203, 166, 247, 0.95)' : 'rgba(180, 180, 200, 0.8)'
+      ..backgroundColor = isFocused ? 'rgba(30, 30, 46, 0.8)' : 'rgba(0, 0, 0, 0.5)'
       ..left = '${cardRect.right - 6}px'
       ..top = '${cardRect.bottom - 6}px'
       ..transform = 'translate(-100%, -100%)';
@@ -519,7 +527,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   meta: defaultTargetPlatform == TargetPlatform.macOS): () {
                 _createNewFacet();
               },
-              // Ctrl+W — close current facet
+              // Ctrl+W — minimize current facet (detach, keep session alive)
               SingleActivator(LogicalKeyboardKey.keyW,
                   control: defaultTargetPlatform != TargetPlatform.macOS,
                   meta: defaultTargetPlatform == TargetPlatform.macOS): () {
@@ -527,7 +535,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 if (state.focusedId != null && state.count > 1) {
                   final facet = state.facets[state.focusedId!];
                   if (facet != null) {
-                    _closeFacet(facet.id, facet.sessionName);
+                    _minimizeFacet(facet.id, facet.sessionName);
                   }
                 }
               },
@@ -610,10 +618,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
               serverSessions: serverSessions,
               openSessionNames: openSessionNames,
               onFocusFacet: _focusFacet,
-              onReorder: (oldIndex, newIndex) {
-                ref.read(facetManagerProvider.notifier)
-                    .reorder(oldIndex, newIndex);
-              },
               onOpenSession: _onOpenSession,
               onDeleteSession: _onDeleteSession,
               onNewSession: _createNewFacet,
@@ -622,6 +626,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onToggleCollapse: _toggleSidebar,
               onSettingsTap: () =>
                   setState(() => _showSettings = !_showSettings),
+              onScroll: _updateSidebarTransforms,
             ),
             Expanded(child: _buildFocusedArea(state)),
           ],
@@ -687,7 +692,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
             facetId: focusedId,
             sessionName: state.facets[focusedId]!.sessionName,
             isFocused: true,
-            showTitleBar: state.count > 1,
+            showTitleBar: true,
+            onMinimize: state.count > 1
+                ? () => _minimizeFacet(
+                    focusedId, state.facets[focusedId]!.sessionName)
+                : null,
             onClose: state.count > 1
                 ? () => _closeFacet(
                     focusedId, state.facets[focusedId]!.sessionName)

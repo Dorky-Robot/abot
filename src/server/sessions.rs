@@ -73,23 +73,20 @@ pub async fn get_session(
 
     let resp = app
         .daemon_client
-        .rpc(json!({ "type": "list-sessions" }))
+        .rpc(json!({ "type": "get-session", "name": name }))
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    let sessions = resp
-        .get("sessions")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let session = sessions
-        .iter()
-        .find(|s| s.get("name").and_then(|n| n.as_str()) == Some(&name));
-
-    match session {
-        Some(s) => Ok(Json(s.clone())),
-        None => Err(AppError::NotFound),
+    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
+        if error.contains("not found") {
+            Err(AppError::NotFound)
+        } else {
+            Err(AppError::BadRequest(error.to_string()))
+        }
+    } else if let Some(session) = resp.get("session") {
+        Ok(Json(session.clone()))
+    } else {
+        Err(AppError::NotFound)
     }
 }
 

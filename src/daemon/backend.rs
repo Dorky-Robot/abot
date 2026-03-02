@@ -22,4 +22,8 @@ pub trait SessionBackend: Send {
     /// Check if the process is still running.
     #[allow(dead_code)]
     fn is_alive(&mut self) -> bool;
+
+    /// Try to retrieve the exit code without blocking.
+    /// Returns Some(code) if the process has exited, None if still running or unknown.
+    fn try_exit_code(&mut self) -> Option<u32>;
 }

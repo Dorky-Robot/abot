@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:web/web.dart' as web;
 import 'facet.dart';
 
 /// State for the facet manager — Stage Manager model.
@@ -115,6 +117,7 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
       order: newOrder,
       focusedId: newFocused,
     );
+    _persistOrder();
   }
 
   /// Focus a specific facet — just changes focusedId, order is stable.
@@ -124,17 +127,51 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     state = state.copyWith(focusedId: facetId);
   }
 
-  /// Reorder: move facet from [oldIndex] to [newIndex] in the full order list.
-  void reorder(int oldIndex, int newIndex) {
-    final newOrder = List<String>.from(state.order);
-    if (oldIndex < 0 || oldIndex >= newOrder.length) return;
-    if (newIndex < 0 || newIndex > newOrder.length) return;
-
-    final id = newOrder.removeAt(oldIndex);
-    final insertAt = newIndex > oldIndex ? newIndex - 1 : newIndex;
-    newOrder.insert(insertAt, id);
-
-    state = state.copyWith(order: newOrder);
+  /// Persist current facet order as session names to localStorage.
+  void _persistOrder() {
+    final names = state.order
+        .map((id) => state.facets[id]?.sessionName)
+        .whereType<String>()
+        .toList();
+    web.window.localStorage
+        .setItem('abot_facet_order', jsonEncode(names));
   }
 
+  /// Restore persisted sidebar order after facets have been created.
+  void loadPersistedOrder() {
+    final raw = web.window.localStorage.getItem('abot_facet_order');
+    if (raw == null) return;
+
+    final List<String> savedNames;
+    try {
+      savedNames = (jsonDecode(raw) as List).cast<String>();
+    } catch (_) {
+      return;
+    }
+
+    // Build a name→id lookup from current facets.
+    final nameToId = <String, String>{};
+    for (final entry in state.facets.entries) {
+      nameToId[entry.value.sessionName] = entry.key;
+    }
+
+    // Saved sessions first (in saved order), then any new sessions appended.
+    final newOrder = <String>[];
+    final placed = <String>{};
+    for (final name in savedNames) {
+      final id = nameToId[name];
+      if (id != null && !placed.contains(id)) {
+        newOrder.add(id);
+        placed.add(id);
+      }
+    }
+    for (final id in state.order) {
+      if (!placed.contains(id)) {
+        newOrder.add(id);
+      }
+    }
+
+    state = state.copyWith(order: newOrder);
+    _persistOrder();
+  }
 }

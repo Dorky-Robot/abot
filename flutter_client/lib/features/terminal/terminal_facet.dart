@@ -17,6 +17,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
   final String sessionName;
   final bool isFocused;
   final bool isMirror;
+  final VoidCallback? onMinimize;
   final VoidCallback? onClose;
   final bool showTitleBar;
 
@@ -26,6 +27,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
     required this.sessionName,
     this.isFocused = false,
     this.isMirror = false,
+    this.onMinimize,
     this.onClose,
     this.showTitleBar = true,
   });
@@ -176,7 +178,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
         if ((event.ctrlKey || event.metaKey) && event.key == 'n') {
           return false.toJS;
         }
-        // Ctrl+W / Cmd+W — close facet
+        // Ctrl+W / Cmd+W — minimize facet
         if ((event.ctrlKey || event.metaKey) && event.key == 'w') {
           return false.toJS;
         }
@@ -373,6 +375,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
                 ? _TitleBar(
                     sessionName: widget.sessionName,
                     isFocused: widget.isFocused,
+                    onMinimize: widget.onMinimize,
                     onClose: widget.onClose,
                   )
                 : null,
@@ -396,11 +399,13 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 class _TitleBar extends StatelessWidget {
   final String sessionName;
   final bool isFocused;
+  final VoidCallback? onMinimize;
   final VoidCallback? onClose;
 
   const _TitleBar({
     required this.sessionName,
     required this.isFocused,
+    this.onMinimize,
     this.onClose,
   });
 
@@ -429,6 +434,15 @@ class _TitleBar extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (onMinimize != null)
+            InkWell(
+              onTap: onMinimize,
+              borderRadius: BorderRadius.circular(AbotRadius.sm),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(Icons.remove, size: 14, color: textColor),
+              ),
+            ),
           if (onClose != null)
             InkWell(
               onTap: onClose,

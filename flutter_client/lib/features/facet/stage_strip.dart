@@ -14,7 +14,6 @@ class StageStrip extends StatelessWidget {
   final List<SessionInfo> serverSessions;
   final Set<String> openSessionNames;
   final void Function(String facetId) onFocusFacet;
-  final void Function(int oldIndex, int newIndex) onReorder;
   final void Function(String sessionName) onOpenSession;
   final void Function(String sessionName) onDeleteSession;
   final VoidCallback onNewSession;
@@ -22,6 +21,7 @@ class StageStrip extends StatelessWidget {
   final bool collapsed;
   final VoidCallback onToggleCollapse;
   final VoidCallback? onSettingsTap;
+  final VoidCallback? onScroll;
 
   const StageStrip({
     super.key,
@@ -31,7 +31,6 @@ class StageStrip extends StatelessWidget {
     required this.serverSessions,
     required this.openSessionNames,
     required this.onFocusFacet,
-    required this.onReorder,
     required this.onOpenSession,
     required this.onDeleteSession,
     required this.onNewSession,
@@ -39,6 +38,7 @@ class StageStrip extends StatelessWidget {
     required this.collapsed,
     required this.onToggleCollapse,
     this.onSettingsTap,
+    this.onScroll,
   });
 
   @override
@@ -108,25 +108,26 @@ class StageStrip extends StatelessWidget {
             const Spacer()
           else
             Expanded(
-              child: CustomScrollView(
-                slivers: [
-                  // All facets in stable order — reorderable
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(
-                      vertical: AbotSpacing.sm,
-                      horizontal: AbotSpacing.sm,
-                    ),
-                    sliver: SliverReorderableList(
-                      itemCount: allFacets.length,
-                      onReorder: onReorder,
-                      itemBuilder: (context, index) {
-                        final facet = allFacets[index];
-                        final isFocused = facet.id == focusedId;
+              child: NotificationListener<ScrollNotification>(
+                onNotification: (notification) {
+                  onScroll?.call();
+                  return false;
+                },
+                child: CustomScrollView(
+                  slivers: [
+                    // All facets in stable order
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: AbotSpacing.sm,
+                        horizontal: AbotSpacing.sm,
+                      ),
+                      sliver: SliverList(
+                        delegate: SliverChildBuilderDelegate((context, index) {
+                          final facet = allFacets[index];
+                          final isFocused = facet.id == focusedId;
 
-                        return ReorderableDelayedDragStartListener(
-                          key: ValueKey(facet.id),
-                          index: index,
-                          child: Padding(
+                          return Padding(
+                            key: ValueKey(facet.id),
                             padding: const EdgeInsets.only(
                               bottom: AbotSpacing.sm,
                             ),
@@ -140,65 +141,67 @@ class StageStrip extends StatelessWidget {
                                     : () => onFocusFacet(facet.id),
                               ),
                             ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-
-                  // Unattached server sessions
-                  if (unattachedSessions.isNotEmpty)
-                    SliverPadding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: AbotSpacing.sm,
+                          );
+                        }, childCount: allFacets.length),
                       ),
-                      sliver: SliverList(
-                        delegate: SliverChildListDelegate([
-                          Padding(
-                            padding: const EdgeInsets.symmetric(
-                              vertical: AbotSpacing.xs,
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Divider(
-                                    color: p.surface1, height: 1,
-                                  ),
-                                ),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: AbotSpacing.sm,
-                                  ),
-                                  child: Text(
-                                    'Sessions',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: p.subtext0,
-                                      fontFamily: AbotFonts.mono,
+                    ),
+
+                    // Unattached server sessions
+                    if (unattachedSessions.isNotEmpty)
+                      SliverPadding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AbotSpacing.sm,
+                        ),
+                        sliver: SliverList(
+                          delegate: SliverChildListDelegate([
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: AbotSpacing.xs,
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Divider(
+                                      color: p.surface1,
+                                      height: 1,
                                     ),
                                   ),
-                                ),
-                                Expanded(
-                                  child: Divider(
-                                    color: p.surface1, height: 1,
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: AbotSpacing.sm,
+                                    ),
+                                    child: Text(
+                                      'Sessions',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: p.subtext0,
+                                        fontFamily: AbotFonts.mono,
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: AbotSpacing.xs),
-                          for (final session in unattachedSessions) ...[
-                            _SessionTile(
-                              session: session,
-                              onTap: () => onOpenSession(session.name),
-                              onDelete: () => onDeleteSession(session.name),
+                                  Expanded(
+                                    child: Divider(
+                                      color: p.surface1,
+                                      height: 1,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                             const SizedBox(height: AbotSpacing.xs),
-                          ],
-                        ]),
+                            for (final session in unattachedSessions) ...[
+                              _SessionTile(
+                                session: session,
+                                onTap: () => onOpenSession(session.name),
+                                onDelete: () => onDeleteSession(session.name),
+                              ),
+                              const SizedBox(height: AbotSpacing.xs),
+                            ],
+                          ]),
+                        ),
                       ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
 
@@ -254,10 +257,7 @@ class _SidebarFooter extends StatelessWidget {
   final WsConnectionState connectionState;
   final VoidCallback? onSettingsTap;
 
-  const _SidebarFooter({
-    required this.connectionState,
-    this.onSettingsTap,
-  });
+  const _SidebarFooter({required this.connectionState, this.onSettingsTap});
 
   @override
   Widget build(BuildContext context) {
@@ -320,34 +320,40 @@ class _SidebarFooter extends StatelessWidget {
   }
 }
 
-/// Sidebar card for a facet. Non-focused cards show a live terminal preview
-/// via CSS-transformed xterm.js overlay. Focused card has a mauve border.
-/// Session name is overlaid at the bottom-right.
+/// Sidebar card for a facet. The CSS-transformed xterm.js overlay provides the
+/// visual preview. The card itself shows a subtle border and session name as
+/// fallback (visible when no CSS overlay is present, e.g. single-facet state).
 class _StripCard extends StatelessWidget {
   final FacetData facet;
   final bool isFocused;
   final VoidCallback? onTap;
 
-  const _StripCard({
-    required this.facet,
-    this.isFocused = false,
-    this.onTap,
-  });
+  const _StripCard({required this.facet, this.isFocused = false, this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
       child: Container(
         height: 100,
         decoration: BoxDecoration(
-          color: p.surface0,
-          borderRadius: BorderRadius.circular(AbotRadius.md),
+          color: p.base,
           border: Border.all(
             color: isFocused ? p.mauve : p.surface1,
-            width: isFocused ? 1.5 : 0.5,
+            width: isFocused ? 1.5 : 1,
+          ),
+          borderRadius: BorderRadius.circular(AbotRadius.md),
+        ),
+        alignment: Alignment.bottomRight,
+        padding: const EdgeInsets.all(AbotSpacing.xs),
+        child: Text(
+          facet.sessionName,
+          style: TextStyle(
+            fontSize: 9,
+            color: p.subtext0,
+            fontFamily: AbotFonts.mono,
           ),
         ),
       ),
@@ -377,7 +383,7 @@ class _SessionTileState extends State<_SessionTile> {
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    final statusColor = widget.session.status == 'running' ? p.green : p.subtext0;
+    final statusColor = widget.session.isRunning ? p.green : p.subtext0;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -412,7 +418,7 @@ class _SessionTileState extends State<_SessionTile> {
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
-                      widget.session.status,
+                      widget.session.status.name,
                       style: TextStyle(
                         fontSize: 9,
                         color: statusColor,
@@ -428,7 +434,11 @@ class _SessionTileState extends State<_SessionTile> {
                   borderRadius: BorderRadius.circular(AbotRadius.sm),
                   child: Padding(
                     padding: const EdgeInsets.all(2),
-                    child: Icon(Icons.delete_outline, size: 14, color: p.subtext0),
+                    child: Icon(
+                      Icons.delete_outline,
+                      size: 14,
+                      color: p.subtext0,
+                    ),
                   ),
                 ),
             ],

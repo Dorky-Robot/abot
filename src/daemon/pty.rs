@@ -148,6 +148,13 @@ impl SessionBackend for PtyHandle {
     fn is_alive(&mut self) -> bool {
         PtyHandle::is_alive(self)
     }
+
+    fn try_exit_code(&mut self) -> Option<u32> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => Some(if status.success() { 0 } else { 1 }),
+            _ => None,
+        }
+    }
 }
 
 impl Drop for PtyHandle {
