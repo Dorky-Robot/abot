@@ -116,8 +116,8 @@ pub async fn exchange_code(
             .ok_or_else(|| AppError::BadRequest("no pending OAuth flow — call init first".into()))?
     };
 
-    // Validate state parameter (CSRF protection)
-    if pkce.state != body.state {
+    // Validate state parameter (CSRF protection, constant-time)
+    if !constant_time_eq(pkce.state.as_bytes(), body.state.as_bytes()) {
         return Err(AppError::BadRequest("invalid state parameter".into()));
     }
 
@@ -365,7 +365,7 @@ pub(crate) fn build_env_map(
 pub(crate) async fn push_env_to_daemon(state: &AppState, env: HashMap<String, Option<String>>) {
     use crate::daemon::ipc::DaemonRequest;
     let req = DaemonRequest::UpdateAgentEnv {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: String::new(), // rpc() assigns a UUID for correlation
         env,
     };
     if let Err(e) = state.daemon_client.rpc(req).await {
@@ -394,4 +394,15 @@ fn base64_url_encode(data: &[u8]) -> String {
 
 fn percent_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
