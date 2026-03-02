@@ -3,7 +3,6 @@ use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,6 +11,7 @@ use tokio::sync::{mpsc, Mutex};
 use super::messages::{ClientMessage, ServerMessage};
 use super::p2p::{P2pEvent, ServerPeer};
 use crate::auth::{middleware, state as auth_state};
+use crate::daemon::ipc::DaemonRequest;
 use crate::server::AppState;
 
 /// WebSocket upgrade handler with auth + origin check
@@ -260,7 +260,7 @@ async fn handle_client_message(
             // Try to create session first (auto-create if doesn't exist)
             let list_resp = app
                 .daemon_client
-                .rpc(json!({ "type": "list-sessions" }))
+                .rpc(DaemonRequest::ListSessions { id: String::new() })
                 .await?;
 
             let sessions = list_resp
@@ -277,25 +277,25 @@ async fn handle_client_message(
                 // Auto-create the session
                 let _ = app
                     .daemon_client
-                    .rpc(json!({
-                        "type": "create-session",
-                        "name": session,
-                        "cols": cols,
-                        "rows": rows,
-                    }))
+                    .rpc(DaemonRequest::CreateSession {
+                        id: String::new(),
+                        name: session.clone(),
+                        cols,
+                        rows,
+                    })
                     .await;
             }
 
             // Now attach
             let resp = app
                 .daemon_client
-                .rpc(json!({
-                    "type": "attach",
-                    "clientId": client_id,
-                    "session": session,
-                    "cols": cols,
-                    "rows": rows,
-                }))
+                .rpc(DaemonRequest::Attach {
+                    id: String::new(),
+                    client_id: client_id.to_string(),
+                    session: session.clone(),
+                    cols,
+                    rows,
+                })
                 .await?;
 
             if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
@@ -324,12 +324,11 @@ async fn handle_client_message(
         ClientMessage::FlatInput { data, session } => {
             *protocol.lock().await = ClientProtocol::Flat;
             app.daemon_client
-                .send(&json!({
-                    "type": "input",
-                    "clientId": client_id,
-                    "session": session,
-                    "data": data,
-                }))
+                .send(&DaemonRequest::Input {
+                    client_id: client_id.to_string(),
+                    session,
+                    data,
+                })
                 .await?;
         }
 
@@ -339,13 +338,12 @@ async fn handle_client_message(
             session,
         } => {
             app.daemon_client
-                .send(&json!({
-                    "type": "resize",
-                    "clientId": client_id,
-                    "session": session,
-                    "cols": cols,
-                    "rows": rows,
-                }))
+                .send(&DaemonRequest::Resize {
+                    client_id: client_id.to_string(),
+                    session,
+                    cols,
+                    rows,
+                })
                 .await?;
         }
 
@@ -359,10 +357,10 @@ async fn handle_client_message(
                 // Detach from all sessions
                 app.stream_clients.detach(client_id).await;
                 app.daemon_client
-                    .send(&json!({
-                        "type": "detach",
-                        "clientId": client_id,
-                    }))
+                    .send(&DaemonRequest::Detach {
+                        client_id: client_id.to_string(),
+                        session: None,
+                    })
                     .await?;
             }
         }
@@ -377,12 +375,12 @@ async fn handle_client_message(
 
             let resp = app
                 .daemon_client
-                .rpc(json!({
-                    "type": "create-session",
-                    "name": name,
-                    "cols": 120,
-                    "rows": 40,
-                }))
+                .rpc(DaemonRequest::CreateSession {
+                    id: String::new(),
+                    name: name.clone(),
+                    cols: 120,
+                    rows: 40,
+                })
                 .await?;
 
             if resp.get("error").is_some() {
@@ -406,13 +404,13 @@ async fn handle_client_message(
 
             let resp = app
                 .daemon_client
-                .rpc(json!({
-                    "type": "attach",
-                    "clientId": client_id,
-                    "session": id,
-                    "cols": cols,
-                    "rows": rows,
-                }))
+                .rpc(DaemonRequest::Attach {
+                    id: String::new(),
+                    client_id: client_id.to_string(),
+                    session: id.clone(),
+                    cols,
+                    rows,
+                })
                 .await?;
 
             if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
@@ -440,24 +438,22 @@ async fn handle_client_message(
 
         ClientMessage::SessionInput { id, data } => {
             app.daemon_client
-                .send(&json!({
-                    "type": "input",
-                    "clientId": client_id,
-                    "session": id,
-                    "data": data,
-                }))
+                .send(&DaemonRequest::Input {
+                    client_id: client_id.to_string(),
+                    session: Some(id),
+                    data,
+                })
                 .await?;
         }
 
         ClientMessage::SessionResize { id, cols, rows } => {
             app.daemon_client
-                .send(&json!({
-                    "type": "resize",
-                    "clientId": client_id,
-                    "session": id,
-                    "cols": cols,
-                    "rows": rows,
-                }))
+                .send(&DaemonRequest::Resize {
+                    client_id: client_id.to_string(),
+                    session: Some(id),
+                    cols,
+                    rows,
+                })
                 .await?;
         }
 
@@ -470,19 +466,17 @@ async fn handle_client_message(
 
         ClientMessage::SessionDestroy { id } => {
             app.daemon_client
-                .rpc(json!({
-                    "type": "delete-session",
-                    "name": id,
-                }))
+                .rpc(DaemonRequest::DeleteSession {
+                    id: String::new(),
+                    name: id,
+                })
                 .await?;
         }
 
         ClientMessage::SessionList => {
             let resp = app
                 .daemon_client
-                .rpc(json!({
-                    "type": "list-sessions",
-                }))
+                .rpc(DaemonRequest::ListSessions { id: String::new() })
                 .await?;
 
             let sessions = resp
@@ -572,12 +566,12 @@ async fn handle_client_message(
                                                             .and_then(|v| v.as_str());
                                                         let _ = app_clone
                                                             .daemon_client
-                                                            .send(&json!({
-                                                                "type": "input",
-                                                                "clientId": cid,
-                                                                "session": session,
-                                                                "data": input_data,
-                                                            }))
+                                                            .send(&DaemonRequest::Input {
+                                                                client_id: cid.clone(),
+                                                                session: session
+                                                                    .map(|s| s.to_string()),
+                                                                data: input_data.to_string(),
+                                                            })
                                                             .await;
                                                     }
                                                 }
@@ -598,13 +592,12 @@ async fn handle_client_message(
                                                         .and_then(|v| v.as_str());
                                                     let _ = app_clone
                                                         .daemon_client
-                                                        .send(&json!({
-                                                            "type": "resize",
-                                                            "clientId": cid,
-                                                            "session": session,
-                                                            "cols": cols,
-                                                            "rows": rows,
-                                                        }))
+                                                        .send(&DaemonRequest::Resize {
+                                                            client_id: cid.clone(),
+                                                            session: session.map(|s| s.to_string()),
+                                                            cols,
+                                                            rows,
+                                                        })
                                                         .await;
                                                 }
                                                 _ => {

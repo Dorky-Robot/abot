@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::auth::middleware;
+use crate::daemon::ipc::DaemonRequest;
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -19,7 +20,7 @@ pub async fn list_sessions(
 
     let resp = app
         .daemon_client
-        .rpc(json!({ "type": "list-sessions" }))
+        .rpc(DaemonRequest::ListSessions { id: String::new() })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -46,12 +47,12 @@ pub async fn create_session(
 
     let resp = app
         .daemon_client
-        .rpc(json!({
-            "type": "create-session",
-            "name": name,
-            "cols": 120,
-            "rows": 40,
-        }))
+        .rpc(DaemonRequest::CreateSession {
+            id: String::new(),
+            name: name.clone(),
+            cols: 120,
+            rows: 40,
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -74,7 +75,10 @@ pub async fn get_session(
 
     let resp = app
         .daemon_client
-        .rpc(json!({ "type": "get-session", "name": name }))
+        .rpc(DaemonRequest::GetSession {
+            id: String::new(),
+            name: name.clone(),
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -109,11 +113,11 @@ pub async fn rename_session(
 
     let resp = app
         .daemon_client
-        .rpc(json!({
-            "type": "rename-session",
-            "oldName": old_name,
-            "newName": new_name,
-        }))
+        .rpc(DaemonRequest::RenameSession {
+            id: String::new(),
+            old_name: old_name.clone(),
+            new_name: new_name.to_string(),
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -136,10 +140,10 @@ pub async fn delete_session(
 
     let resp = app
         .daemon_client
-        .rpc(json!({
-            "type": "delete-session",
-            "name": name,
-        }))
+        .rpc(DaemonRequest::DeleteSession {
+            id: String::new(),
+            name: name.clone(),
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 

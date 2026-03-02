@@ -5,7 +5,7 @@ use super::session::Session;
 use super::DaemonState;
 
 /// Messages from server to daemon
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[allow(dead_code)]
 pub enum DaemonRequest {

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -136,9 +137,11 @@ impl DaemonClient {
         }
     }
 
-    /// Send an RPC request and wait for response
-    pub async fn rpc(&self, mut msg: Value) -> Result<Value> {
+    /// Send an RPC request and wait for response.
+    /// Accepts any Serialize type — injects a unique `id` for RPC correlation.
+    pub async fn rpc(&self, msg: impl Serialize) -> Result<Value> {
         let id = uuid::Uuid::new_v4().to_string();
+        let mut msg = serde_json::to_value(msg)?;
         msg["id"] = serde_json::json!(id);
 
         let (tx, rx) = oneshot::channel();
@@ -166,9 +169,10 @@ impl DaemonClient {
         }
     }
 
-    /// Send a fire-and-forget message
-    pub async fn send(&self, msg: &Value) -> Result<()> {
-        self.send_raw(msg).await
+    /// Send a fire-and-forget message. Accepts any Serialize type.
+    pub async fn send(&self, msg: &impl Serialize) -> Result<()> {
+        let value = serde_json::to_value(msg)?;
+        self.send_raw(&value).await
     }
 
     /// Subscribe to daemon broadcast events
