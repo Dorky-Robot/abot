@@ -150,21 +150,46 @@ Review the entire codebase for:
 
 **Key Beck question**: "What's the simplest thing that could possibly work? And then: is this simpler than what we have?"
 
-## Phase 3: Synthesize & Fix
+## Phase 3: Distill
 
 Wait for all eight agents to complete. Then:
 
-1. **Cross-reference** — Look for findings that multiple agents agree on. These are highest signal.
+1. **Cross-reference** — Look for findings that multiple agents agree on. These are highest signal. Present a consensus table showing which agents flagged each theme.
 2. **Filter** — Discard findings that would:
-   - Require rewriting working code for marginal benefit
    - Add abstraction without clear payoff
    - Fight the language/framework idioms (Dart/Flutter, Rust/axum in this case)
    - Reduce capabilities or remove features
 3. **Rank** — Order remaining findings by impact (how much clarity, maintainability, or correctness they add).
-4. **Fix** — Apply the top findings directly. For each fix:
-   - Explain which perspective motivated it (e.g., "Hickey: decomplecting state from rendering")
-   - Make the change
-   - Verify it doesn't break anything
-5. **Note** — For findings that are valid but too large for this pass, note them as future improvements without implementing them.
 
-When done, briefly summarize what was fixed and what was noted for future work.
+## Phase 4: Build the Execution Plan
+
+Create a detailed, phased execution plan. Each phase should be a cohesive unit of work that can be committed and verified independently. Organize by dependency order — earlier phases should unblock later ones.
+
+For each phase:
+- **Title** — short name (e.g., "Wire PTY exit detection")
+- **Motivation** — which agents/perspectives drive this, and why it matters
+- **Scope** — exact files and functions to change
+- **Steps** — numbered implementation steps, specific enough to execute without ambiguity
+- **Verification** — how to confirm the change works (`cargo test`, `flutter analyze`, manual check, etc.)
+- **Risk** — what could go wrong, and how to mitigate
+
+Group into tiers:
+- **Tier 1: Critical fixes** — bugs, safety issues, correctness problems. Do these first.
+- **Tier 2: Type safety & cleanup** — enum replacements, dead code removal, stringly-typed fixes. Low risk, high clarity.
+- **Tier 3: Structural improvements** — decomposition, extraction, protocol simplification. Medium effort, high long-term value.
+- **Tier 4: Architectural evolution** — cross-cutting changes that touch multiple subsystems. Needs careful sequencing.
+
+Present the plan to the user for review before proceeding.
+
+## Phase 5: Execute
+
+Work through the plan tier by tier. For each phase within a tier:
+
+1. **Announce** — state which phase you're starting and what it does
+2. **Implement** — make the changes
+3. **Verify** — run `cargo test`, `cargo clippy`, `flutter analyze` as appropriate
+4. **Checkpoint** — commit the changes with a message referencing the consultation (e.g., "fix(daemon): wire PTY exit detection [consult: Armstrong #1, Lamport #2]")
+
+After completing each tier, briefly summarize what was done and confirm all tests still pass before moving to the next tier.
+
+If a phase turns out to be larger or riskier than expected during implementation, stop, explain why, and ask whether to continue or defer it.
