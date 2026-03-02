@@ -4,7 +4,6 @@ import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../core/network/api_client.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
@@ -29,9 +28,6 @@ class FacetShell extends ConsumerStatefulWidget {
 
 class _FacetShellState extends ConsumerState<FacetShell>
     with WidgetsBindingObserver {
-  /// Monotonic counter for session naming (starts at 1 since 'main' is created in _initialize).
-  int _nextSessionId = 1;
-
   /// GlobalKeys per facet — ensures Flutter reuses the same State when a facet
   /// moves between focused/offstage, preserving the HtmlElementView (xterm).
   final Map<String, GlobalKey> _facetKeys = {};
@@ -97,11 +93,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
         ];
         for (final s in mainFirst) {
           facetManager.create(s.name);
-          // Bump _nextSessionId past existing session-N names
+          // Bump session counter past existing session-N names
           final match = RegExp(r'^session-(\d+)$').firstMatch(s.name);
           if (match != null) {
-            final n = int.parse(match.group(1)!) + 1;
-            if (n > _nextSessionId) _nextSessionId = n;
+            facetManager.bumpSessionCounter(int.parse(match.group(1)!) + 1);
           }
         }
         // Restore persisted sidebar order, then focus 'main'.
@@ -225,36 +220,21 @@ class _FacetShellState extends ConsumerState<FacetShell>
   // --- Facet lifecycle ---
 
   Future<void> _createNewFacet() async {
-    final facetManager = ref.read(facetManagerProvider.notifier);
-    final sessionName = 'session-$_nextSessionId';
-    _nextSessionId++;
-
-    try {
-      await ref.read(sessionServiceProvider.notifier).createSession(sessionName);
-    } on ApiException catch (e) {
-      // 409 Conflict means session already exists — safe to proceed with attach
-      if (e.statusCode != 409) rethrow;
-    }
-
-    if (!mounted) return;
-    facetManager.create(sessionName);
-    final wsService = ref.read(wsServiceProvider.notifier);
-    wsService.attachSession(sessionName);
+    await ref.read(facetManagerProvider.notifier).createNewSession();
   }
 
-  void _minimizeFacet(String facetId, String sessionName) {
+  void _minimizeFacet(String facetId) {
     TerminalRegistry.instance.clearGenieTransform(facetId, animate: false);
-    final facetManager = ref.read(facetManagerProvider.notifier);
-    final wsService = ref.read(wsServiceProvider.notifier);
-    wsService.detachSession(sessionName);
-    facetManager.remove(facetId);
+    ref.read(facetManagerProvider.notifier).minimizeSession(facetId);
     _facetKeys.remove(facetId);
     _cardKeys.remove(facetId);
   }
 
-  void _closeFacet(String facetId, String sessionName) {
-    _minimizeFacet(facetId, sessionName);
-    ref.read(sessionServiceProvider.notifier).deleteSession(sessionName);
+  void _closeFacet(String facetId) {
+    TerminalRegistry.instance.clearGenieTransform(facetId, animate: false);
+    ref.read(facetManagerProvider.notifier).closeSession(facetId);
+    _facetKeys.remove(facetId);
+    _cardKeys.remove(facetId);
   }
 
   void _focusFacet(String facetId) {
@@ -267,16 +247,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   /// Open or focus a server session from the strip.
   void _onOpenSession(String sessionName) {
-    final facetState = ref.read(facetManagerProvider);
-    final existing = facetState.getBySession(sessionName);
-    if (existing != null) {
-      _focusFacet(existing.id);
-    } else {
-      final facetManager = ref.read(facetManagerProvider.notifier);
-      facetManager.create(sessionName);
-      final wsService = ref.read(wsServiceProvider.notifier);
-      wsService.attachSession(sessionName);
-    }
+    ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
   }
 
   /// Delete a server session (with confirmation).
@@ -535,7 +506,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 if (state.focusedId != null && state.count > 1) {
                   final facet = state.facets[state.focusedId!];
                   if (facet != null) {
-                    _minimizeFacet(facet.id, facet.sessionName);
+                    _minimizeFacet(facet.id);
                   }
                 }
               },
@@ -694,12 +665,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
             isFocused: true,
             showTitleBar: true,
             onMinimize: state.count > 1
-                ? () => _minimizeFacet(
-                    focusedId, state.facets[focusedId]!.sessionName)
+                ? () => _minimizeFacet(focusedId)
                 : null,
             onClose: state.count > 1
-                ? () => _closeFacet(
-                    focusedId, state.facets[focusedId]!.sessionName)
+                ? () => _closeFacet(focusedId)
                 : null,
           ),
         ),

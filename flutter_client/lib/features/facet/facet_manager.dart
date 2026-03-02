@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
+import '../../core/network/api_client.dart';
+import '../../core/network/session_service.dart';
+import '../../core/network/websocket_service.dart';
 import 'facet.dart';
 
 /// State for the facet manager — Stage Manager model.
@@ -74,8 +77,60 @@ final facetManagerProvider =
 class FacetManagerNotifier extends Notifier<FacetManagerState> {
   int _nextId = 0;
 
+  /// Monotonic counter for auto-generated session names (session-1, session-2, ...).
+  int _nextSessionId = 1;
+
   @override
   FacetManagerState build() => const FacetManagerState();
+
+  /// Bump the session counter past existing session-N names (called during init).
+  void bumpSessionCounter(int n) {
+    if (n > _nextSessionId) _nextSessionId = n;
+  }
+
+  /// Create a new session on the server, add a facet, and attach via WS.
+  Future<FacetData> createNewSession() async {
+    final sessionName = 'session-$_nextSessionId';
+    _nextSessionId++;
+
+    try {
+      await ref.read(sessionServiceProvider.notifier).createSession(sessionName);
+    } on ApiException catch (e) {
+      if (e.statusCode != 409) rethrow;
+    }
+
+    final facet = create(sessionName);
+    ref.read(wsServiceProvider.notifier).attachSession(sessionName);
+    return facet;
+  }
+
+  /// Detach a facet's session via WS and remove the facet (session stays alive).
+  void minimizeSession(String facetId) {
+    final facet = state.facets[facetId];
+    if (facet == null) return;
+    ref.read(wsServiceProvider.notifier).detachSession(facet.sessionName);
+    remove(facetId);
+  }
+
+  /// Minimize a facet and delete its session on the server.
+  void closeSession(String facetId) {
+    final facet = state.facets[facetId];
+    if (facet == null) return;
+    final sessionName = facet.sessionName;
+    minimizeSession(facetId);
+    ref.read(sessionServiceProvider.notifier).deleteSession(sessionName);
+  }
+
+  /// Focus an existing facet for a session, or create one and attach.
+  void openOrFocusSession(String sessionName) {
+    final existing = state.getBySession(sessionName);
+    if (existing != null) {
+      focus(existing.id);
+    } else {
+      create(sessionName);
+      ref.read(wsServiceProvider.notifier).attachSession(sessionName);
+    }
+  }
 
   /// Create a new facet for a session — becomes focused, appended to end
   /// of the order list.
