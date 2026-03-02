@@ -363,17 +363,27 @@ pub async fn handle_request(
 
         DaemonRequest::UpdateAgentEnv { id, env } => {
             let mut agent_env = state.agent_env.lock().await;
-            for (key, value) in env {
+            for (key, value) in &env {
                 match value {
                     Some(val) => {
-                        agent_env.insert(key, val);
+                        agent_env.insert(key.clone(), val.clone());
                     }
                     None => {
-                        agent_env.remove(&key);
+                        agent_env.remove(key);
                     }
                 }
             }
             tracing::info!("agent_env updated ({} entries)", agent_env.len());
+
+            // Inject into all running sessions so they pick up the change immediately
+            {
+                let sessions = state.sessions.lock().await;
+                let snapshot = agent_env.clone();
+                for session in sessions.values() {
+                    session.backend.inject_env(&snapshot);
+                }
+            }
+
             Some(DaemonResponse::EnvUpdated { id })
         }
 

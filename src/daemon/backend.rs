@@ -26,4 +26,8 @@ pub trait SessionBackend: Send {
     /// Try to retrieve the exit code without blocking.
     /// Returns Some(code) if the process has exited, None if still running or unknown.
     fn try_exit_code(&mut self) -> Option<u32>;
+
+    /// Inject environment variables into a running session.
+    /// Default implementation is a no-op (local PTY sessions inherit from parent).
+    fn inject_env(&self, _env: &std::collections::HashMap<String, String>) {}
 }

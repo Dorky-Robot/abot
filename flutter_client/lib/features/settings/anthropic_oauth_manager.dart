@@ -3,7 +3,7 @@ import 'package:web/web.dart' as web;
 import '../../core/network/api_client.dart';
 import '../../core/theme/abot_theme.dart';
 
-/// Manages Anthropic OAuth connection state in Settings → AI tab.
+/// Manages Anthropic API key in Settings → AI tab.
 class AnthropicOAuthManager extends StatefulWidget {
   const AnthropicOAuthManager({super.key});
 
@@ -11,17 +11,14 @@ class AnthropicOAuthManager extends StatefulWidget {
   State<AnthropicOAuthManager> createState() => _AnthropicOAuthManagerState();
 }
 
-enum _OAuthState { loading, disconnected, awaitingCode, connected, expired }
+enum _KeyState { loading, disconnected, connected }
 
 class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
   final _api = const ApiClient();
-  final _codeController = TextEditingController();
+  final _keyController = TextEditingController();
 
-  _OAuthState _state = _OAuthState.loading;
-  String? _authorizeUrl;
-  String? _oauthState; // state parameter for CSRF protection
-  int? _expiresAt;
-  bool _exchanging = false;
+  _KeyState _state = _KeyState.loading;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -31,115 +28,59 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
 
   @override
   void dispose() {
-    _codeController.dispose();
+    _keyController.dispose();
     super.dispose();
   }
 
   Future<void> _loadStatus() async {
     try {
-      final data = await _api.get('/api/anthropic/oauth/status')
+      final data = await _api.get('/api/anthropic/key/status')
           as Map<String, dynamic>;
       if (!mounted) return;
-      final status = data['status'] as String? ?? 'disconnected';
       setState(() {
-        _expiresAt = data['expires_at'] as int?;
-        switch (status) {
-          case 'connected':
-            _state = _OAuthState.connected;
-          case 'expired':
-            _state = _OAuthState.expired;
-          default:
-            _state = _OAuthState.disconnected;
-        }
+        _state = data['status'] == 'connected'
+            ? _KeyState.connected
+            : _KeyState.disconnected;
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _state = _OAuthState.disconnected);
+      setState(() => _state = _KeyState.disconnected);
     }
   }
 
-  Future<void> _initOAuth() async {
-    try {
-      final data = await _api.post('/api/anthropic/oauth/init')
-          as Map<String, dynamic>;
-      if (!mounted) return;
-      final url = data['authorize_url'] as String?;
-      // Extract state parameter from authorize URL
-      String? state;
-      if (url != null) {
-        final uri = Uri.tryParse(url);
-        state = uri?.queryParameters['state'];
-      }
-      setState(() {
-        _authorizeUrl = url;
-        _oauthState = state;
-        _state = _OAuthState.awaitingCode;
-      });
-      if (_authorizeUrl != null) {
-        web.window.open(_authorizeUrl!, '_blank');
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to start OAuth: $e')),
-      );
-    }
-  }
+  Future<void> _saveKey() async {
+    final key = _keyController.text.trim();
+    if (key.isEmpty) return;
 
-  Future<void> _exchangeCode() async {
-    final code = _codeController.text.trim();
-    if (code.isEmpty) return;
-
-    setState(() => _exchanging = true);
+    setState(() => _saving = true);
     try {
-      final data = await _api.post(
-        '/api/anthropic/oauth/exchange',
-        {'code': code, 'state': _oauthState ?? ''},
-      ) as Map<String, dynamic>;
+      await _api.post('/api/anthropic/key', {'api_key': key});
       if (!mounted) return;
       setState(() {
-        _expiresAt = data['expires_at'] as int?;
-        _state = _OAuthState.connected;
-        _exchanging = false;
-        _authorizeUrl = null;
-        _oauthState = null;
+        _state = _KeyState.connected;
+        _saving = false;
       });
-      _codeController.clear();
+      _keyController.clear();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _exchanging = false);
+      setState(() => _saving = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to exchange code: $e')),
+        SnackBar(content: Text('Failed to save key: $e')),
       );
     }
   }
 
   Future<void> _disconnect() async {
     try {
-      await _api.delete('/api/anthropic/oauth');
+      await _api.delete('/api/anthropic/key');
       if (!mounted) return;
-      setState(() {
-        _state = _OAuthState.disconnected;
-        _expiresAt = null;
-        _authorizeUrl = null;
-        _oauthState = null;
-      });
+      setState(() => _state = _KeyState.disconnected);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to disconnect: $e')),
+        SnackBar(content: Text('Failed to remove key: $e')),
       );
     }
-  }
-
-  String _formatExpiry(int expiresAt) {
-    final dt = DateTime.fromMillisecondsSinceEpoch(expiresAt * 1000);
-    final now = DateTime.now();
-    if (dt.isBefore(now)) return 'Expired';
-    final diff = dt.difference(now);
-    if (diff.inMinutes < 60) return 'Expires in ${diff.inMinutes}m';
-    if (diff.inHours < 24) return 'Expires in ${diff.inHours}h';
-    return 'Expires in ${diff.inDays}d';
   }
 
   @override
@@ -147,7 +88,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
     final p = context.palette;
 
     return switch (_state) {
-      _OAuthState.loading => Center(
+      _KeyState.loading => Center(
           child: Padding(
             padding: const EdgeInsets.all(AbotSpacing.lg),
             child: SizedBox(
@@ -160,59 +101,9 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
             ),
           ),
         ),
-      _OAuthState.disconnected => _buildDisconnected(p),
-      _OAuthState.awaitingCode => _buildAwaitingCode(p),
-      _OAuthState.connected => _buildConnected(p),
-      _OAuthState.expired => _buildExpired(p),
+      _KeyState.disconnected => _buildDisconnected(p),
+      _KeyState.connected => _buildConnected(p),
     };
-  }
-
-  Widget _buildStatusBanner({
-    required CatPalette p,
-    required Color color,
-    required IconData icon,
-    required String title,
-    String? subtitle,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(AbotSpacing.md),
-      decoration: BoxDecoration(
-        color: p.surface0,
-        borderRadius: BorderRadius.circular(AbotRadius.md),
-        border: Border.all(color: color, width: 0.5),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: color),
-          const SizedBox(width: AbotSpacing.sm),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: color,
-                    fontFamily: AbotFonts.mono,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (subtitle != null)
-                  Text(
-                    subtitle,
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: p.overlay0,
-                      fontFamily: AbotFonts.mono,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   Widget _buildDisconnected(CatPalette p) {
@@ -220,65 +111,29 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Connect your Anthropic account to enable Claude Code in all containers without manual login.',
+          'Paste your Anthropic API key to enable Claude in all containers.',
           style: TextStyle(
             fontSize: 11,
             color: p.subtext0,
             fontFamily: AbotFonts.mono,
           ),
         ),
-        const SizedBox(height: AbotSpacing.md),
-        SizedBox(
-          height: 32,
-          width: double.infinity,
-          child: TextButton(
-            onPressed: _initOAuth,
-            style: TextButton.styleFrom(
-              backgroundColor: p.mauve,
-              foregroundColor: p.base,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AbotRadius.sm),
-              ),
-              textStyle: const TextStyle(
-                fontSize: 11,
-                fontFamily: AbotFonts.mono,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            child: const Text('Connect to Anthropic'),
+        const SizedBox(height: AbotSpacing.sm),
+        GestureDetector(
+          onTap: () => web.window.open(
+            'https://console.anthropic.com/settings/keys',
+            '_blank',
           ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildAwaitingCode(CatPalette p) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Authorize in the browser tab that opened, then paste the code below.',
-          style: TextStyle(
-            fontSize: 11,
-            color: p.subtext0,
-            fontFamily: AbotFonts.mono,
-          ),
-        ),
-        if (_authorizeUrl != null) ...[
-          const SizedBox(height: AbotSpacing.sm),
-          GestureDetector(
-            onTap: () => web.window.open(_authorizeUrl!, '_blank'),
-            child: Text(
-              'Open authorize page',
-              style: TextStyle(
-                fontSize: 11,
-                color: p.blue,
-                fontFamily: AbotFonts.mono,
-                decoration: TextDecoration.underline,
-              ),
+          child: Text(
+            'Get an API key from console.anthropic.com',
+            style: TextStyle(
+              fontSize: 11,
+              color: p.blue,
+              fontFamily: AbotFonts.mono,
+              decoration: TextDecoration.underline,
             ),
           ),
-        ],
+        ),
         const SizedBox(height: AbotSpacing.md),
         Row(
           children: [
@@ -286,14 +141,15 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
               child: SizedBox(
                 height: 32,
                 child: TextField(
-                  controller: _codeController,
+                  controller: _keyController,
+                  obscureText: true,
                   style: TextStyle(
                     fontSize: 12,
                     color: p.text,
                     fontFamily: AbotFonts.mono,
                   ),
                   decoration: InputDecoration(
-                    hintText: 'Paste code here...',
+                    hintText: 'sk-ant-...',
                     hintStyle: TextStyle(
                       fontSize: 12,
                       color: p.overlay0,
@@ -317,7 +173,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
                     filled: true,
                     fillColor: p.surface0,
                   ),
-                  onSubmitted: (_) => _exchangeCode(),
+                  onSubmitted: (_) => _saveKey(),
                 ),
               ),
             ),
@@ -325,7 +181,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
             SizedBox(
               height: 32,
               child: TextButton(
-                onPressed: _exchanging ? null : _exchangeCode,
+                onPressed: _saving ? null : _saveKey,
                 style: TextButton.styleFrom(
                   backgroundColor: p.mauve,
                   foregroundColor: p.base,
@@ -341,7 +197,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                child: _exchanging
+                child: _saving
                     ? SizedBox(
                         width: 14,
                         height: 14,
@@ -350,26 +206,10 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
                           color: p.base,
                         ),
                       )
-                    : const Text('Submit'),
+                    : const Text('Save'),
               ),
             ),
           ],
-        ),
-        const SizedBox(height: AbotSpacing.sm),
-        GestureDetector(
-          onTap: () => setState(() {
-            _state = _OAuthState.disconnected;
-            _authorizeUrl = null;
-            _oauthState = null;
-          }),
-          child: Text(
-            'Cancel',
-            style: TextStyle(
-              fontSize: 11,
-              color: p.subtext0,
-              fontFamily: AbotFonts.mono,
-            ),
-          ),
         ),
       ],
     );
@@ -379,16 +219,34 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildStatusBanner(
-          p: p,
-          color: p.green,
-          icon: Icons.check_circle,
-          title: 'Connected to Anthropic',
-          subtitle: _expiresAt != null ? _formatExpiry(_expiresAt!) : null,
+        Container(
+          padding: const EdgeInsets.all(AbotSpacing.md),
+          decoration: BoxDecoration(
+            color: p.surface0,
+            borderRadius: BorderRadius.circular(AbotRadius.md),
+            border: Border.all(color: p.green, width: 0.5),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.check_circle, size: 16, color: p.green),
+              const SizedBox(width: AbotSpacing.sm),
+              Expanded(
+                child: Text(
+                  'API key configured',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: p.green,
+                    fontFamily: AbotFonts.mono,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
         const SizedBox(height: AbotSpacing.sm),
         Text(
-          'Claude Code in new containers will authenticate automatically.',
+          'Claude will be available in new containers automatically.',
           style: TextStyle(
             fontSize: 11,
             color: p.subtext0,
@@ -407,57 +265,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
                 fontFamily: AbotFonts.mono,
               ),
             ),
-            child: const Text('Disconnect'),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildExpired(CatPalette p) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _buildStatusBanner(
-          p: p,
-          color: p.yellow,
-          icon: Icons.warning_amber,
-          title: 'Token expired — reconnect to continue.',
-        ),
-        const SizedBox(height: AbotSpacing.md),
-        SizedBox(
-          height: 32,
-          width: double.infinity,
-          child: TextButton(
-            onPressed: _initOAuth,
-            style: TextButton.styleFrom(
-              backgroundColor: p.mauve,
-              foregroundColor: p.base,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AbotRadius.sm),
-              ),
-              textStyle: const TextStyle(
-                fontSize: 11,
-                fontFamily: AbotFonts.mono,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            child: const Text('Reconnect'),
-          ),
-        ),
-        const SizedBox(height: AbotSpacing.sm),
-        SizedBox(
-          height: 32,
-          child: TextButton(
-            onPressed: _disconnect,
-            style: TextButton.styleFrom(
-              foregroundColor: p.red,
-              textStyle: const TextStyle(
-                fontSize: 11,
-                fontFamily: AbotFonts.mono,
-              ),
-            ),
-            child: const Text('Disconnect'),
+            child: const Text('Remove key'),
           ),
         ),
       ],

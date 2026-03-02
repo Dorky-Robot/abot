@@ -62,23 +62,13 @@ pub fn build(state: Arc<AppState>) -> Router {
             "/api/credentials/{id}",
             delete(auth_handlers::delete_credential),
         )
-        // Anthropic OAuth
+        // Anthropic API key
+        .route("/api/anthropic/key", post(anthropic_oauth::save_key))
         .route(
-            "/api/anthropic/oauth/init",
-            post(anthropic_oauth::init_oauth),
+            "/api/anthropic/key/status",
+            get(anthropic_oauth::key_status),
         )
-        .route(
-            "/api/anthropic/oauth/exchange",
-            post(anthropic_oauth::exchange_code),
-        )
-        .route(
-            "/api/anthropic/oauth/status",
-            get(anthropic_oauth::oauth_status),
-        )
-        .route(
-            "/api/anthropic/oauth",
-            delete(anthropic_oauth::disconnect_oauth),
-        )
+        .route("/api/anthropic/key", delete(anthropic_oauth::delete_key))
         // Stub endpoint for client compatibility
         .route(
             "/connect/info",

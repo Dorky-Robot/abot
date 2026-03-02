@@ -18,8 +18,6 @@ pub struct AppState {
     pub daemon_client: daemon_client::DaemonClient,
     pub stream_clients: stream::clients::ClientTracker,
     pub data_dir: std::path::PathBuf,
-    pub(crate) pkce_challenge: tokio::sync::Mutex<Option<anthropic_oauth::PkceChallenge>>,
-    pub(crate) http_client: reqwest::Client,
 }
 
 pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
@@ -36,45 +34,19 @@ pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
         daemon_client,
         stream_clients: stream::clients::ClientTracker::new(),
         data_dir: data_dir.to_path_buf(),
-        pkce_challenge: tokio::sync::Mutex::new(None),
-        http_client: reqwest::Client::new(),
     });
 
-    // Push stored OAuth tokens to daemon at startup
+    // Push stored API key to daemon at startup
     {
-        let oauth_env = {
+        let api_key = {
             let db = state.auth.db.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-            if let Ok(Some(row)) = auth::state::get_anthropic_oauth(&db) {
-                let now = chrono::Utc::now().timestamp();
-                if row.expires_at > now {
-                    Some(anthropic_oauth::build_env_map(
-                        Some(&row.access_token),
-                        Some(&row.refresh_token),
-                        Some(&row.scopes),
-                    ))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }; // db lock dropped here
-        if let Some(env) = oauth_env {
+            auth::state::get_anthropic_api_key(&db).ok().flatten()
+        };
+        if let Some(key) = api_key {
+            let env = anthropic_oauth::build_env_map(Some(&key));
             anthropic_oauth::push_env_to_daemon(&state, env).await;
-            tracing::info!("pushed stored OAuth tokens to daemon");
+            tracing::info!("pushed stored API key to daemon");
         }
-    }
-
-    // Spawn background token refresh task (every 30 minutes)
-    {
-        let refresh_state = state.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
-            loop {
-                interval.tick().await;
-                anthropic_oauth::refresh_token_if_needed(&refresh_state).await;
-            }
-        });
     }
 
     let app = router::build(state.clone());

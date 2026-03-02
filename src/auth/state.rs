@@ -47,14 +47,10 @@ pub fn init_db(path: &Path) -> Result<Connection> {
             value TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS anthropic_oauth (
+        CREATE TABLE IF NOT EXISTS anthropic_api_key (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            access_token TEXT NOT NULL,
-            refresh_token TEXT NOT NULL,
-            scopes TEXT NOT NULL,
-            expires_at INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+            api_key TEXT NOT NULL,
+            created_at INTEGER NOT NULL
         );
         ",
     )?;
@@ -349,61 +345,26 @@ pub struct SetupTokenRow {
     pub expires_at: i64,
 }
 
-#[derive(Debug, Clone)]
-pub struct AnthropicOAuthRow {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub scopes: String,
-    pub expires_at: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
+// --- Anthropic API Key CRUD ---
 
-// --- Anthropic OAuth CRUD ---
-
-pub fn get_anthropic_oauth(db: &Connection) -> Result<Option<AnthropicOAuthRow>> {
-    let mut stmt = db.prepare(
-        "SELECT access_token, refresh_token, scopes, expires_at, created_at, updated_at
-         FROM anthropic_oauth WHERE id = 1",
-    )?;
-    let result = stmt
-        .query_row([], |row| {
-            Ok(AnthropicOAuthRow {
-                access_token: row.get(0)?,
-                refresh_token: row.get(1)?,
-                scopes: row.get(2)?,
-                expires_at: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
-            })
-        })
-        .ok();
+pub fn get_anthropic_api_key(db: &Connection) -> Result<Option<String>> {
+    let mut stmt = db.prepare("SELECT api_key FROM anthropic_api_key WHERE id = 1")?;
+    let result = stmt.query_row([], |row| row.get::<_, String>(0)).ok();
     Ok(result)
 }
 
-pub fn upsert_anthropic_oauth(
-    db: &Connection,
-    access_token: &str,
-    refresh_token: &str,
-    scopes: &str,
-    expires_at: i64,
-) -> Result<()> {
+pub fn upsert_anthropic_api_key(db: &Connection, api_key: &str) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     db.execute(
-        "INSERT INTO anthropic_oauth (id, access_token, refresh_token, scopes, expires_at, created_at, updated_at)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?5)
-         ON CONFLICT(id) DO UPDATE SET
-           access_token = excluded.access_token,
-           refresh_token = excluded.refresh_token,
-           scopes = excluded.scopes,
-           expires_at = excluded.expires_at,
-           updated_at = excluded.updated_at",
-        params![access_token, refresh_token, scopes, expires_at, now],
+        "INSERT INTO anthropic_api_key (id, api_key, created_at)
+         VALUES (1, ?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET api_key = excluded.api_key, created_at = excluded.created_at",
+        params![api_key, now],
     )?;
     Ok(())
 }
 
-pub fn delete_anthropic_oauth(db: &Connection) -> Result<()> {
-    db.execute("DELETE FROM anthropic_oauth WHERE id = 1", [])?;
+pub fn delete_anthropic_api_key(db: &Connection) -> Result<()> {
+    db.execute("DELETE FROM anthropic_api_key WHERE id = 1", [])?;
     Ok(())
 }

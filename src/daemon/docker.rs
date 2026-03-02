@@ -250,6 +250,55 @@ impl SessionBackend for DockerBackend {
         // Docker backend cannot easily get exit code synchronously.
         None
     }
+
+    fn inject_env(&self, env: &std::collections::HashMap<String, String>) {
+        if env.is_empty() {
+            return;
+        }
+        // Write export statements to /home/dev/.abot_env, then source it in .bashrc
+        let mut script = String::new();
+        for (k, v) in env {
+            // Escape single quotes in values
+            let escaped = v.replace('\'', "'\\''");
+            script.push_str(&format!("export {k}='{escaped}'\n"));
+        }
+        let docker = self.docker.clone();
+        let id = self.container_id.clone();
+        tokio::spawn(async move {
+            use bollard::exec::{CreateExecOptions, StartExecOptions};
+            // Write env file
+            let write_exec = docker
+                .create_exec(
+                    &id,
+                    CreateExecOptions {
+                        cmd: Some(vec![
+                            "/bin/sh",
+                            "-c",
+                            &format!(
+                                "printf '%s' '{}' > /home/dev/.abot_env && \
+                                 grep -q 'source.*abot_env' /home/dev/.bashrc 2>/dev/null || \
+                                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> /home/dev/.bashrc",
+                                script.replace('\'', "'\\''")
+                            ),
+                        ]),
+                        user: Some("1000:1000"),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            if let Ok(exec) = write_exec {
+                let _ = docker
+                    .start_exec(
+                        &exec.id,
+                        Some(StartExecOptions {
+                            detach: true,
+                            ..Default::default()
+                        }),
+                    )
+                    .await;
+            }
+        });
+    }
 }
 
 impl Drop for DockerBackend {
