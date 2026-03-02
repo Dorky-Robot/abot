@@ -27,6 +27,7 @@
       --accent-active: #cba6f7;
       --success: #a6e3a1;
       --danger: #f38ba8;
+      --info: #89b4fa;
       --focus-ring: rgba(137,180,250,0.5);
     }
 
@@ -42,6 +43,7 @@
       --accent-active: #8839ef;
       --success: #40a02b;
       --danger: #d20f39;
+      --info: #1e66f5;
       --focus-ring: rgba(30,102,245,0.4);
     }
 
@@ -127,6 +129,9 @@
     .error {
       color: var(--danger); font-size: 0.75rem; margin-top: 0.75rem;
       min-height: 1.125rem; white-space: pre-line;
+    }
+    .error.info {
+      color: var(--info); text-align: center; margin-bottom: 1rem;
     }
 
     .hidden { display: none; }

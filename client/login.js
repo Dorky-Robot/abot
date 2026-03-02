@@ -19,9 +19,7 @@
     if (urlParams.get('reason') === 'revoked') {
       if (loginError) {
         loginError.innerHTML = '<i class="ph ph-info"></i> Your access was revoked. Please register a new passkey to continue.';
-        loginError.style.color = '#6b9bd1';
-        loginError.style.textAlign = 'center';
-        loginError.style.marginBottom = '1rem';
+        loginError.classList.add('info');
       }
       window.history.replaceState({}, document.title, window.location.pathname);
     }
@@ -115,9 +113,7 @@
             }
 
             loginError.innerHTML = '<i class="ph ph-info"></i> No passkey registered yet. Please register your fingerprint/Touch ID below.';
-            loginError.style.color = '#6b9bd1';
-            loginError.style.textAlign = 'center';
-            loginError.style.marginBottom = '1rem';
+            loginError.classList.add('info');
           }
         }
       } catch {
@@ -158,6 +154,7 @@
       const btn = document.getElementById("register-new-btn");
       const token = document.getElementById("register-token").value.trim();
       loginError.textContent = "";
+      loginError.classList.remove('info');
 
       if (!token) { loginError.textContent = "Setup token is required."; return; }
 
@@ -176,7 +173,7 @@
     document.getElementById("login-btn").addEventListener("click", async () => {
       const btn = document.getElementById("login-btn");
       loginError.textContent = "";
-      loginError.style.color = '';
+      loginError.classList.remove('info');
 
       const supportCheck = checkWebAuthnSupport();
       if (!supportCheck.supported) {
