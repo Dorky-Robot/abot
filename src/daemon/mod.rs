@@ -38,7 +38,7 @@ pub struct DaemonState {
     /// Environment variables to inject into agent containers (used by Docker backend).
     /// Wrapped in Mutex so the server can update it at runtime via IPC.
     #[cfg_attr(not(feature = "docker"), allow(dead_code))]
-    pub agent_env: Mutex<Vec<String>>,
+    pub agent_env: Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
@@ -59,7 +59,13 @@ impl DaemonState {
             BackendKind::Docker => {
                 #[cfg(feature = "docker")]
                 {
-                    let env = self.agent_env.lock().await.clone();
+                    let env: Vec<String> = self
+                        .agent_env
+                        .lock()
+                        .await
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect();
                     let backend = docker::DockerBackend::spawn(name, cols, rows, env).await?;
                     Ok(Box::new(backend))
                 }
@@ -111,9 +117,9 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     tracing::info!("session backend: {:?}", backend_kind);
 
     // Collect environment variables to inject into agent containers
-    let mut agent_env = Vec::new();
+    let mut agent_env = HashMap::new();
     if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
-        agent_env.push(format!("ANTHROPIC_API_KEY={key}"));
+        agent_env.insert("ANTHROPIC_API_KEY".into(), key);
     }
 
     let state = Arc::new(DaemonState {

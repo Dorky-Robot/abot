@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use crate::auth::middleware::{Authenticated, CsrfVerified};
 use crate::auth::state;
-use crate::daemon::ipc::DaemonRequest;
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -18,9 +17,17 @@ const REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
 const SCOPES: &str =
     "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers";
 
+/// Max age for a PKCE challenge before it becomes stale (5 minutes).
+const PKCE_TTL_SECS: i64 = 300;
+
+/// Default token lifetime when `expires_in` is missing from the response.
+const DEFAULT_EXPIRES_IN: i64 = 3600;
+
 /// In-flight PKCE challenge (one pending flow at a time)
-pub struct PkceChallenge {
-    pub verifier: String,
+pub(crate) struct PkceChallenge {
+    pub(crate) verifier: String,
+    pub(crate) state: String,
+    pub(crate) created_at: i64,
 }
 
 // --- Request / Response types ---
@@ -33,6 +40,7 @@ pub struct InitResponse {
 #[derive(Deserialize)]
 pub struct ExchangeRequest {
     pub code: String,
+    pub state: String,
 }
 
 #[derive(Serialize)]
@@ -55,8 +63,7 @@ pub struct StatusResponse {
 struct TokenResponse {
     access_token: String,
     refresh_token: String,
-    #[serde(default)]
-    expires_in: i64,
+    expires_in: Option<i64>,
 }
 
 // --- Handlers ---
@@ -67,23 +74,28 @@ pub async fn init_oauth(
     _csrf: CsrfVerified,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<InitResponse>, AppError> {
-    // Generate PKCE verifier (43-128 chars, base64url)
     let verifier = generate_pkce_verifier();
     let challenge = compute_pkce_challenge(&verifier);
+    let oauth_state = generate_pkce_verifier(); // random state for CSRF protection
 
-    // Store verifier for the exchange step
+    // Store verifier + state for the exchange step
     {
         let mut pkce = state.pkce_challenge.lock().await;
-        *pkce = Some(PkceChallenge { verifier });
+        *pkce = Some(PkceChallenge {
+            verifier,
+            state: oauth_state.clone(),
+            created_at: chrono::Utc::now().timestamp(),
+        });
     }
 
     let authorize_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256",
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
         ANTHROPIC_AUTH_URL,
-        urlencoding(CLIENT_ID),
-        urlencoding(REDIRECT_URI),
-        urlencoding(SCOPES),
-        urlencoding(&challenge),
+        percent_encode(CLIENT_ID),
+        percent_encode(REDIRECT_URI),
+        percent_encode(SCOPES),
+        percent_encode(&challenge),
+        percent_encode(&oauth_state),
     );
 
     Ok(Json(InitResponse { authorize_url }))
@@ -96,13 +108,26 @@ pub async fn exchange_code(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ExchangeRequest>,
 ) -> Result<Json<ExchangeResponse>, AppError> {
-    // Take the PKCE verifier (one-time use)
-    let verifier = {
-        let mut pkce = state.pkce_challenge.lock().await;
-        pkce.take()
+    // Take the PKCE challenge (one-time use)
+    let pkce = {
+        let mut guard = state.pkce_challenge.lock().await;
+        guard
+            .take()
             .ok_or_else(|| AppError::BadRequest("no pending OAuth flow — call init first".into()))?
-            .verifier
     };
+
+    // Validate state parameter (CSRF protection)
+    if pkce.state != body.state {
+        return Err(AppError::BadRequest("invalid state parameter".into()));
+    }
+
+    // Validate TTL
+    let now = chrono::Utc::now().timestamp();
+    if now - pkce.created_at > PKCE_TTL_SECS {
+        return Err(AppError::BadRequest(
+            "OAuth flow expired — please try again".into(),
+        ));
+    }
 
     // Exchange code for tokens
     let params = [
@@ -110,7 +135,7 @@ pub async fn exchange_code(
         ("client_id", CLIENT_ID),
         ("code", &body.code),
         ("redirect_uri", REDIRECT_URI),
-        ("code_verifier", &verifier),
+        ("code_verifier", &pkce.verifier),
     ];
 
     let resp = state
@@ -124,8 +149,9 @@ pub async fn exchange_code(
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
+        tracing::error!("Anthropic token exchange failed ({status}): {body_text}");
         return Err(AppError::BadRequest(format!(
-            "Anthropic token exchange failed ({status}): {body_text}"
+            "Anthropic token exchange failed ({status})"
         )));
     }
 
@@ -134,7 +160,8 @@ pub async fn exchange_code(
         .await
         .map_err(|e| AppError::Internal(format!("failed to parse token response: {e}")))?;
 
-    let expires_at = chrono::Utc::now().timestamp() + token_resp.expires_in;
+    let expires_in = token_resp.expires_in.unwrap_or(DEFAULT_EXPIRES_IN);
+    let expires_at = chrono::Utc::now().timestamp() + expires_in;
 
     // Store in DB
     {
@@ -277,7 +304,8 @@ pub async fn refresh_token_if_needed(state: &Arc<AppState>) -> Option<i64> {
         }
     };
 
-    let expires_at = now + token_resp.expires_in;
+    let expires_in = token_resp.expires_in.unwrap_or(DEFAULT_EXPIRES_IN);
+    let expires_at = now + expires_in;
 
     // Update DB
     {
@@ -307,7 +335,7 @@ pub async fn refresh_token_if_needed(state: &Arc<AppState>) -> Option<i64> {
 
     tracing::info!(
         "Anthropic OAuth token refreshed, expires in {}s",
-        token_resp.expires_in
+        expires_in
     );
     Some(expires_at)
 }
@@ -315,7 +343,7 @@ pub async fn refresh_token_if_needed(state: &Arc<AppState>) -> Option<i64> {
 // --- Helpers ---
 
 /// Build the env map for daemon IPC. None values remove the key.
-pub fn build_env_map(
+pub(crate) fn build_env_map(
     access_token: Option<&str>,
     refresh_token: Option<&str>,
     scopes: Option<&str>,
@@ -334,9 +362,10 @@ pub fn build_env_map(
 }
 
 /// Push environment update to daemon via IPC (best-effort).
-async fn push_env_to_daemon(state: &AppState, env: HashMap<String, Option<String>>) {
+pub(crate) async fn push_env_to_daemon(state: &AppState, env: HashMap<String, Option<String>>) {
+    use crate::daemon::ipc::DaemonRequest;
     let req = DaemonRequest::UpdateAgentEnv {
-        id: String::new(),
+        id: uuid::Uuid::new_v4().to_string(),
         env,
     };
     if let Err(e) = state.daemon_client.rpc(req).await {
@@ -344,7 +373,7 @@ async fn push_env_to_daemon(state: &AppState, env: HashMap<String, Option<String
     }
 }
 
-/// Generate a PKCE code verifier (64 random bytes, base64url-encoded).
+/// Generate a PKCE code verifier (32 random bytes, base64url-encoded).
 fn generate_pkce_verifier() -> String {
     use rand::Rng;
     let bytes: Vec<u8> = (0..32).map(|_| rand::thread_rng().gen()).collect();
@@ -363,6 +392,6 @@ fn base64_url_encode(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
-fn urlencoding(s: &str) -> String {
+fn percent_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }

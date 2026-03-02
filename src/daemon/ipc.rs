@@ -364,12 +364,13 @@ pub async fn handle_request(
         DaemonRequest::UpdateAgentEnv { id, env } => {
             let mut agent_env = state.agent_env.lock().await;
             for (key, value) in env {
-                // Remove existing entry for this key
-                agent_env
-                    .retain(|e| !e.starts_with(&key) || e.as_bytes().get(key.len()) != Some(&b'='));
-                // Add new entry if value is Some
-                if let Some(val) = value {
-                    agent_env.push(format!("{key}={val}"));
+                match value {
+                    Some(val) => {
+                        agent_env.insert(key, val);
+                    }
+                    None => {
+                        agent_env.remove(&key);
+                    }
                 }
             }
             tracing::info!("agent_env updated ({} entries)", agent_env.len());

@@ -18,8 +18,8 @@ pub struct AppState {
     pub daemon_client: daemon_client::DaemonClient,
     pub stream_clients: stream::clients::ClientTracker,
     pub data_dir: std::path::PathBuf,
-    pub pkce_challenge: tokio::sync::Mutex<Option<anthropic_oauth::PkceChallenge>>,
-    pub http_client: reqwest::Client,
+    pub(crate) pkce_challenge: tokio::sync::Mutex<Option<anthropic_oauth::PkceChallenge>>,
+    pub(crate) http_client: reqwest::Client,
 }
 
 pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
@@ -60,15 +60,8 @@ pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
             }
         }; // db lock dropped here
         if let Some(env) = oauth_env {
-            let req = crate::daemon::ipc::DaemonRequest::UpdateAgentEnv {
-                id: uuid::Uuid::new_v4().to_string(),
-                env,
-            };
-            if let Err(e) = state.daemon_client.rpc(req).await {
-                tracing::warn!("failed to push OAuth tokens to daemon at startup: {e}");
-            } else {
-                tracing::info!("pushed stored OAuth tokens to daemon");
-            }
+            anthropic_oauth::push_env_to_daemon(&state, env).await;
+            tracing::info!("pushed stored OAuth tokens to daemon");
         }
     }
 

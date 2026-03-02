@@ -349,7 +349,7 @@ pub struct SetupTokenRow {
     pub expires_at: i64,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct AnthropicOAuthRow {
     pub access_token: String,
     pub refresh_token: String,

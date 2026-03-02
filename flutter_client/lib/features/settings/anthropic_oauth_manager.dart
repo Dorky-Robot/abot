@@ -19,6 +19,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
 
   _OAuthState _state = _OAuthState.loading;
   String? _authorizeUrl;
+  String? _oauthState; // state parameter for CSRF protection
   int? _expiresAt;
   bool _exchanging = false;
 
@@ -62,11 +63,18 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
       final data = await _api.post('/api/anthropic/oauth/init')
           as Map<String, dynamic>;
       if (!mounted) return;
+      final url = data['authorize_url'] as String?;
+      // Extract state parameter from authorize URL
+      String? state;
+      if (url != null) {
+        final uri = Uri.tryParse(url);
+        state = uri?.queryParameters['state'];
+      }
       setState(() {
-        _authorizeUrl = data['authorize_url'] as String?;
+        _authorizeUrl = url;
+        _oauthState = state;
         _state = _OAuthState.awaitingCode;
       });
-      // Open authorize URL in new tab
       if (_authorizeUrl != null) {
         web.window.open(_authorizeUrl!, '_blank');
       }
@@ -86,7 +94,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
     try {
       final data = await _api.post(
         '/api/anthropic/oauth/exchange',
-        {'code': code},
+        {'code': code, 'state': _oauthState ?? ''},
       ) as Map<String, dynamic>;
       if (!mounted) return;
       setState(() {
@@ -94,6 +102,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
         _state = _OAuthState.connected;
         _exchanging = false;
         _authorizeUrl = null;
+        _oauthState = null;
       });
       _codeController.clear();
     } catch (e) {
@@ -113,6 +122,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
         _state = _OAuthState.disconnected;
         _expiresAt = null;
         _authorizeUrl = null;
+        _oauthState = null;
       });
     } catch (e) {
       if (!mounted) return;
@@ -155,6 +165,54 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
       _OAuthState.connected => _buildConnected(p),
       _OAuthState.expired => _buildExpired(p),
     };
+  }
+
+  Widget _buildStatusBanner({
+    required CatPalette p,
+    required Color color,
+    required IconData icon,
+    required String title,
+    String? subtitle,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(AbotSpacing.md),
+      decoration: BoxDecoration(
+        color: p.surface0,
+        borderRadius: BorderRadius.circular(AbotRadius.md),
+        border: Border.all(color: color, width: 0.5),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: AbotSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: color,
+                    fontFamily: AbotFonts.mono,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (subtitle != null)
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: p.overlay0,
+                      fontFamily: AbotFonts.mono,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildDisconnected(CatPalette p) {
@@ -302,6 +360,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
           onTap: () => setState(() {
             _state = _OAuthState.disconnected;
             _authorizeUrl = null;
+            _oauthState = null;
           }),
           child: Text(
             'Cancel',
@@ -320,44 +379,12 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.all(AbotSpacing.md),
-          decoration: BoxDecoration(
-            color: p.surface0,
-            borderRadius: BorderRadius.circular(AbotRadius.md),
-            border: Border.all(color: p.green, width: 0.5),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.check_circle, size: 16, color: p.green),
-              const SizedBox(width: AbotSpacing.sm),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Connected to Anthropic',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: p.green,
-                        fontFamily: AbotFonts.mono,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    if (_expiresAt != null)
-                      Text(
-                        _formatExpiry(_expiresAt!),
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: p.overlay0,
-                          fontFamily: AbotFonts.mono,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+        _buildStatusBanner(
+          p: p,
+          color: p.green,
+          icon: Icons.check_circle,
+          title: 'Connected to Anthropic',
+          subtitle: _expiresAt != null ? _formatExpiry(_expiresAt!) : null,
         ),
         const SizedBox(height: AbotSpacing.sm),
         Text(
@@ -391,30 +418,11 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.all(AbotSpacing.md),
-          decoration: BoxDecoration(
-            color: p.surface0,
-            borderRadius: BorderRadius.circular(AbotRadius.md),
-            border: Border.all(color: p.yellow, width: 0.5),
-          ),
-          child: Row(
-            children: [
-              Icon(Icons.warning_amber, size: 16, color: p.yellow),
-              const SizedBox(width: AbotSpacing.sm),
-              Expanded(
-                child: Text(
-                  'Token expired — reconnect to continue.',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: p.yellow,
-                    fontFamily: AbotFonts.mono,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
+        _buildStatusBanner(
+          p: p,
+          color: p.yellow,
+          icon: Icons.warning_amber,
+          title: 'Token expired — reconnect to continue.',
         ),
         const SizedBox(height: AbotSpacing.md),
         SizedBox(

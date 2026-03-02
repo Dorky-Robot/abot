@@ -76,6 +76,13 @@ impl DockerBackend {
         ];
         env_vars.extend(env);
 
+        // Use bash for abot-session (which has it), /bin/sh for fallback Alpine
+        let shell = if image == SESSION_IMAGE {
+            "/bin/bash"
+        } else {
+            "/bin/sh"
+        };
+
         // Named volume for persistent home directory
         let volume_name = format!("abot-agent-{name}");
 
@@ -87,7 +94,7 @@ impl DockerBackend {
             attach_stdout: Some(true),
             attach_stderr: Some(true),
             open_stdin: Some(true),
-            cmd: Some(vec!["/bin/bash".to_string(), "-l".to_string()]),
+            cmd: Some(vec![shell.to_string(), "-l".to_string()]),
             env: Some(env_vars),
             user: Some("1000:1000".to_string()), // Run as non-root
             host_config: Some(HostConfig {
