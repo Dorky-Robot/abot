@@ -290,6 +290,11 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _terminal?.write(data.toJS);
   }
 
+  @override
+  void resetTerminal() {
+    _terminal?.reset();
+  }
+
   /// Toggle the search bar overlay.
   @override
   void toggleSearch() {
@@ -476,6 +481,7 @@ abstract interface class TerminalSink {
   String getBufferContent();
 
   void writeData(String data);
+  void resetTerminal();
   void toggleSearch();
   void setGenieTransform(String transform, {bool animate, String? clipPath});
   void clearGenieTransform({bool animate});
@@ -492,6 +498,9 @@ class TerminalRegistry {
   /// Secondary index: session name → set of facet IDs attached to that session.
   final Map<String, Set<String>> _sessionToFacets = {};
 
+  /// All registered facet IDs (for testing / cleanup).
+  Iterable<String> get registeredIds => _terminals.keys;
+
   /// Called when a new terminal finishes initializing and registers itself.
   VoidCallback? onRegistered;
 
@@ -507,6 +516,15 @@ class TerminalRegistry {
       final ids = _sessionToFacets[sink.sessionName];
       ids?.remove(facetId);
       if (ids != null && ids.isEmpty) _sessionToFacets.remove(sink.sessionName);
+    }
+  }
+
+  /// Reset all terminals for a session (clear screen before buffer replay).
+  void resetSession(String sessionName) {
+    final ids = _sessionToFacets[sessionName];
+    if (ids == null) return;
+    for (final id in ids) {
+      _terminals[id]?.resetTerminal();
     }
   }
 

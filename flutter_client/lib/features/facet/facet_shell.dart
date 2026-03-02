@@ -126,7 +126,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
         for (final facet in facets) {
           wsService.attachSession(facet.sessionName);
         }
-        // Refresh server session list on connect
         ref.read(sessionServiceProvider.notifier).refresh();
       }
     });
@@ -135,6 +134,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   void _handleServerMessage(ServerMessage msg) {
     switch (msg) {
       case AttachedMessage(:final session, :final buffer):
+        TerminalRegistry.instance.resetSession(session);
         if (buffer.isNotEmpty) {
           TerminalRegistry.instance.writeToSession(session, buffer);
         }

@@ -23,6 +23,7 @@ extension type XtermTerminal._(JSObject _) implements JSObject {
   external void focus();
   external void blur();
   external void clear();
+  external void reset();
   external void scrollToBottom();
   external int get cols;
   external int get rows;
