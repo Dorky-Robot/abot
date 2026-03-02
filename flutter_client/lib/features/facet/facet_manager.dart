@@ -127,20 +127,6 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     state = state.copyWith(focusedId: facetId);
   }
 
-  /// Reorder: move facet from [oldIndex] to [newIndex] in the full order list.
-  void reorder(int oldIndex, int newIndex) {
-    final newOrder = List<String>.from(state.order);
-    if (oldIndex < 0 || oldIndex >= newOrder.length) return;
-    if (newIndex < 0 || newIndex > newOrder.length) return;
-
-    final id = newOrder.removeAt(oldIndex);
-    final insertAt = newIndex > oldIndex ? newIndex - 1 : newIndex;
-    newOrder.insert(insertAt, id);
-
-    state = state.copyWith(order: newOrder);
-    _persistOrder();
-  }
-
   /// Persist current facet order as session names to localStorage.
   void _persistOrder() {
     final names = state.order
