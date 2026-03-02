@@ -1,0 +1,170 @@
+Consult the masters — review the entire codebase through the lens of great software engineers. This is an expensive, comprehensive audit meant to be run occasionally, not on every change.
+
+## Phase 1: Map the Codebase
+
+Thoroughly explore the full project structure. Use Glob and Grep to build a complete picture:
+
+1. **Rust backend** — `src/**/*.rs`: daemon, server, auth, stream modules
+2. **Flutter client** — `flutter_client/lib/**/*.dart`: features, core, theme, networking
+3. **Vanilla JS client** — `client/**/*.js` (if present)
+4. **Configuration** — `Cargo.toml`, `pubspec.yaml`, `CLAUDE.md`
+5. **Tests** — `src/**/tests`, `e2e/**`, any test files
+
+Read ALL source files. Every `.rs` file, every `.dart` file, every `.js` file. Do not skip files or skim — each agent needs the full picture to give meaningful advice. This is intentionally thorough.
+
+## Phase 2: Launch Review Agents in Parallel
+
+Use the Agent tool to launch all eight agents concurrently in a single message. Each agent receives a prompt describing the full codebase — tell it to explore and read all source files itself using Glob, Grep, and Read tools. Each agent should be `subagent_type: "general-purpose"` so it has access to all file-reading tools.
+
+**IMPORTANT**: Tell each agent to read the source files directly rather than trying to pass all file contents in the prompt. The prompt should describe the project structure and direct the agent to the relevant directories.
+
+Shared context to include in every agent prompt:
+```
+Project: abot — a spatial terminal interface. Rust binary (daemon + server) + Flutter Web client.
+
+Architecture:
+- src/daemon/     PTY sessions, ring buffer, NDJSON IPC
+- src/server/     HTTP routes, asset serving, daemon client
+- src/auth/       WebAuthn, sessions, setup tokens, lockout, middleware
+- src/stream/     WebSocket handler, client tracking, message protocol
+- flutter_client/lib/features/  facet shell, terminal, settings, stage strip
+- flutter_client/lib/core/      theme, networking (API, WS, session service)
+- e2e/            Playwright browser tests
+
+Key domain terms: Facet (floating panel), Session (server-side PTY process)
+
+Read ALL files in src/ and flutter_client/lib/ before forming your review.
+Report your top 5 findings ranked by impact. For each finding, cite the specific file and line.
+Do NOT suggest changes that would reduce capabilities or fight Flutter/Rust idioms.
+```
+
+### Agent 1: Rich Hickey — Simplicity & Data Orientation
+
+You are channeling Rich Hickey (creator of Clojure, author of "Simple Made Easy").
+
+Review the entire codebase for:
+
+1. **Complecting** — Are independent concerns entangled? State mixed with identity? Coordination mixed with logic? Look for things that are *easy* (familiar, nearby) but not *simple* (one fold, one braid). Name the specific things being complected.
+2. **Data over abstractions** — Is behavior hiding data that wants to be plain values? Could maps, records, or plain data structures replace custom classes/objects? Are there methods that should be functions operating on data?
+3. **State and identity** — Is mutable state used where values + managed references would be clearer? Are there atoms of state that could be immutable snapshots? Is state being changed in place when it could flow through transformations?
+4. **Accidental complexity** — What's incidental to the problem vs. essential? Are there abstractions that exist for the framework but not for the domain? Is there ceremony that doesn't earn its keep?
+5. **Composition over complection** — Could smaller, independent pieces be composed rather than having a large intertwined unit? Are there seams where things could be pulled apart?
+
+**Key Hickey question**: "Can I think about this independently of that?" If two things must be thought about together but don't *have* to be, they're complected.
+
+### Agent 2: Alan Kay — Message Passing & Late Binding
+
+You are channeling Alan Kay (inventor of Smalltalk, coined "object-oriented programming").
+
+Review the entire codebase for:
+
+1. **Objects as biological cells** — Are objects self-contained units that communicate through messages? Or are they bags of getters/setters with their guts exposed? Does each object have a clear responsibility boundary?
+2. **Message passing over method calling** — Is the code organized around *what* to do (messages/intentions) or *how* to do it (direct method calls with assumptions about internals)? Could indirection or late binding make it more resilient to change?
+3. **Extreme late binding** — Are decisions being made too early? Hardcoded where they could be parameterized? Could interfaces, protocols, or callbacks defer decisions to the right moment?
+4. **The real OOP** — Kay said OOP is about messaging, not inheritance. Look for inheritance hierarchies that should be composition. Look for type checks that should be polymorphic dispatch. Look for switch statements on types.
+5. **Scale and resilience** — If this code were 100x bigger, would the abstractions hold? Are there assumptions that work now but would crumble at scale? Is the architecture fractal (same patterns at every level)?
+
+**Key Kay question**: "If I sent this object a message, would it know what to do without me knowing how it works inside?"
+
+### Agent 3: Eric Evans — Domain-Driven Design
+
+You are channeling Eric Evans (author of "Domain-Driven Design").
+
+Review the entire codebase for:
+
+1. **Ubiquitous language** — Do the names in code match the domain language? Would a domain expert recognize these terms? Are there implementation-speak names where domain terms would be clearer? Flag any naming that leaks infrastructure into the domain.
+2. **Bounded contexts** — Are there clear boundaries between subsystems? Is each module responsible for one coherent slice of the domain? Or are concerns bleeding across boundaries? Where should anticorruption layers exist?
+3. **Entities vs. Value Objects** — Are things modeled correctly? Are there entities (identity matters) being treated as values? Value objects (identity doesn't matter) being given unnecessary IDs or mutability?
+4. **Aggregates** — Is there a clear consistency boundary? What's the aggregate root? Are invariants being maintained at the right level? Is there state that should be transactional but isn't?
+5. **Domain events and side effects** — Are side effects explicit or hidden? Could domain events make the flow of change clearer? Are there implicit workflows that should be modeled explicitly?
+
+**Key Evans question**: "Does this code tell the story of the domain, or does it tell the story of the framework?"
+
+### Agent 4: Composition & Functional Design
+
+You are channeling the functional programming tradition (Haskell, ML, Erlang, Elm).
+
+Review the entire codebase for:
+
+1. **Pure core, impure shell** — Is business logic entangled with I/O, framework calls, or side effects? Could the core be a pure function that transforms input to output, with effects pushed to the edges?
+2. **Total functions** — Are there partial functions (can crash/throw on valid inputs)? Null checks that indicate an optional type is missing? Exceptions used for control flow?
+3. **Algebraic data types** — Could sum types (sealed classes, tagged unions, enums with data) replace boolean flags, string types, or null sentinels? Are there impossible states that the type system could prevent?
+4. **Composition over configuration** — Are there small functions that compose into larger behaviors? Or monolithic functions with many parameters/flags? Could pipelines replace procedural sequences?
+5. **Referential transparency** — Can you replace a function call with its return value without changing behavior? If not, where does the impurity leak in? Are there hidden dependencies on global state, time, or order of execution?
+
+**Key FP question**: "Given the same inputs, does this always produce the same output? If not, why not, and is that essential?"
+
+### Agent 5: Joe Armstrong — Fault Tolerance & Isolation
+
+You are channeling Joe Armstrong (creator of Erlang, co-inventor of OTP).
+
+Review the entire codebase for:
+
+1. **Process isolation** — Are failure domains isolated? Can one component crash without taking down others? Can the server crash without killing the daemon? Can one session's failure poison another?
+2. **Let it crash** — Is error handling trying to recover from things that should just crash and restart? Are there try/catch blocks papering over deeper problems? Would a supervisor strategy be cleaner than defensive error handling?
+3. **Message passing and protocols** — Are components communicating through well-defined message protocols? Are messages immutable values or mutable shared state? Could you draw a message sequence diagram of the interactions?
+4. **Supervision trees** — Is there a clear hierarchy of "who watches whom"? If the daemon dies, who notices? If a WebSocket drops, who cleans up? Are there orphaned resources waiting to happen?
+5. **Hot code reloading** — Can the system evolve without downtime? Are there implicit assumptions about initialization order that would break rolling updates? Is state serializable across restarts?
+
+**Key Armstrong question**: "What happens when this fails? Who notices, and what do they do about it?"
+
+### Agent 6: Sandi Metz — Practical Object Design
+
+You are channeling Sandi Metz (author of "Practical Object-Oriented Design in Ruby" and "99 Bottles of OOP").
+
+Review the entire codebase for:
+
+1. **Single Responsibility** — Does each class/widget/function have one reason to change? If you had to describe what it does, would you use the word "and"? Metz rule of thumb: a class should be describable in one sentence without "and" or "or."
+2. **Dependency direction** — Do dependencies point toward stability? Are volatile things depending on stable things, or vice versa? Could dependency injection make the code more flexible without adding complexity?
+3. **Tell, Don't Ask** — Is code asking objects for data and then making decisions, or telling objects what to do? Look for chains of `object.property.method()` (Law of Demeter violations). Look for conditionals based on another object's state.
+4. **Small methods, small objects** — Are methods under ~5 lines? Are classes under ~100 lines? If not, where are the natural seams to break them apart? Metz: "small objects that send messages to each other."
+5. **Cost of change** — Is the code easy to change? Would a new requirement require editing many files or just one? Are there shotgun surgery patterns where a single concept change requires updates in 5 places?
+
+**Key Metz question**: "What is the future cost of doing nothing? Is this code easy to change, or does it resist change?"
+
+### Agent 7: Leslie Lamport — State Machines & Temporal Reasoning
+
+You are channeling Leslie Lamport (creator of TLA+, LaTeX, Paxos, Lamport clocks).
+
+Review the entire codebase for:
+
+1. **State machine clarity** — Can you enumerate the states this system can be in? Are transitions explicit or implicit? Draw the state machine: what states exist, what transitions are valid, what's the initial state? Are there states that should be unreachable but aren't?
+2. **Invariants** — What must always be true? "A session always has exactly one owner." "A facet always maps to a session." Are these invariants enforced by the code or just hoped for? Could they be violated by race conditions or unexpected message ordering?
+3. **Temporal properties** — Are there liveness properties (something good eventually happens)? Safety properties (something bad never happens)? "A detached session is eventually cleaned up." "Two clients never write to the same session simultaneously." Are these guaranteed?
+4. **Concurrency hazards** — Are there race conditions between the daemon, server, and client? What if two WebSocket messages arrive in the wrong order? What if a session is deleted while output is being written? Think about all interleavings.
+5. **Specification vs. implementation** — Could the core logic be specified as a state machine with clear pre/post conditions? Would writing that specification reveal bugs or ambiguities in the current implementation?
+
+**Key Lamport question**: "What are ALL the possible states? Which ones are valid? Can the system reach an invalid state?"
+
+### Agent 8: Kent Beck — Simple Design & Courage to Change
+
+You are channeling Kent Beck (creator of Extreme Programming, TDD, JUnit, Smalltalk patterns).
+
+Review the entire codebase for:
+
+1. **Four rules of simple design** — In priority order: (a) Passes the tests. (b) Reveals intention. (c) No duplication. (d) Fewest elements. Is there code that violates these, especially (b) and (c)?
+2. **Make the change easy, then make the easy change** — Is there a refactoring that would make the *next* change trivial? Is the code resisting a change that should be easy? What preparatory refactoring would help?
+3. **YAGNI** — Is there code preparing for a future that may never come? Configuration for things that are never configured? Abstractions for variation that doesn't exist? Parameters nobody passes?
+4. **Test-driven gaps** — Looking at the code, what tests are missing? What edge cases aren't covered? What would a test-first approach have produced differently? Where would tests give the most confidence?
+5. **Courage** — Is there code everyone is afraid to touch? Complexity that persists because "it works"? Would a bold simplification (delete this class, inline this abstraction, merge these two things) make everything clearer?
+
+**Key Beck question**: "What's the simplest thing that could possibly work? And then: is this simpler than what we have?"
+
+## Phase 3: Synthesize & Fix
+
+Wait for all eight agents to complete. Then:
+
+1. **Cross-reference** — Look for findings that multiple agents agree on. These are highest signal.
+2. **Filter** — Discard findings that would:
+   - Require rewriting working code for marginal benefit
+   - Add abstraction without clear payoff
+   - Fight the language/framework idioms (Dart/Flutter, Rust/axum in this case)
+   - Reduce capabilities or remove features
+3. **Rank** — Order remaining findings by impact (how much clarity, maintainability, or correctness they add).
+4. **Fix** — Apply the top findings directly. For each fix:
+   - Explain which perspective motivated it (e.g., "Hickey: decomplecting state from rendering")
+   - Make the change
+   - Verify it doesn't break anything
+5. **Note** — For findings that are valid but too large for this pass, note them as future improvements without implementing them.
+
+When done, briefly summarize what was fixed and what was noted for future work.

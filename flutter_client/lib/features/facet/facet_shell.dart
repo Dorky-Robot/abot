@@ -385,7 +385,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
       // Clip within the xterm container only (no title bar to skip).
       final topClip = overflow;
-      final bottomClip = xtermH - overflow - cardRect.height / s;
+      final bottomClip =
+          (xtermH - overflow - cardRect.height / s).clamp(0.0, double.infinity);
 
       // Inset by card border width + border-radius so the card border
       // and rounded corners remain visible beneath the terminal content.

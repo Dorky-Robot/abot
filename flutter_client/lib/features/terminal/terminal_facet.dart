@@ -178,7 +178,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
         if ((event.ctrlKey || event.metaKey) && event.key == 'n') {
           return false.toJS;
         }
-        // Ctrl+W / Cmd+W — close facet
+        // Ctrl+W / Cmd+W — minimize facet
         if ((event.ctrlKey || event.metaKey) && event.key == 'w') {
           return false.toJS;
         }
