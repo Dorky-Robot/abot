@@ -618,10 +618,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
               serverSessions: serverSessions,
               openSessionNames: openSessionNames,
               onFocusFacet: _focusFacet,
-              onReorder: (oldIndex, newIndex) {
-                ref.read(facetManagerProvider.notifier)
-                    .reorder(oldIndex, newIndex);
-              },
               onOpenSession: _onOpenSession,
               onDeleteSession: _onDeleteSession,
               onNewSession: _createNewFacet,
@@ -701,8 +697,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 ? () => _minimizeFacet(
                     focusedId, state.facets[focusedId]!.sessionName)
                 : null,
-            onClose: () => _closeFacet(
-                focusedId, state.facets[focusedId]!.sessionName),
+            onClose: state.count > 1
+                ? () => _closeFacet(
+                    focusedId, state.facets[focusedId]!.sessionName)
+                : null,
           ),
         ),
       ],

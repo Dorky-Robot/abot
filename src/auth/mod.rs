@@ -6,6 +6,15 @@ pub mod state;
 pub mod tokens;
 pub mod webauthn_config;
 
+/// Current time in milliseconds since UNIX epoch.
+/// Returns 0 on clock skew (system time before epoch) rather than panicking.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use webauthn_rs::prelude::*;

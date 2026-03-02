@@ -1,15 +1,10 @@
 {
   "name": "abot",
-  "version": "1.0.0",
-  "description": "<div align=\"center\">",
-  "main": "index.js",
+  "private": true,
   "scripts": {
     "test:e2e": "npx playwright test",
     "test:e2e:headed": "npx playwright test --headed"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "devDependencies": {
     "@playwright/test": "^1.58.2"
   }

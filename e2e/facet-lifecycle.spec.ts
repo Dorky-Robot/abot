@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 // Helper: list server sessions via REST API.
-async function listSessions(page: Page): Promise<{ name: string; status: string }[]> {
+async function listSessions(page: Page): Promise<{ name: string; alive: boolean }[]> {
   const resp = await page.request.get('/sessions');
   const body = await resp.json();
   return body.sessions ?? body ?? [];
@@ -25,11 +25,16 @@ async function xtermCount(page: Page): Promise<number> {
   return page.locator('.xterm-container').count();
 }
 
-// Helper: create a session via API and return its name.
-async function createSessionViaAPI(page: Page, name?: string): Promise<string> {
-  const sessionName = name ?? `e2e-${Date.now()}`;
-  await page.request.post('/sessions', { data: { name: sessionName } });
-  return sessionName;
+// Helper: parse CSS inset() shorthand into [top, right, bottom, left].
+function parseInsetValues(clipPath: string): number[] {
+  const insetBody = clipPath.replace(/^inset\(/, '').replace(/\)$/, '');
+  const beforeRound = insetBody.split(/\s+round\s+/)[0];
+  const raw = beforeRound.match(/-?[\d.]+/g)?.map(Number) ?? [];
+  if (raw.length === 0) return [];
+  if (raw.length === 1) return [raw[0], raw[0], raw[0], raw[0]];
+  if (raw.length === 2) return [raw[0], raw[1], raw[0], raw[1]];
+  if (raw.length === 3) return [raw[0], raw[1], raw[2], raw[1]];
+  return [raw[0], raw[1], raw[2], raw[3]];
 }
 
 // macOS uses Meta, others use Control.
@@ -151,25 +156,8 @@ test.describe('Sidebar preview transforms', () => {
     expect(clipPaths.length).toBeGreaterThanOrEqual(1);
 
     for (const cp of clipPaths) {
-      // Parse inset values — extract all numbers before "round" keyword.
-      // CSS inset() uses margin shorthand: 1-4 values (T, T R, T R B, T R B L).
-      const insetBody = cp.replace(/^inset\(/, '').replace(/\)$/, '');
-      const beforeRound = insetBody.split(/\s+round\s+/)[0];
-      const raw = beforeRound.match(/-?[\d.]+/g)?.map(Number) ?? [];
-      if (raw.length === 0) continue;
-
-      // Expand CSS shorthand to [top, right, bottom, left].
-      let top: number, right: number, bottom: number, left: number;
-      if (raw.length === 1) {
-        [top, right, bottom, left] = [raw[0], raw[0], raw[0], raw[0]];
-      } else if (raw.length === 2) {
-        [top, right, bottom, left] = [raw[0], raw[1], raw[0], raw[1]];
-      } else if (raw.length === 3) {
-        [top, right, bottom, left] = [raw[0], raw[1], raw[2], raw[1]];
-      } else {
-        [top, right, bottom, left] = raw;
-      }
-
+      const [top, right, bottom, left] = parseInsetValues(cp);
+      if (top === undefined) continue;
       expect(top).toBeGreaterThanOrEqual(0);
       expect(right).toBeGreaterThanOrEqual(0);
       expect(bottom).toBeGreaterThanOrEqual(0);
@@ -230,22 +218,8 @@ test.describe('Sidebar preview transforms', () => {
     );
 
     for (const cp of clipPaths) {
-      const insetBody = cp.replace(/^inset\(/, '').replace(/\)$/, '');
-      const beforeRound = insetBody.split(/\s+round\s+/)[0];
-      const raw = beforeRound.match(/-?[\d.]+/g)?.map(Number) ?? [];
-      if (raw.length === 0) continue;
-
-      let top: number, right: number, bottom: number, left: number;
-      if (raw.length === 1) {
-        [top, right, bottom, left] = [raw[0], raw[0], raw[0], raw[0]];
-      } else if (raw.length === 2) {
-        [top, right, bottom, left] = [raw[0], raw[1], raw[0], raw[1]];
-      } else if (raw.length === 3) {
-        [top, right, bottom, left] = [raw[0], raw[1], raw[2], raw[1]];
-      } else {
-        [top, right, bottom, left] = raw;
-      }
-
+      const [top, right, bottom, left] = parseInsetValues(cp);
+      if (top === undefined) continue;
       expect(top).toBeGreaterThanOrEqual(0);
       expect(right).toBeGreaterThanOrEqual(0);
       expect(bottom).toBeGreaterThanOrEqual(0);

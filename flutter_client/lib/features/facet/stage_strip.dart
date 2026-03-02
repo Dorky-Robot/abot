@@ -14,7 +14,6 @@ class StageStrip extends StatelessWidget {
   final List<SessionInfo> serverSessions;
   final Set<String> openSessionNames;
   final void Function(String facetId) onFocusFacet;
-  final void Function(int oldIndex, int newIndex) onReorder;
   final void Function(String sessionName) onOpenSession;
   final void Function(String sessionName) onDeleteSession;
   final VoidCallback onNewSession;
@@ -32,7 +31,6 @@ class StageStrip extends StatelessWidget {
     required this.serverSessions,
     required this.openSessionNames,
     required this.onFocusFacet,
-    required this.onReorder,
     required this.onOpenSession,
     required this.onDeleteSession,
     required this.onNewSession,
