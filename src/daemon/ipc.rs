@@ -206,33 +206,43 @@ pub async fn handle_request(
                     let mut sessions = state.sessions.lock().await;
                     sessions.insert(name.clone(), session);
 
-                    // Extract backend reader channel, then drop the lock
+                    // Extract backend reader channel and shared name, then drop the lock
                     let rx = sessions
                         .get_mut(&name)
                         .and_then(|s| s.backend.take_reader());
+                    let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
                     drop(sessions);
 
                     if let Some(mut rx) = rx {
-                        let buffer_name = name.clone();
                         tokio::spawn(async move {
                             while let Some(data) = rx.recv().await {
+                                let current_name = shared_name
+                                    .as_ref()
+                                    .map(|sn| sn.lock().unwrap().clone())
+                                    .unwrap_or_else(|| reader_name.clone());
+
                                 // Write to ring buffer so attach can replay history
                                 {
                                     let mut sessions = state_ref.sessions.lock().await;
-                                    if let Some(s) = sessions.get_mut(&buffer_name) {
+                                    if let Some(s) = sessions.get_mut(&current_name) {
                                         s.buffer.push(data.clone());
                                     }
                                 }
                                 let _ = output_tx.send(OutputEvent::Output {
-                                    session: reader_name.clone(),
+                                    session: current_name,
                                     data,
                                 });
                             }
 
                             // PTY output ended — mark session as exited and broadcast
+                            let current_name = shared_name
+                                .as_ref()
+                                .map(|sn| sn.lock().unwrap().clone())
+                                .unwrap_or_else(|| reader_name.clone());
+
                             let code = {
                                 let mut sessions = state_ref.sessions.lock().await;
-                                if let Some(s) = sessions.get_mut(&buffer_name) {
+                                if let Some(s) = sessions.get_mut(&current_name) {
                                     let code = s.backend.try_exit_code().unwrap_or(0);
                                     s.mark_exited(code);
                                     Some(code)
@@ -242,7 +252,7 @@ pub async fn handle_request(
                             };
                             if let Some(code) = code {
                                 let _ = output_tx.send(OutputEvent::Exit {
-                                    session: reader_name.clone(),
+                                    session: current_name,
                                     code,
                                 });
                             }
@@ -321,6 +331,8 @@ pub async fn handle_request(
             }
             if let Some(mut session) = sessions.remove(&old_name) {
                 session.name = new_name.clone();
+                // Update the shared name so background relay tasks use the new name
+                *session.shared_name.lock().unwrap() = new_name.clone();
                 sessions.insert(new_name.clone(), session);
 
                 // Update client attachments that point to old name
