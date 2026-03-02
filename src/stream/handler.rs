@@ -207,7 +207,15 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>, credential_id: Opt
                 if let Err(e) =
                     handle_client_message(&app, &client_id, &text, &peers, &protocol).await
                 {
-                    tracing::warn!("client message error: {}", e);
+                    tracing::warn!("client {} message error: {}", client_id, e);
+                    app.stream_clients
+                        .send_to(
+                            &client_id,
+                            ServerMessage::Error {
+                                message: e.to_string(),
+                            },
+                        )
+                        .await;
                 }
             }
             Message::Close(_) => break,
