@@ -221,68 +221,7 @@ async fn handle_client_message(
             session,
             cols,
             rows,
-        } => {
-            // Auto-create session if it doesn't exist
-            let list_resp = app
-                .daemon_client
-                .rpc(DaemonRequest::ListSessions { id: String::new() })
-                .await?;
-
-            let sessions = list_resp
-                .get("sessions")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            if !sessions.contains(&session.as_str()) {
-                let _ = app
-                    .daemon_client
-                    .rpc(DaemonRequest::CreateSession {
-                        id: String::new(),
-                        name: session.clone(),
-                        cols,
-                        rows,
-                    })
-                    .await;
-            }
-
-            let resp = app
-                .daemon_client
-                .rpc(DaemonRequest::Attach {
-                    id: String::new(),
-                    client_id: client_id.to_string(),
-                    session: session.clone(),
-                    cols,
-                    rows,
-                })
-                .await?;
-
-            if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-                app.stream_clients
-                    .send_to(
-                        client_id,
-                        ServerMessage::Error {
-                            message: error.to_string(),
-                        },
-                    )
-                    .await;
-            } else {
-                let buffer = resp
-                    .get("buffer")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                app.stream_clients.attach(client_id, session.clone()).await;
-                app.stream_clients
-                    .send_to(client_id, ServerMessage::Attached { session, buffer })
-                    .await;
-            }
-        }
+        } => handle_attach(app, client_id, session, cols, rows).await?,
 
         ClientMessage::Input { data, session } => {
             app.daemon_client
@@ -311,12 +250,10 @@ async fn handle_client_message(
 
         ClientMessage::Detach { session } => {
             if let Some(session_name) = session {
-                // Detach from specific session (facet close) — server-side only
                 app.stream_clients
                     .detach_session(client_id, &session_name)
                     .await;
             } else {
-                // Detach from all sessions
                 app.stream_clients.detach(client_id).await;
                 app.daemon_client
                     .send(&DaemonRequest::Detach {
@@ -328,143 +265,207 @@ async fn handle_client_message(
         }
 
         ClientMessage::P2pSignal { data } => {
-            let signal_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
-            let is_offer = signal_type == "offer";
-
-            if is_offer {
-                let mut map = peers.lock().await;
-                if let Some(old) = map.remove(client_id) {
-                    old.peer.destroy().await;
-                    app.stream_clients.clear_p2p_sender(client_id).await;
-                }
-
-                match ServerPeer::new().await {
-                    Ok((peer, mut event_rx)) => {
-                        let (event_tx, mut event_forward_rx) = mpsc::channel::<P2pEvent>(64);
-
-                        let clients = app.stream_clients.clone();
-                        let app_clone = app.clone();
-                        let cid = client_id.to_string();
-                        tokio::spawn(async move {
-                            loop {
-                                let event = tokio::select! {
-                                    Some(e) = event_rx.recv() => e,
-                                    Some(e) = event_forward_rx.recv() => e,
-                                    else => break,
-                                };
-
-                                match event {
-                                    P2pEvent::Signal(signal_data) => {
-                                        clients
-                                            .send_to(
-                                                &cid,
-                                                ServerMessage::P2pSignal { data: signal_data },
-                                            )
-                                            .await;
-                                    }
-                                    P2pEvent::Ready(dc) => {
-                                        tracing::info!("P2P DataChannel ready for client {}", cid);
-                                        clients.set_p2p_sender(&cid, dc).await;
-                                        clients.send_to(&cid, ServerMessage::P2pReady).await;
-                                    }
-                                    P2pEvent::Data(text) => {
-                                        if let Ok(parsed) =
-                                            serde_json::from_str::<serde_json::Value>(&text)
-                                        {
-                                            let msg_type = parsed
-                                                .get("type")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            match msg_type {
-                                                "input" => {
-                                                    if let Some(input_data) =
-                                                        parsed.get("data").and_then(|v| v.as_str())
-                                                    {
-                                                        let session = parsed
-                                                            .get("session")
-                                                            .and_then(|v| v.as_str());
-                                                        let _ = app_clone
-                                                            .daemon_client
-                                                            .send(&DaemonRequest::Input {
-                                                                client_id: cid.clone(),
-                                                                session: session
-                                                                    .map(|s| s.to_string()),
-                                                                data: input_data.to_string(),
-                                                            })
-                                                            .await;
-                                                    }
-                                                }
-                                                "resize" => {
-                                                    let cols = parsed
-                                                        .get("cols")
-                                                        .and_then(|v| v.as_u64())
-                                                        .unwrap_or(120)
-                                                        as u16;
-                                                    let rows = parsed
-                                                        .get("rows")
-                                                        .and_then(|v| v.as_u64())
-                                                        .unwrap_or(40)
-                                                        as u16;
-                                                    let session = parsed
-                                                        .get("session")
-                                                        .and_then(|v| v.as_str());
-                                                    let _ = app_clone
-                                                        .daemon_client
-                                                        .send(&DaemonRequest::Resize {
-                                                            client_id: cid.clone(),
-                                                            session: session.map(|s| s.to_string()),
-                                                            cols,
-                                                            rows,
-                                                        })
-                                                        .await;
-                                                }
-                                                _ => {
-                                                    tracing::debug!(
-                                                        "unknown DC message type: {}",
-                                                        msg_type
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    P2pEvent::Closed => {
-                                        tracing::info!("P2P DataChannel closed for client {}", cid);
-                                        clients.clear_p2p_sender(&cid).await;
-                                        clients.send_to(&cid, ServerMessage::P2pClosed).await;
-                                        break;
-                                    }
-                                }
-                            }
-                        });
-
-                        if let Err(e) = peer.handle_signal(&data, &event_tx).await {
-                            tracing::warn!("P2P signal error: {}", e);
-                        }
-
-                        map.insert(client_id.to_string(), PeerState { peer, event_tx });
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to create WebRTC peer: {}", e);
-                        app.stream_clients
-                            .send_to(client_id, ServerMessage::P2pUnavailable)
-                            .await;
-                    }
-                }
-            } else {
-                // ICE candidate — feed to existing peer
-                let map = peers.lock().await;
-                if let Some(peer_state) = map.get(client_id) {
-                    if let Err(e) = peer_state
-                        .peer
-                        .handle_signal(&data, &peer_state.event_tx)
-                        .await
-                    {
-                        tracing::warn!("P2P signal error: {}", e);
-                    }
-                }
-            }
+            handle_p2p_signal(app, client_id, data, peers).await;
         }
     }
 
     Ok(())
+}
+
+/// Auto-create session if needed, then attach the client to it.
+async fn handle_attach(
+    app: &Arc<AppState>,
+    client_id: &str,
+    session: String,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<()> {
+    let list_resp = app
+        .daemon_client
+        .rpc(DaemonRequest::ListSessions { id: String::new() })
+        .await?;
+
+    let sessions = list_resp
+        .get("sessions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if !sessions.contains(&session.as_str()) {
+        let _ = app
+            .daemon_client
+            .rpc(DaemonRequest::CreateSession {
+                id: String::new(),
+                name: session.clone(),
+                cols,
+                rows,
+            })
+            .await;
+    }
+
+    let resp = app
+        .daemon_client
+        .rpc(DaemonRequest::Attach {
+            id: String::new(),
+            client_id: client_id.to_string(),
+            session: session.clone(),
+            cols,
+            rows,
+        })
+        .await?;
+
+    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
+        app.stream_clients
+            .send_to(
+                client_id,
+                ServerMessage::Error {
+                    message: error.to_string(),
+                },
+            )
+            .await;
+    } else {
+        let buffer = resp
+            .get("buffer")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        app.stream_clients.attach(client_id, session.clone()).await;
+        app.stream_clients
+            .send_to(client_id, ServerMessage::Attached { session, buffer })
+            .await;
+    }
+
+    Ok(())
+}
+
+/// Handle WebRTC P2P signaling (offer/answer/ICE candidates).
+async fn handle_p2p_signal(
+    app: &Arc<AppState>,
+    client_id: &str,
+    data: serde_json::Value,
+    peers: &PeerMap,
+) {
+    let signal_type = data.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let is_offer = signal_type == "offer";
+
+    if is_offer {
+        let mut map = peers.lock().await;
+        if let Some(old) = map.remove(client_id) {
+            old.peer.destroy().await;
+            app.stream_clients.clear_p2p_sender(client_id).await;
+        }
+
+        match ServerPeer::new().await {
+            Ok((peer, mut event_rx)) => {
+                let (event_tx, mut event_forward_rx) = mpsc::channel::<P2pEvent>(64);
+
+                let clients = app.stream_clients.clone();
+                let app_clone = app.clone();
+                let cid = client_id.to_string();
+                tokio::spawn(async move {
+                    loop {
+                        let event = tokio::select! {
+                            Some(e) = event_rx.recv() => e,
+                            Some(e) = event_forward_rx.recv() => e,
+                            else => break,
+                        };
+
+                        match event {
+                            P2pEvent::Signal(signal_data) => {
+                                clients
+                                    .send_to(&cid, ServerMessage::P2pSignal { data: signal_data })
+                                    .await;
+                            }
+                            P2pEvent::Ready(dc) => {
+                                tracing::info!("P2P DataChannel ready for client {}", cid);
+                                clients.set_p2p_sender(&cid, dc).await;
+                                clients.send_to(&cid, ServerMessage::P2pReady).await;
+                            }
+                            P2pEvent::Data(text) => {
+                                handle_p2p_data(&app_clone, &cid, &text).await;
+                            }
+                            P2pEvent::Closed => {
+                                tracing::info!("P2P DataChannel closed for client {}", cid);
+                                clients.clear_p2p_sender(&cid).await;
+                                clients.send_to(&cid, ServerMessage::P2pClosed).await;
+                                break;
+                            }
+                        }
+                    }
+                });
+
+                if let Err(e) = peer.handle_signal(&data, &event_tx).await {
+                    tracing::warn!("P2P signal error: {}", e);
+                }
+
+                map.insert(client_id.to_string(), PeerState { peer, event_tx });
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create WebRTC peer: {}", e);
+                app.stream_clients
+                    .send_to(client_id, ServerMessage::P2pUnavailable)
+                    .await;
+            }
+        }
+    } else {
+        // ICE candidate — feed to existing peer
+        let map = peers.lock().await;
+        if let Some(peer_state) = map.get(client_id) {
+            if let Err(e) = peer_state
+                .peer
+                .handle_signal(&data, &peer_state.event_tx)
+                .await
+            {
+                tracing::warn!("P2P signal error: {}", e);
+            }
+        }
+    }
+}
+
+/// Handle a message received over the P2P DataChannel.
+async fn handle_p2p_data(app: &Arc<AppState>, client_id: &str, text: &str) {
+    let parsed = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let msg_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match msg_type {
+        "input" => {
+            if let Some(input_data) = parsed.get("data").and_then(|v| v.as_str()) {
+                let session = parsed.get("session").and_then(|v| v.as_str());
+                let _ = app
+                    .daemon_client
+                    .send(&DaemonRequest::Input {
+                        client_id: client_id.to_string(),
+                        session: session.map(|s| s.to_string()),
+                        data: input_data.to_string(),
+                    })
+                    .await;
+            }
+        }
+        "resize" => {
+            let cols = parsed.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
+            let rows = parsed.get("rows").and_then(|v| v.as_u64()).unwrap_or(40) as u16;
+            let session = parsed.get("session").and_then(|v| v.as_str());
+            let _ = app
+                .daemon_client
+                .send(&DaemonRequest::Resize {
+                    client_id: client_id.to_string(),
+                    session: session.map(|s| s.to_string()),
+                    cols,
+                    rows,
+                })
+                .await;
+        }
+        _ => {
+            tracing::debug!("unknown DC message type: {}", msg_type);
+        }
+    }
 }

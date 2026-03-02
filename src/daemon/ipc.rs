@@ -185,86 +185,7 @@ pub async fn handle_request(
             name,
             cols,
             rows,
-        } => {
-            let backend = state.create_backend(&name, cols, rows).await;
-
-            match backend {
-                Ok(backend) => {
-                    let session = Session::new(name.clone(), backend);
-                    let session_name = session.name.clone();
-
-                    // Spawn output reader task
-                    let output_tx = state.output_tx.clone();
-                    let reader_name = session_name.clone();
-                    let state_ref = state.clone();
-
-                    let mut sessions = state.sessions.lock().await;
-                    sessions.insert(name.clone(), session);
-
-                    // Extract backend reader channel and shared name, then drop the lock
-                    let rx = sessions
-                        .get_mut(&name)
-                        .and_then(|s| s.backend.take_reader());
-                    let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
-                    drop(sessions);
-
-                    if let Some(mut rx) = rx {
-                        tokio::spawn(async move {
-                            while let Some(data) = rx.recv().await {
-                                let current_name = shared_name
-                                    .as_ref()
-                                    .map(|sn| sn.lock().unwrap().clone())
-                                    .unwrap_or_else(|| reader_name.clone());
-
-                                // Write to ring buffer so attach can replay history
-                                {
-                                    let mut sessions = state_ref.sessions.lock().await;
-                                    if let Some(s) = sessions.get_mut(&current_name) {
-                                        s.buffer.push(data.clone());
-                                    }
-                                }
-                                let _ = output_tx.send(OutputEvent::Output {
-                                    session: current_name,
-                                    data,
-                                });
-                            }
-
-                            // PTY output ended — mark session as exited and broadcast
-                            let current_name = shared_name
-                                .as_ref()
-                                .map(|sn| sn.lock().unwrap().clone())
-                                .unwrap_or_else(|| reader_name.clone());
-
-                            let code = {
-                                let mut sessions = state_ref.sessions.lock().await;
-                                if let Some(s) = sessions.get_mut(&current_name) {
-                                    let code = s.backend.try_exit_code().unwrap_or(0);
-                                    s.mark_exited(code);
-                                    Some(code)
-                                } else {
-                                    None
-                                }
-                            };
-                            if let Some(code) = code {
-                                let _ = output_tx.send(OutputEvent::Exit {
-                                    session: current_name,
-                                    code,
-                                });
-                            }
-                        });
-                    }
-
-                    Some(DaemonResponse::SessionCreated {
-                        id,
-                        name: session_name,
-                    })
-                }
-                Err(e) => Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to create session: {}", e),
-                }),
-            }
-        }
+        } => handle_create_session(state, id, name, cols, rows).await,
 
         DaemonRequest::Attach {
             id,
@@ -432,5 +353,89 @@ pub async fn handle_request(
             }
             None
         }
+    }
+}
+
+/// Create a PTY session and spawn its output reader task.
+async fn handle_create_session(
+    state: &Arc<DaemonState>,
+    id: String,
+    name: String,
+    cols: u16,
+    rows: u16,
+) -> Option<DaemonResponse> {
+    let backend = state.create_backend(&name, cols, rows).await;
+
+    match backend {
+        Ok(backend) => {
+            let session = Session::new(name.clone(), backend);
+            let session_name = session.name.clone();
+
+            let output_tx = state.output_tx.clone();
+            let reader_name = session_name.clone();
+            let state_ref = state.clone();
+
+            let mut sessions = state.sessions.lock().await;
+            sessions.insert(name.clone(), session);
+
+            let rx = sessions
+                .get_mut(&name)
+                .and_then(|s| s.backend.take_reader());
+            let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
+            drop(sessions);
+
+            if let Some(mut rx) = rx {
+                tokio::spawn(async move {
+                    while let Some(data) = rx.recv().await {
+                        let current_name = shared_name
+                            .as_ref()
+                            .map(|sn| sn.lock().unwrap().clone())
+                            .unwrap_or_else(|| reader_name.clone());
+
+                        {
+                            let mut sessions = state_ref.sessions.lock().await;
+                            if let Some(s) = sessions.get_mut(&current_name) {
+                                s.buffer.push(data.clone());
+                            }
+                        }
+                        let _ = output_tx.send(OutputEvent::Output {
+                            session: current_name,
+                            data,
+                        });
+                    }
+
+                    let current_name = shared_name
+                        .as_ref()
+                        .map(|sn| sn.lock().unwrap().clone())
+                        .unwrap_or_else(|| reader_name.clone());
+
+                    let code = {
+                        let mut sessions = state_ref.sessions.lock().await;
+                        if let Some(s) = sessions.get_mut(&current_name) {
+                            let code = s.backend.try_exit_code().unwrap_or(0);
+                            s.mark_exited(code);
+                            Some(code)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(code) = code {
+                        let _ = output_tx.send(OutputEvent::Exit {
+                            session: current_name,
+                            code,
+                        });
+                    }
+                });
+            }
+
+            Some(DaemonResponse::SessionCreated {
+                id,
+                name: session_name,
+            })
+        }
+        Err(e) => Some(DaemonResponse::Error {
+            id,
+            error: format!("failed to create session: {}", e),
+        }),
     }
 }
