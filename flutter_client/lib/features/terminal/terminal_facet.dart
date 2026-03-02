@@ -481,42 +481,52 @@ abstract interface class TerminalSink {
   void clearGenieTransform({bool animate});
 }
 
-/// Global registry so the WS message handler can route output to the right terminal
+/// Global registry so the WS message handler can route output to the right terminal.
+/// Maintains a secondary index by session name for O(1) routing.
 class TerminalRegistry {
   TerminalRegistry._();
   static final instance = TerminalRegistry._();
 
   final Map<String, TerminalSink> _terminals = {};
 
+  /// Secondary index: session name → set of facet IDs attached to that session.
+  final Map<String, Set<String>> _sessionToFacets = {};
+
   /// Called when a new terminal finishes initializing and registers itself.
   VoidCallback? onRegistered;
 
   void register(String facetId, TerminalSink sink) {
     _terminals[facetId] = sink;
+    _sessionToFacets.putIfAbsent(sink.sessionName, () => {}).add(facetId);
     onRegistered?.call();
   }
 
   void unregister(String facetId) {
-    _terminals.remove(facetId);
+    final sink = _terminals.remove(facetId);
+    if (sink != null) {
+      final ids = _sessionToFacets[sink.sessionName];
+      ids?.remove(facetId);
+      if (ids != null && ids.isEmpty) _sessionToFacets.remove(sink.sessionName);
+    }
   }
 
   /// Write data to all terminals matching a session name (main + mirrors).
   void writeToSession(String sessionName, String data) {
-    for (final sink in _terminals.values) {
-      if (sink.sessionName == sessionName) {
-        sink.writeData(data);
-      }
+    final ids = _sessionToFacets[sessionName];
+    if (ids == null) return;
+    for (final id in ids) {
+      _terminals[id]?.writeData(data);
     }
   }
 
-  /// Write data to all terminals (fallback)
+  /// Write data to all terminals (fallback).
   void writeToAll(String data) {
     for (final sink in _terminals.values) {
       sink.writeData(data);
     }
   }
 
-  /// Toggle search on a specific facet
+  /// Toggle search on a specific facet.
   void toggleSearchOnFacet(String facetId) {
     _terminals[facetId]?.toggleSearch();
   }
@@ -534,10 +544,11 @@ class TerminalRegistry {
   /// Plain-text viewport content from the primary (non-mirror) terminal
   /// for a given session. Used to populate mirrors on creation.
   String? getBufferContentForSession(String sessionName) {
-    for (final sink in _terminals.values) {
-      if (sink.sessionName == sessionName && !sink.isMirror) {
-        return sink.getBufferContent();
-      }
+    final ids = _sessionToFacets[sessionName];
+    if (ids == null) return null;
+    for (final id in ids) {
+      final sink = _terminals[id];
+      if (sink != null && !sink.isMirror) return sink.getBufferContent();
     }
     return null;
   }
