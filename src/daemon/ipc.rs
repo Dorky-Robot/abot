@@ -446,3 +446,84 @@ async fn handle_create_session(
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_session_some() {
+        assert_eq!(
+            resolve_session(Some("main".to_string())),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_session_none() {
+        assert_eq!(resolve_session(None), None);
+    }
+
+    #[test]
+    fn test_daemon_request_serializes_roundtrip() {
+        let req = DaemonRequest::ListSessions {
+            id: "abc".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonRequest::ListSessions { id } => assert_eq!(id, "abc"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_input_serde() {
+        let req = DaemonRequest::Input {
+            client_id: "c1".to_string(),
+            session: Some("main".to_string()),
+            data: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"input""#));
+        assert!(json.contains(r#""clientId":"c1""#));
+
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonRequest::Input {
+                client_id,
+                session,
+                data,
+            } => {
+                assert_eq!(client_id, "c1");
+                assert_eq!(session, Some("main".to_string()));
+                assert_eq!(data, "hello");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_ping_serde() {
+        let req = DaemonRequest::Ping {
+            id: "p1".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"ping""#));
+
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonRequest::Ping { id } => assert_eq!(id, "p1"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_pong_serializes() {
+        let resp = DaemonResponse::Pong {
+            id: "p1".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""id":"p1""#));
+    }
+}
