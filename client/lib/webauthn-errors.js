@@ -10,17 +10,17 @@
  * @returns {{ supported: boolean, error?: string }} Support status and error message if not supported
  */
 export function checkWebAuthnSupport() {
-  if (!window.PublicKeyCredential) {
-    return {
-      supported: false,
-      error: "WebAuthn not supported. Please use a modern browser (Chrome, Safari, Firefox, Edge)."
-    };
-  }
-
   if (!window.isSecureContext) {
     return {
       supported: false,
-      error: "Secure context required. Please use HTTPS or localhost."
+      error: "Passkeys require a secure connection (HTTPS). You're accessing this page over plain HTTP.\n\nTo fix this, expose abot over HTTPS using a reverse proxy — Cloudflare Tunnel (free) or ngrok work well for self-hosted setups. Alternatively, access via localhost or an SSH tunnel."
+    };
+  }
+
+  if (!window.PublicKeyCredential) {
+    return {
+      supported: false,
+      error: "Passkeys are not supported in this browser. Please use a modern browser (Chrome, Safari, Firefox, Edge)."
     };
   }
 
