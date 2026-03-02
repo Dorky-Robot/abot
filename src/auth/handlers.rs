@@ -13,6 +13,14 @@ use super::tokens;
 use crate::error::AppError;
 use crate::server::AppState;
 
+/// How the client is connecting — determines auth requirements and UI hints.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessMethod {
+    Localhost,
+    Internet,
+}
+
 /// GET /auth/status — is the system set up? what access method?
 pub async fn status(
     State(app): State<Arc<AppState>>,
@@ -44,7 +52,7 @@ pub async fn status(
 
     Ok(Json(json!({
         "setup": cred_count > 0,
-        "accessMethod": if is_local { "localhost" } else { "internet" },
+        "accessMethod": if is_local { AccessMethod::Localhost } else { AccessMethod::Internet },
         "authenticated": authenticated,
     })))
 }
