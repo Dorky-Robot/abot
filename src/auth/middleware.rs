@@ -70,7 +70,7 @@ pub(crate) fn require_auth(
                 .db
                 .lock()
                 .map_err(|e| AppError::Internal(e.to_string()))?;
-            state::validate_session(&db, &token)?
+            state::validate_auth_grant(&db, &token)?
         } else {
             false
         };
@@ -134,7 +134,7 @@ pub fn get_session_csrf(app: &AppState, headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
     let token = get_session_token(cookie)?;
     let db = app.auth.db.lock().ok()?;
-    let row = state::get_session(&db, &token).ok()??;
+    let row = state::get_auth_grant(&db, &token).ok()??;
     Some(row.csrf_token)
 }
 

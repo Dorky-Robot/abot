@@ -56,7 +56,7 @@ pub async fn ws_upgrade(
         if let Some(token) = middleware::get_session_token(cookie) {
             let db = app.auth.db.lock().ok();
             db.and_then(|db| {
-                auth_state::get_session_credential_id(&db, &token)
+                auth_state::get_auth_grant_credential_id(&db, &token)
                     .ok()
                     .flatten()
             })

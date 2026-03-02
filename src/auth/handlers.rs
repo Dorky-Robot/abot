@@ -33,7 +33,7 @@ pub async fn status(
 
         let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
         let valid = if let Some(token) = middleware::get_session_token(cookie) {
-            state::validate_session(&db, &token)?
+            state::validate_auth_grant(&db, &token)?
         } else {
             false
         };
@@ -227,7 +227,7 @@ pub async fn register_verify(
             user_agent,
             setup_token_id.as_deref(),
         )?;
-        state::create_session(&db, &session_token, &cred_id, &csrf_token, expiry)?;
+        state::create_auth_grant(&db, &session_token, &cred_id, &csrf_token, expiry)?;
     }
 
     let host = headers.get("host").and_then(|v| v.to_str().ok());
@@ -350,7 +350,7 @@ pub async fn login_verify(
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
         state::update_credential_counter(&db, &cred_id, auth_result.counter())?;
-        state::create_session(&db, &session_token, &cred_id, &csrf_token, expiry)?;
+        state::create_auth_grant(&db, &session_token, &cred_id, &csrf_token, expiry)?;
     }
 
     let host = headers.get("host").and_then(|v| v.to_str().ok());
@@ -378,7 +378,7 @@ pub async fn logout(
             .db
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        state::delete_session(&db, &token)?;
+        state::delete_auth_grant(&db, &token)?;
     }
 
     let cookie = middleware::clear_session_cookie();
@@ -410,7 +410,7 @@ fn revoke_credential(
             "cannot delete last credential remotely".into(),
         ));
     }
-    state::delete_sessions_for_credential(db, credential_id)?;
+    state::delete_auth_grants_for_credential(db, credential_id)?;
     state::delete_credential(db, credential_id)?;
     Ok(())
 }
