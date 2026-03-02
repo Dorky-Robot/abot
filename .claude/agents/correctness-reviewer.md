@@ -43,6 +43,7 @@ You review code changes for logic errors and correctness issues. You focus exclu
 - Ring buffer at capacity (5000 items or 5MB) — does eviction work correctly?
 - Session create when daemon is unreachable — error path clean?
 - WebSocket message received after client removed from `ClientTracker`
+- `abot token` CLI operations when database is locked or corrupted
 
 ### Resource leaks
 - WebRTC peers not destroyed on client disconnect (check `handler.rs` cleanup path)

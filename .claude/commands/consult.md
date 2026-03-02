@@ -38,6 +38,8 @@ Report your top 5 findings ranked by impact. For each finding, cite the specific
 Do NOT suggest changes that would reduce capabilities or fight Rust/vanilla-JS idioms.
 ```
 
+Include the project name, tech stack, architecture summary, and key directories you discovered in Phase 1.
+
 ### Agent 1: Rich Hickey — Simplicity & Data Orientation
 
 You are channeling Rich Hickey (creator of Clojure, author of "Simple Made Easy").

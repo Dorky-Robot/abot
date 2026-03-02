@@ -35,13 +35,17 @@ pub struct DaemonState {
     pub client_attachments: Mutex<HashMap<String, HashSet<String>>>,
     /// Which backend to use for new sessions
     pub backend_kind: BackendKind,
+    /// Environment variables to inject into agent containers (used by Docker backend).
+    /// Wrapped in Mutex so the server can update it at runtime via IPC.
+    #[cfg_attr(not(feature = "docker"), allow(dead_code))]
+    pub agent_env: Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
     /// Create a session backend based on the configured kind
     pub async fn create_backend(
         &self,
-        _name: &str,
+        #[allow(unused_variables)] name: &str,
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<Box<dyn SessionBackend>> {
@@ -55,7 +59,14 @@ impl DaemonState {
             BackendKind::Docker => {
                 #[cfg(feature = "docker")]
                 {
-                    let backend = docker::DockerBackend::spawn(cols, rows).await?;
+                    let env: Vec<String> = self
+                        .agent_env
+                        .lock()
+                        .await
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect();
+                    let backend = docker::DockerBackend::spawn(name, cols, rows, env).await?;
                     Ok(Box::new(backend))
                 }
                 #[cfg(not(feature = "docker"))]
@@ -105,12 +116,19 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     let backend_kind = detect_backend().await;
     tracing::info!("session backend: {:?}", backend_kind);
 
+    // Collect environment variables to inject into agent containers
+    let mut agent_env = HashMap::new();
+    if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+        agent_env.insert("ANTHROPIC_API_KEY".into(), key);
+    }
+
     let state = Arc::new(DaemonState {
         sessions: Mutex::new(HashMap::new()),
         _data_dir: data_dir.to_path_buf(),
         output_tx,
         client_attachments: Mutex::new(HashMap::new()),
         backend_kind,
+        agent_env: Mutex::new(agent_env),
     });
 
     loop {

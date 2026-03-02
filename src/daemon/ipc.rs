@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::session::Session;
@@ -88,6 +89,14 @@ pub enum DaemonRequest {
         session: Option<String>,
     },
 
+    /// RPC: update environment variables injected into agent containers
+    #[serde(rename = "update-agent-env")]
+    UpdateAgentEnv {
+        id: String,
+        /// key→Some(val) to set, key→None to remove
+        env: HashMap<String, Option<String>>,
+    },
+
     /// RPC: health check
     #[serde(rename = "ping")]
     Ping { id: String },
@@ -131,6 +140,9 @@ pub enum DaemonResponse {
     SessionDetail {
         id: String,
         session: serde_json::Value,
+    },
+    EnvUpdated {
+        id: String,
     },
     Pong {
         id: String,
@@ -347,6 +359,22 @@ pub async fn handle_request(
                 attachments.remove(&client_id);
             }
             None
+        }
+
+        DaemonRequest::UpdateAgentEnv { id, env } => {
+            let mut agent_env = state.agent_env.lock().await;
+            for (key, value) in env {
+                match value {
+                    Some(val) => {
+                        agent_env.insert(key, val);
+                    }
+                    None => {
+                        agent_env.remove(&key);
+                    }
+                }
+            }
+            tracing::info!("agent_env updated ({} entries)", agent_env.len());
+            Some(DaemonResponse::EnvUpdated { id })
         }
 
         DaemonRequest::Ping { id } => Some(DaemonResponse::Pong { id }),

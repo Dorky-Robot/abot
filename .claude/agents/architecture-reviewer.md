@@ -12,7 +12,7 @@ You review code changes for architectural correctness. You focus exclusively on 
 The project has clear separation of concerns between daemon, server, and browser client:
 
 ```
-src/main.rs         CLI entry (start, daemon, serve, update subcommands)
+src/main.rs         CLI entry (start, daemon, serve, update, token subcommands)
 src/error.rs        AppError enum -> HTTP response mapping
 src/pid.rs          PID file management, process liveness checks
 
@@ -37,7 +37,7 @@ src/server/
 src/auth/
   mod.rs            AuthState (db, webauthn, challenges, lockout)
   state.rs          SQLite schema + CRUD (users, credentials, sessions, setup_tokens, config)
-  handlers.rs       /auth/* route handlers (register, login, logout, tokens, status)
+  handlers.rs       /auth/* route handlers (register, login, logout, tokens, status, OAuth)
   middleware.rs      require_auth(), is_local_request(), CSRF, cookie helpers
   webauthn_config.rs  Webauthn instance builder (localhost detection)
   tokens.rs         Argon2 hash/verify, random token generation
@@ -70,6 +70,7 @@ client/             Vanilla JS canvas-rendered frontend
 - **Wire protocol** — Browser-server messages use dot-notation tags (`session.attach`, `session.input`, `p2p.signal`). New message types must follow this convention in both `ClientMessage`/`ServerMessage` enums (`src/stream/messages.rs`) and the JS handlers (`client/lib/websocket-connection.js`).
 - **Facet/session separation** — The server knows about sessions (PTY processes). The client knows about facets (visual panels with z-order, positioning, focus). This boundary must not be crossed — the server should never store or process facet layout, z-order, or focus state. The client tags input with session IDs based on which facet has focus. The facet manager (`client/lib/facet-manager.js`) is purely client-side.
 - **REST vs WebSocket** — Session CRUD operations (list, create, delete, rename) go through REST endpoints in `src/server/sessions.rs`. Real-time session I/O (attach, input, output, resize) goes through WebSocket in `src/stream/`. Don't mix these concerns.
+- **CLI subcommands** — `src/main.rs` handles `start`, `daemon`, `serve`, `update`, and `token` subcommands. CLI logic should parse args and delegate to library functions. Business logic belongs in the relevant module (auth, daemon, server), not in `main.rs`.
 - **Ripple effects** — Based on the related files, will this change break anything that imports or calls into the changed code? Are there callers that need updating but weren't touched? Check both Rust imports and JS imports.
 - **API contracts** — Are `pub` exports clean? Does a module expose something it shouldn't, or fail to expose something callers need? Prefer `pub(crate)` for internal helpers. Check that `AppState`, `AuthState`, and `DaemonState` don't grow unbounded public surface.
 
