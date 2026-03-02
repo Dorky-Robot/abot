@@ -179,17 +179,40 @@ Group into tiers:
 - **Tier 3: Structural improvements** — decomposition, extraction, protocol simplification. Medium effort, high long-term value.
 - **Tier 4: Architectural evolution** — cross-cutting changes that touch multiple subsystems. Needs careful sequencing.
 
-Present the plan to the user for review before proceeding.
+## Phase 5: Present Plan and Get Feedback
 
-## Phase 5: Execute
+**STOP HERE and present the plan to the user before doing any implementation.**
 
-Work through the plan tier by tier. For each phase within a tier:
+Output the full execution plan as a numbered list grouped by tier. For each item, show:
+1. The title and a one-line summary
+2. Which files it touches
+3. Which agents motivated it (e.g., "Armstrong #1, Lamport #2")
 
+Then use `AskUserQuestion` to ask the user:
+- "How should I proceed with this plan?" with options:
+  - **Execute all** — implement every tier, commit after each phase, run `/ship-it` at the end
+  - **Execute Tier 1-2 only** — critical fixes and type safety only, defer structural/architectural work
+  - **Let me adjust first** — user wants to modify the plan before execution
+
+If the user chooses "Let me adjust first", wait for their edits and re-present the updated plan. Do NOT proceed to Phase 6 until the user approves.
+
+## Phase 6: Execute
+
+Once the user approves, work through the approved plan tier by tier.
+
+For each phase within a tier:
 1. **Announce** — state which phase you're starting and what it does
 2. **Implement** — make the changes
 3. **Verify** — run `cargo test`, `cargo clippy`, `flutter analyze` as appropriate
-4. **Checkpoint** — commit the changes with a message referencing the consultation (e.g., "fix(daemon): wire PTY exit detection [consult: Armstrong #1, Lamport #2]")
+4. **Checkpoint** — commit the changes with a descriptive message
 
 After completing each tier, briefly summarize what was done and confirm all tests still pass before moving to the next tier.
 
 If a phase turns out to be larger or riskier than expected during implementation, stop, explain why, and ask whether to continue or defer it.
+
+## Phase 7: Ship
+
+After all approved tiers are complete:
+1. Build the Flutter client: `cd flutter_client && flutter build web --wasm`
+2. Build and test Rust: `cargo test`
+3. Create a feature branch, commit all work, and run `/ship-it` to push, review, and merge.

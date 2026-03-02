@@ -1,25 +1,21 @@
-use axum::extract::{ConnectInfo, Path, State};
-use axum::http::HeaderMap;
+use axum::extract::{Path, State};
 use axum::Json;
 use serde_json::json;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::auth::middleware;
+use crate::auth::middleware::{Authenticated, CsrfVerified};
+use crate::daemon::ipc::DaemonRequest;
 use crate::error::AppError;
 use crate::server::AppState;
 
 /// GET /sessions — list all sessions
 pub async fn list_sessions(
+    _auth: Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-
     let resp = app
         .daemon_client
-        .rpc(json!({ "type": "list-sessions" }))
+        .rpc(DaemonRequest::ListSessions { id: String::new() })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -30,13 +26,10 @@ pub async fn list_sessions(
 
 /// POST /sessions — create a new session
 pub async fn create_session(
+    _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -45,12 +38,12 @@ pub async fn create_session(
 
     let resp = app
         .daemon_client
-        .rpc(json!({
-            "type": "create-session",
-            "name": name,
-            "cols": 120,
-            "rows": 40,
-        }))
+        .rpc(DaemonRequest::CreateSession {
+            id: String::new(),
+            name: name.clone(),
+            cols: 120,
+            rows: 40,
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -64,16 +57,16 @@ pub async fn create_session(
 
 /// GET /sessions/:name — get session info
 pub async fn get_session(
+    _auth: Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-
     let resp = app
         .daemon_client
-        .rpc(json!({ "type": "get-session", "name": name }))
+        .rpc(DaemonRequest::GetSession {
+            id: String::new(),
+            name: name.clone(),
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -92,14 +85,11 @@ pub async fn get_session(
 
 /// PUT /sessions/:name — rename a session
 pub async fn rename_session(
+    _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(old_name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-
     let new_name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -107,11 +97,11 @@ pub async fn rename_session(
 
     let resp = app
         .daemon_client
-        .rpc(json!({
-            "type": "rename-session",
-            "oldName": old_name,
-            "newName": new_name,
-        }))
+        .rpc(DaemonRequest::RenameSession {
+            id: String::new(),
+            old_name: old_name.clone(),
+            new_name: new_name.to_string(),
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -124,19 +114,16 @@ pub async fn rename_session(
 
 /// DELETE /sessions/:name — delete a session
 pub async fn delete_session(
+    _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-
     let resp = app
         .daemon_client
-        .rpc(json!({
-            "type": "delete-session",
-            "name": name,
-        }))
+        .rpc(DaemonRequest::DeleteSession {
+            id: String::new(),
+            name: name.clone(),
+        })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 

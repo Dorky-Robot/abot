@@ -5,7 +5,7 @@ use super::session::Session;
 use super::DaemonState;
 
 /// Messages from server to daemon
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[allow(dead_code)]
 pub enum DaemonRequest {
@@ -78,12 +78,19 @@ pub enum DaemonRequest {
         rows: u16,
     },
 
-    /// Fire-and-forget: detach a client
+    /// Fire-and-forget: detach a client from one or all sessions
     #[serde(rename = "detach")]
     Detach {
         #[serde(rename = "clientId")]
         client_id: String,
+        /// If set, detach from this specific session; otherwise detach from all
+        #[serde(default)]
+        session: Option<String>,
     },
+
+    /// RPC: health check
+    #[serde(rename = "ping")]
+    Ping { id: String },
 }
 
 fn default_cols() -> u16 {
@@ -125,6 +132,9 @@ pub enum DaemonResponse {
         id: String,
         session: serde_json::Value,
     },
+    Pong {
+        id: String,
+    },
     Error {
         id: String,
         error: String,
@@ -144,20 +154,6 @@ pub enum OutputEvent {
 
     #[serde(rename = "session-removed")]
     SessionRemoved { session: String },
-}
-
-/// Resolve session name: use explicit name if provided, otherwise fall back to client attachment.
-async fn resolve_session(
-    state: &Arc<DaemonState>,
-    client_id: &str,
-    explicit: Option<String>,
-) -> Option<String> {
-    if let Some(s) = explicit {
-        Some(s)
-    } else {
-        let attachments = state.client_attachments.lock().await;
-        attachments.get(client_id).cloned()
-    }
 }
 
 pub async fn handle_request(
@@ -190,76 +186,7 @@ pub async fn handle_request(
             name,
             cols,
             rows,
-        } => {
-            let backend = state.create_backend(&name, cols, rows).await;
-
-            match backend {
-                Ok(backend) => {
-                    let session = Session::new(name.clone(), backend);
-                    let session_name = session.name.clone();
-
-                    // Spawn output reader task
-                    let output_tx = state.output_tx.clone();
-                    let reader_name = session_name.clone();
-                    let state_ref = state.clone();
-
-                    let mut sessions = state.sessions.lock().await;
-                    sessions.insert(name.clone(), session);
-
-                    // Extract backend reader channel, then drop the lock
-                    let rx = sessions
-                        .get_mut(&name)
-                        .and_then(|s| s.backend.take_reader());
-                    drop(sessions);
-
-                    if let Some(mut rx) = rx {
-                        let buffer_name = name.clone();
-                        tokio::spawn(async move {
-                            while let Some(data) = rx.recv().await {
-                                // Write to ring buffer so attach can replay history
-                                {
-                                    let mut sessions = state_ref.sessions.lock().await;
-                                    if let Some(s) = sessions.get_mut(&buffer_name) {
-                                        s.buffer.push(data.clone());
-                                    }
-                                }
-                                let _ = output_tx.send(OutputEvent::Output {
-                                    session: reader_name.clone(),
-                                    data,
-                                });
-                            }
-
-                            // PTY output ended — mark session as exited and broadcast
-                            let code = {
-                                let mut sessions = state_ref.sessions.lock().await;
-                                if let Some(s) = sessions.get_mut(&buffer_name) {
-                                    let code = s.backend.try_exit_code().unwrap_or(0);
-                                    s.mark_exited(code);
-                                    Some(code)
-                                } else {
-                                    None
-                                }
-                            };
-                            if let Some(code) = code {
-                                let _ = output_tx.send(OutputEvent::Exit {
-                                    session: reader_name.clone(),
-                                    code,
-                                });
-                            }
-                        });
-                    }
-
-                    Some(DaemonResponse::SessionCreated {
-                        id,
-                        name: session_name,
-                    })
-                }
-                Err(e) => Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to create session: {}", e),
-                }),
-            }
-        }
+        } => handle_create_session(state, id, name, cols, rows).await,
 
         DaemonRequest::Attach {
             id,
@@ -268,10 +195,13 @@ pub async fn handle_request(
             cols: _,
             rows: _,
         } => {
-            // Record the client→session mapping
+            // Record the client→session mapping (additive — supports multi-session)
             {
                 let mut attachments = state.client_attachments.lock().await;
-                attachments.insert(client_id, session.clone());
+                attachments
+                    .entry(client_id)
+                    .or_default()
+                    .insert(session.clone());
             }
 
             let sessions = state.sessions.lock().await;
@@ -321,14 +251,16 @@ pub async fn handle_request(
             }
             if let Some(mut session) = sessions.remove(&old_name) {
                 session.name = new_name.clone();
+                // Update the shared name so background relay tasks use the new name
+                *session.shared_name.lock().unwrap() = new_name.clone();
                 sessions.insert(new_name.clone(), session);
 
                 // Update client attachments that point to old name
                 drop(sessions);
                 let mut attachments = state.client_attachments.lock().await;
-                for (_client_id, attached_session) in attachments.iter_mut() {
-                    if attached_session == &old_name {
-                        *attached_session = new_name.clone();
+                for (_client_id, attached_sessions) in attachments.iter_mut() {
+                    if attached_sessions.remove(&old_name) {
+                        attached_sessions.insert(new_name.clone());
                     }
                 }
 
@@ -351,9 +283,7 @@ pub async fn handle_request(
             session,
             data,
         } => {
-            let session_name = resolve_session(state, &client_id, session).await;
-
-            if let Some(session_name) = session_name {
+            if let Some(session_name) = session {
                 let mut sessions = state.sessions.lock().await;
                 if let Some(session) = sessions.get_mut(&session_name) {
                     if session.is_alive() {
@@ -390,14 +320,12 @@ pub async fn handle_request(
         }
 
         DaemonRequest::Resize {
-            client_id,
+            client_id: _,
             session,
             cols,
             rows,
         } => {
-            let session_name = resolve_session(state, &client_id, session).await;
-
-            if let Some(session_name) = session_name {
+            if let Some(session_name) = session {
                 let mut sessions = state.sessions.lock().await;
                 if let Some(session) = sessions.get_mut(&session_name) {
                     let _ = session.resize(cols, rows);
@@ -406,10 +334,173 @@ pub async fn handle_request(
             None
         }
 
-        DaemonRequest::Detach { client_id } => {
+        DaemonRequest::Detach { client_id, session } => {
             let mut attachments = state.client_attachments.lock().await;
-            attachments.remove(&client_id);
+            if let Some(session_name) = session {
+                if let Some(sessions) = attachments.get_mut(&client_id) {
+                    sessions.remove(&session_name);
+                    if sessions.is_empty() {
+                        attachments.remove(&client_id);
+                    }
+                }
+            } else {
+                attachments.remove(&client_id);
+            }
             None
         }
+
+        DaemonRequest::Ping { id } => Some(DaemonResponse::Pong { id }),
+    }
+}
+
+/// Create a PTY session and spawn its output reader task.
+async fn handle_create_session(
+    state: &Arc<DaemonState>,
+    id: String,
+    name: String,
+    cols: u16,
+    rows: u16,
+) -> Option<DaemonResponse> {
+    let backend = state.create_backend(&name, cols, rows).await;
+
+    match backend {
+        Ok(backend) => {
+            let session = Session::new(name.clone(), backend);
+            let session_name = session.name.clone();
+
+            let output_tx = state.output_tx.clone();
+            let reader_name = session_name.clone();
+            let state_ref = state.clone();
+
+            let mut sessions = state.sessions.lock().await;
+            sessions.insert(name.clone(), session);
+
+            let rx = sessions
+                .get_mut(&name)
+                .and_then(|s| s.backend.take_reader());
+            let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
+            drop(sessions);
+
+            if let Some(mut rx) = rx {
+                tokio::spawn(async move {
+                    while let Some(data) = rx.recv().await {
+                        let current_name = shared_name
+                            .as_ref()
+                            .map(|sn| sn.lock().unwrap().clone())
+                            .unwrap_or_else(|| reader_name.clone());
+
+                        {
+                            let mut sessions = state_ref.sessions.lock().await;
+                            if let Some(s) = sessions.get_mut(&current_name) {
+                                s.buffer.push(data.clone());
+                            }
+                        }
+                        let _ = output_tx.send(OutputEvent::Output {
+                            session: current_name,
+                            data,
+                        });
+                    }
+
+                    let current_name = shared_name
+                        .as_ref()
+                        .map(|sn| sn.lock().unwrap().clone())
+                        .unwrap_or_else(|| reader_name.clone());
+
+                    let code = {
+                        let mut sessions = state_ref.sessions.lock().await;
+                        if let Some(s) = sessions.get_mut(&current_name) {
+                            let code = s.backend.try_exit_code().unwrap_or(0);
+                            s.mark_exited(code);
+                            Some(code)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(code) = code {
+                        let _ = output_tx.send(OutputEvent::Exit {
+                            session: current_name,
+                            code,
+                        });
+                    }
+                });
+            }
+
+            Some(DaemonResponse::SessionCreated {
+                id,
+                name: session_name,
+            })
+        }
+        Err(e) => Some(DaemonResponse::Error {
+            id,
+            error: format!("failed to create session: {}", e),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_daemon_request_serializes_roundtrip() {
+        let req = DaemonRequest::ListSessions {
+            id: "abc".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonRequest::ListSessions { id } => assert_eq!(id, "abc"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_input_serde() {
+        let req = DaemonRequest::Input {
+            client_id: "c1".to_string(),
+            session: Some("main".to_string()),
+            data: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"input""#));
+        assert!(json.contains(r#""clientId":"c1""#));
+
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonRequest::Input {
+                client_id,
+                session,
+                data,
+            } => {
+                assert_eq!(client_id, "c1");
+                assert_eq!(session, Some("main".to_string()));
+                assert_eq!(data, "hello");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_ping_serde() {
+        let req = DaemonRequest::Ping {
+            id: "p1".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""type":"ping""#));
+
+        let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonRequest::Ping { id } => assert_eq!(id, "p1"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_pong_serializes() {
+        let resp = DaemonResponse::Pong {
+            id: "p1".to_string(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""id":"p1""#));
     }
 }

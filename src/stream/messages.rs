@@ -1,57 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-/// Messages from browser client to server
-/// Supports both abot's namespaced protocol (session.input) and
-/// flat protocol (input, attach, resize) for backwards compatibility
+/// Messages from browser client to server (flat protocol)
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
-    // --- Namespaced protocol (abot native) ---
-    #[serde(rename = "session.create")]
-    SessionCreate {
-        kind: String,
-        #[serde(default)]
-        config: serde_json::Value,
-    },
-
-    #[serde(rename = "session.attach")]
-    SessionAttach {
-        id: String,
-        #[serde(default)]
-        viewport: Option<Viewport>,
-    },
-
-    #[serde(rename = "session.input")]
-    SessionInput { id: String, data: String },
-
-    #[serde(rename = "session.resize")]
-    SessionResize { id: String, cols: u16, rows: u16 },
-
-    #[serde(rename = "session.detach")]
-    SessionDetach { id: String },
-
-    #[serde(rename = "session.destroy")]
-    SessionDestroy { id: String },
-
-    #[serde(rename = "session.list")]
-    SessionList,
-
-    #[serde(rename = "p2p.signal")]
-    P2pSignal { data: serde_json::Value },
-
-    // --- Flat protocol (backwards compatibility) ---
-    /// Flat: { type: "input", data: "..." }
-    #[serde(rename = "input")]
-    FlatInput {
-        data: String,
-        /// Optional session name for multi-session routing
-        #[serde(default)]
-        session: Option<String>,
-    },
-
-    /// Flat: { type: "attach", session: "name", cols: N, rows: N }
     #[serde(rename = "attach")]
-    FlatAttach {
+    Attach {
         session: String,
         #[serde(default = "default_cols")]
         cols: u16,
@@ -59,28 +13,31 @@ pub enum ClientMessage {
         rows: u16,
     },
 
-    /// Flat: { type: "resize", cols: N, rows: N }
+    #[serde(rename = "input")]
+    Input {
+        data: String,
+        #[serde(default)]
+        session: Option<String>,
+    },
+
     #[serde(rename = "resize")]
-    FlatResize {
+    Resize {
         #[serde(default = "default_cols")]
         cols: u16,
         #[serde(default = "default_rows")]
         rows: u16,
-        /// Optional session name for multi-session routing
         #[serde(default)]
         session: Option<String>,
     },
 
-    /// Detach from a specific session (facet close)
     #[serde(rename = "detach")]
-    FlatDetach {
+    Detach {
         #[serde(default)]
         session: Option<String>,
     },
 
-    /// P2P signaling (flat protocol)
     #[serde(rename = "p2p-signal")]
-    FlatP2pSignal { data: serde_json::Value },
+    P2pSignal { data: serde_json::Value },
 }
 
 fn default_cols() -> u16 {
@@ -90,46 +47,40 @@ fn default_rows() -> u16 {
     40
 }
 
-#[derive(Debug, Deserialize)]
-pub struct Viewport {
-    pub cols: u16,
-    pub rows: u16,
-}
-
 /// Messages from server to browser client
-/// Supports both namespaced (session.output) and flat (output) variants
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum ServerMessage {
-    // --- Namespaced protocol (abot native) ---
-    #[serde(rename = "session.created")]
-    SessionCreated { id: String, kind: String },
+    #[serde(rename = "attached")]
+    Attached { session: String, buffer: String },
 
-    #[serde(rename = "session.attached")]
-    SessionAttached { id: String, buffer: String },
+    #[serde(rename = "output")]
+    Output {
+        data: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
 
-    #[serde(rename = "session.output")]
-    SessionOutput { id: String, data: String },
+    #[serde(rename = "exit")]
+    Exit {
+        code: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
 
-    #[serde(rename = "session.exit")]
-    SessionExit { id: String, code: u32 },
+    #[serde(rename = "session-removed")]
+    SessionRemoved { session: String },
 
-    #[serde(rename = "session.removed")]
-    SessionRemoved { id: String },
-
-    #[serde(rename = "session.list")]
-    SessionListReply { sessions: Vec<serde_json::Value> },
-
-    #[serde(rename = "p2p.signal")]
+    #[serde(rename = "p2p-signal")]
     P2pSignal { data: serde_json::Value },
 
-    #[serde(rename = "p2p.ready")]
+    #[serde(rename = "p2p-ready")]
     P2pReady,
 
-    #[serde(rename = "p2p.closed")]
+    #[serde(rename = "p2p-closed")]
     P2pClosed,
 
-    #[serde(rename = "p2p.unavailable")]
+    #[serde(rename = "p2p-unavailable")]
     P2pUnavailable,
 
     #[serde(rename = "server-draining")]
@@ -137,34 +88,127 @@ pub enum ServerMessage {
 
     #[serde(rename = "error")]
     Error { message: String },
+}
 
-    // --- Flat protocol (backwards compatibility) ---
-    #[serde(rename = "attached")]
-    FlatAttached { session: String, buffer: String },
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    #[serde(rename = "output")]
-    FlatOutput {
-        data: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session: Option<String>,
-    },
+    #[test]
+    fn test_client_attach_deserialize() {
+        let json = r#"{"type":"attach","session":"main","cols":80,"rows":24}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Attach {
+                session,
+                cols,
+                rows,
+            } => {
+                assert_eq!(session, "main");
+                assert_eq!(cols, 80);
+                assert_eq!(rows, 24);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 
-    #[serde(rename = "exit")]
-    FlatExit {
-        code: u32,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session: Option<String>,
-    },
+    #[test]
+    fn test_client_attach_defaults() {
+        let json = r#"{"type":"attach","session":"main"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Attach { cols, rows, .. } => {
+                assert_eq!(cols, 120);
+                assert_eq!(rows, 40);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 
-    #[serde(rename = "session-removed")]
-    FlatSessionRemoved { session: String },
+    #[test]
+    fn test_client_input_with_session() {
+        let json = r#"{"type":"input","data":"ls\n","session":"dev"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Input { data, session } => {
+                assert_eq!(data, "ls\n");
+                assert_eq!(session, Some("dev".to_string()));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 
-    #[serde(rename = "p2p-signal")]
-    FlatP2pSignal { data: serde_json::Value },
+    #[test]
+    fn test_client_input_without_session() {
+        let json = r#"{"type":"input","data":"x"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Input { session, .. } => {
+                assert_eq!(session, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 
-    #[serde(rename = "p2p-ready")]
-    FlatP2pReady,
+    #[test]
+    fn test_client_detach_optional_session() {
+        let json = r#"{"type":"detach"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Detach { session } => assert_eq!(session, None),
+            _ => panic!("wrong variant"),
+        }
 
-    #[serde(rename = "p2p-closed")]
-    FlatP2pClosed,
+        let json = r#"{"type":"detach","session":"s1"}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::Detach { session } => assert_eq!(session, Some("s1".to_string())),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_server_output_serializes() {
+        let msg = ServerMessage::Output {
+            data: "hello".to_string(),
+            session: Some("main".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"output""#));
+        assert!(json.contains(r#""session":"main""#));
+    }
+
+    #[test]
+    fn test_server_output_skips_none_session() {
+        let msg = ServerMessage::Output {
+            data: "x".to_string(),
+            session: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(!json.contains("session"));
+    }
+
+    #[test]
+    fn test_server_error_serializes() {
+        let msg = ServerMessage::Error {
+            message: "bad".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"error""#));
+        assert!(json.contains(r#""message":"bad""#));
+    }
+
+    #[test]
+    fn test_server_p2p_ready_serializes() {
+        let msg = ServerMessage::P2pReady;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"p2p-ready""#));
+    }
+
+    #[test]
+    fn test_unknown_type_fails_deserialization() {
+        let json = r#"{"type":"nonexistent","data":"x"}"#;
+        let result = serde_json::from_str::<ClientMessage>(json);
+        assert!(result.is_err());
+    }
 }

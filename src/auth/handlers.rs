@@ -13,6 +13,14 @@ use super::tokens;
 use crate::error::AppError;
 use crate::server::AppState;
 
+/// How the client is connecting — determines auth requirements and UI hints.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessMethod {
+    Localhost,
+    Internet,
+}
+
 /// GET /auth/status — is the system set up? what access method?
 pub async fn status(
     State(app): State<Arc<AppState>>,
@@ -33,7 +41,7 @@ pub async fn status(
 
         let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
         let valid = if let Some(token) = middleware::get_session_token(cookie) {
-            state::validate_session(&db, &token)?
+            state::validate_auth_grant(&db, &token)?
         } else {
             false
         };
@@ -44,7 +52,7 @@ pub async fn status(
 
     Ok(Json(json!({
         "setup": cred_count > 0,
-        "accessMethod": if is_local { "localhost" } else { "internet" },
+        "accessMethod": if is_local { AccessMethod::Localhost } else { AccessMethod::Internet },
         "authenticated": authenticated,
     })))
 }
@@ -227,7 +235,7 @@ pub async fn register_verify(
             user_agent,
             setup_token_id.as_deref(),
         )?;
-        state::create_session(&db, &session_token, &cred_id, &csrf_token, expiry)?;
+        state::create_auth_grant(&db, &session_token, &cred_id, &csrf_token, expiry)?;
     }
 
     let host = headers.get("host").and_then(|v| v.to_str().ok());
@@ -350,7 +358,7 @@ pub async fn login_verify(
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
         state::update_credential_counter(&db, &cred_id, auth_result.counter())?;
-        state::create_session(&db, &session_token, &cred_id, &csrf_token, expiry)?;
+        state::create_auth_grant(&db, &session_token, &cred_id, &csrf_token, expiry)?;
     }
 
     let host = headers.get("host").and_then(|v| v.to_str().ok());
@@ -378,7 +386,7 @@ pub async fn logout(
             .db
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        state::delete_session(&db, &token)?;
+        state::delete_auth_grant(&db, &token)?;
     }
 
     let cookie = middleware::clear_session_cookie();
@@ -406,20 +414,20 @@ fn revoke_credential(
 ) -> Result<(), AppError> {
     let cred_count = state::credential_count(db)?;
     if cred_count <= 1 && !is_local {
-        return Err(AppError::Forbidden);
+        return Err(AppError::Forbidden(
+            "cannot delete last credential remotely".into(),
+        ));
     }
-    state::delete_sessions_for_credential(db, credential_id)?;
+    state::delete_auth_grants_for_credential(db, credential_id)?;
     state::delete_credential(db, credential_id)?;
     Ok(())
 }
 
 /// GET /auth/tokens — list setup tokens enriched with linked credentials
 pub async fn list_tokens(
+    _auth: middleware::Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
     let db = app
         .auth
         .db
@@ -461,12 +469,10 @@ pub async fn list_tokens(
 
 /// POST /auth/tokens — create a setup token
 pub async fn create_token(
+    _csrf: middleware::CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -493,11 +499,9 @@ pub async fn create_token(
 
 /// GET /api/credentials — list all credentials
 pub async fn list_credentials(
+    _auth: middleware::Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
     let db = app
         .auth
         .db
@@ -510,15 +514,13 @@ pub async fn list_credentials(
 
 /// DELETE /auth/tokens/:id — cascade: delete linked credential + sessions + close WS
 pub async fn delete_token(
+    csrf: middleware::CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    let is_local = middleware::is_local_request(&addr, host, origin);
-    middleware::require_auth(&app, &addr, &headers)?;
+    let host = csrf.headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = csrf.headers.get("origin").and_then(|v| v.to_str().ok());
+    let is_local = middleware::is_local_request(&csrf.addr, host, origin);
 
     let credential_id_to_close = {
         let db = app
@@ -555,15 +557,13 @@ pub async fn delete_token(
 
 /// DELETE /api/credentials/:id — delete an orphaned credential + its sessions + close WS
 pub async fn delete_credential(
+    csrf: middleware::CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    let is_local = middleware::is_local_request(&addr, host, origin);
-    middleware::require_auth(&app, &addr, &headers)?;
+    let host = csrf.headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = csrf.headers.get("origin").and_then(|v| v.to_str().ok());
+    let is_local = middleware::is_local_request(&csrf.addr, host, origin);
 
     {
         let db = app

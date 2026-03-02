@@ -1,5 +1,8 @@
+use axum::extract::ConnectInfo;
+use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use super::state;
 use crate::error::AppError;
@@ -70,7 +73,7 @@ pub(crate) fn require_auth(
                 .db
                 .lock()
                 .map_err(|e| AppError::Internal(e.to_string()))?;
-            state::validate_session(&db, &token)?
+            state::validate_auth_grant(&db, &token)?
         } else {
             false
         };
@@ -128,6 +131,42 @@ pub fn validate_csrf(csrf_header: Option<&str>, expected: &str) -> bool {
     }
 }
 
+/// Look up the CSRF token for the current session (from cookie).
+/// Returns None for localhost or if no valid session exists.
+pub fn get_session_csrf(app: &AppState, headers: &HeaderMap) -> Option<String> {
+    let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
+    let token = get_session_token(cookie)?;
+    let db = app.auth.db.lock().ok()?;
+    let row = state::get_auth_grant(&db, &token).ok()??;
+    Some(row.csrf_token)
+}
+
+/// Validate CSRF for mutating requests. Call this from POST/PUT/DELETE handlers.
+/// Skips validation for localhost requests.
+pub fn require_csrf(
+    app: &AppState,
+    addr: &SocketAddr,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+
+    // Localhost is exempt from CSRF (same-origin by definition)
+    if is_local_request(addr, host, origin) {
+        return Ok(());
+    }
+
+    let csrf_header = headers.get("x-csrf-token").and_then(|v| v.to_str().ok());
+
+    let expected = get_session_csrf(app, headers).ok_or(AppError::Unauthorized)?;
+
+    if !validate_csrf(csrf_header, &expected) {
+        return Err(AppError::Forbidden("invalid CSRF token".into()));
+    }
+
+    Ok(())
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -137,6 +176,58 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+// --- Axum extractors ---
+
+/// Extractor: verifies the request is authenticated (local or valid session cookie).
+/// Use in handler signatures to replace manual `require_auth` calls.
+pub struct Authenticated {
+    pub addr: SocketAddr,
+    pub headers: HeaderMap,
+}
+
+impl axum::extract::FromRequestParts<Arc<AppState>> for Authenticated {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let ConnectInfo(addr) = ConnectInfo::<SocketAddr>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AppError::Internal("missing ConnectInfo".into()))?;
+        require_auth(state, &addr, &parts.headers)?;
+        Ok(Authenticated {
+            addr,
+            headers: parts.headers.clone(),
+        })
+    }
+}
+
+/// Extractor: verifies authentication + CSRF token. Use for mutating endpoints.
+pub struct CsrfVerified {
+    pub addr: SocketAddr,
+    pub headers: HeaderMap,
+}
+
+impl axum::extract::FromRequestParts<Arc<AppState>> for CsrfVerified {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let ConnectInfo(addr) = ConnectInfo::<SocketAddr>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AppError::Internal("missing ConnectInfo".into()))?;
+        require_auth(state, &addr, &parts.headers)?;
+        require_csrf(state, &addr, &parts.headers)?;
+        Ok(CsrfVerified {
+            addr,
+            headers: parts.headers.clone(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -174,5 +265,13 @@ mod tests {
         );
         assert_eq!(get_session_token(Some("other=val")), None);
         assert_eq!(get_session_token(None), None);
+    }
+
+    #[test]
+    fn test_csrf_validation() {
+        assert!(validate_csrf(Some("abc123"), "abc123"));
+        assert!(!validate_csrf(Some("wrong"), "abc123"));
+        assert!(!validate_csrf(None, "abc123"));
+        assert!(!validate_csrf(Some("abc"), "abc123")); // different length
     }
 }

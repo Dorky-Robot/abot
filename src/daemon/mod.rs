@@ -7,7 +7,7 @@ pub mod ring_buffer;
 pub mod session;
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -31,8 +31,8 @@ pub struct DaemonState {
     pub _data_dir: PathBuf,
     /// Broadcast channel for session output events (sent to all connected servers)
     pub output_tx: broadcast::Sender<ipc::OutputEvent>,
-    /// Client-to-session attachment mapping (clientId → session name)
-    pub client_attachments: Mutex<HashMap<String, String>>,
+    /// Client-to-session attachment mapping (clientId → set of session names)
+    pub client_attachments: Mutex<HashMap<String, HashSet<String>>>,
     /// Which backend to use for new sessions
     pub backend_kind: BackendKind,
 }

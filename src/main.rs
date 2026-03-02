@@ -80,6 +80,38 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Spawn the daemon as a detached process with setsid().
+fn spawn_daemon(data_dir: &std::path::Path) -> anyhow::Result<()> {
+    tracing::info!("spawning daemon as separate process");
+
+    let exe = std::env::current_exe()?;
+    let log_path = data_dir.join("daemon.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let stderr_file = log_file.try_clone()?;
+
+    unsafe {
+        ProcessCommand::new(&exe)
+            .arg("--data-dir")
+            .arg(data_dir)
+            .arg("daemon")
+            .stdout(log_file)
+            .stderr(stderr_file)
+            .stdin(std::process::Stdio::null())
+            .pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            })
+            .spawn()?;
+    }
+
+    Ok(())
+}
+
 async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
     let data_dir = cli.data_dir.clone();
     let addr = format!("{}:{}", cli.bind, cli.port);
@@ -88,34 +120,7 @@ async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
 
     // Check if daemon is already running via PID file
     if !pid::daemon_is_running(&data_dir) {
-        tracing::info!("spawning daemon as separate process");
-
-        let exe = std::env::current_exe()?;
-        let log_path = data_dir.join("daemon.log");
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)?;
-        let stderr_file = log_file.try_clone()?;
-
-        // Use pre_exec with setsid() to fully detach the daemon so it
-        // doesn't become a zombie when the parent (server) exits.
-        unsafe {
-            ProcessCommand::new(&exe)
-                .arg("--data-dir")
-                .arg(&data_dir)
-                .arg("daemon")
-                .stdout(log_file)
-                .stderr(stderr_file)
-                .stdin(std::process::Stdio::null())
-                .pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                })
-                .spawn()?;
-        }
+        spawn_daemon(&data_dir)?;
     } else {
         tracing::info!("daemon already running, reusing");
     }
@@ -134,6 +139,20 @@ async fn cmd_start(cli: &Cli) -> anyhow::Result<()> {
     }
 
     tracing::info!("daemon ready, starting server");
+
+    // Spawn daemon supervisor — restarts daemon if it dies
+    let supervisor_data_dir = data_dir.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if !pid::daemon_is_running(&supervisor_data_dir) {
+                tracing::warn!("daemon process died, restarting...");
+                if let Err(e) = spawn_daemon(&supervisor_data_dir) {
+                    tracing::error!("failed to restart daemon: {}", e);
+                }
+            }
+        }
+    });
 
     // Run server in foreground — daemon continues independently
     server::run(&addr, &data_dir).await

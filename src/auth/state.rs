@@ -132,9 +132,9 @@ pub fn credential_count(db: &Connection) -> Result<usize> {
     Ok(count as usize)
 }
 
-// --- Session CRUD ---
+// --- Auth Grant CRUD (browser login sessions — renamed to avoid collision with PTY sessions) ---
 
-pub fn create_session(
+pub fn create_auth_grant(
     db: &Connection,
     token: &str,
     credential_id: &str,
@@ -150,13 +150,13 @@ pub fn create_session(
     Ok(())
 }
 
-pub fn get_session(db: &Connection, token: &str) -> Result<Option<SessionRow>> {
+pub fn get_auth_grant(db: &Connection, token: &str) -> Result<Option<AuthGrantRow>> {
     let mut stmt = db.prepare(
         "SELECT token, credential_id, csrf_token, expiry, last_activity_at FROM sessions WHERE token = ?1",
     )?;
     let result = stmt
         .query_row(params![token], |row| {
-            Ok(SessionRow {
+            Ok(AuthGrantRow {
                 token: row.get(0)?,
                 credential_id: row.get(1)?,
                 csrf_token: row.get(2)?,
@@ -168,7 +168,7 @@ pub fn get_session(db: &Connection, token: &str) -> Result<Option<SessionRow>> {
     Ok(result)
 }
 
-pub fn validate_session(db: &Connection, token: &str) -> Result<bool> {
+pub fn validate_auth_grant(db: &Connection, token: &str) -> Result<bool> {
     let now = chrono::Utc::now().timestamp();
     let count: i64 = db.query_row(
         "SELECT COUNT(*) FROM sessions s
@@ -180,7 +180,7 @@ pub fn validate_session(db: &Connection, token: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
-pub fn refresh_session(db: &Connection, token: &str) -> Result<()> {
+pub fn refresh_auth_grant(db: &Connection, token: &str) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     // Extend expiry if last activity > 24h ago
     let threshold = 24 * 60 * 60;
@@ -193,12 +193,12 @@ pub fn refresh_session(db: &Connection, token: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn delete_session(db: &Connection, token: &str) -> Result<()> {
+pub fn delete_auth_grant(db: &Connection, token: &str) -> Result<()> {
     db.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
     Ok(())
 }
 
-pub fn prune_expired_sessions(db: &Connection) -> Result<()> {
+pub fn prune_expired_auth_grants(db: &Connection) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     db.execute("DELETE FROM sessions WHERE expiry < ?1", params![now])?;
     Ok(())
@@ -274,7 +274,10 @@ pub fn get_credential_for_token(db: &Connection, token_id: &str) -> Result<Optio
     Ok(result)
 }
 
-pub fn delete_sessions_for_credential(db: &Connection, credential_id: &str) -> Result<Vec<String>> {
+pub fn delete_auth_grants_for_credential(
+    db: &Connection,
+    credential_id: &str,
+) -> Result<Vec<String>> {
     let mut stmt = db.prepare("SELECT token FROM sessions WHERE credential_id = ?1")?;
     let tokens: Vec<String> = stmt
         .query_map(params![credential_id], |row| row.get::<_, String>(0))?
@@ -295,7 +298,7 @@ pub fn delete_credential(db: &Connection, credential_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn get_session_credential_id(db: &Connection, token: &str) -> Result<Option<String>> {
+pub fn get_auth_grant_credential_id(db: &Connection, token: &str) -> Result<Option<String>> {
     let mut stmt = db.prepare("SELECT credential_id FROM sessions WHERE token = ?1")?;
     let result = stmt
         .query_row(params![token], |row| row.get::<_, String>(0))
@@ -320,7 +323,7 @@ pub struct CredentialRow {
 }
 
 #[derive(Debug)]
-pub struct SessionRow {
+pub struct AuthGrantRow {
     pub token: String,
     pub credential_id: String,
     pub csrf_token: String,
