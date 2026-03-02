@@ -1,16 +1,16 @@
-Consult the masters — review the entire codebase through the lens of great software engineers. This is an expensive, comprehensive audit meant to be run occasionally, not on every change.
+Consult the masters — review the entire abot codebase through the lens of great software engineers. This is an expensive, comprehensive audit meant to be run occasionally, not on every change.
 
 ## Phase 1: Map the Codebase
 
 Thoroughly explore the full project structure. Use Glob and Grep to build a complete picture:
 
 1. **Rust backend** — `src/**/*.rs`: daemon, server, auth, stream modules
-2. **Flutter client** — `flutter_client/lib/**/*.dart`: features, core, theme, networking
-3. **Vanilla JS client** — `client/**/*.js` (if present)
-4. **Configuration** — `Cargo.toml`, `pubspec.yaml`, `CLAUDE.md`
+2. **Vanilla JS client** — `client/**/*.js`: app entry, login, facet manager, WebSocket, P2P, session manager, terminal keyboard, stores, and 30+ modular components
+3. **Flutter client** — `flutter_client/lib/**/*.dart`: features, core, theme, networking (optional, behind `flutter` feature flag)
+4. **Configuration** — `Cargo.toml`, `package.json`, `CLAUDE.md`
 5. **Tests** — `src/**/tests`, `e2e/**`, any test files
 
-Read ALL source files. Every `.rs` file, every `.dart` file, every `.js` file. Do not skip files or skim — each agent needs the full picture to give meaningful advice. This is intentionally thorough.
+Read ALL source files. Every `.rs` file, every `.js` file in `client/lib/`, every `.dart` file if the Flutter client exists. Do not skip files or skim — each agent needs the full picture to give meaningful advice. This is intentionally thorough.
 
 ## Phase 2: Launch Review Agents in Parallel
 
@@ -20,22 +20,22 @@ Use the Agent tool to launch all eight agents concurrently in a single message. 
 
 Shared context to include in every agent prompt:
 ```
-Project: abot — a spatial terminal interface. Rust binary (daemon + server) + Flutter Web client.
+Project: abot — a spatial terminal interface. Rust binary (daemon + server) + vanilla JS canvas-rendered client + optional Flutter Web client.
 
 Architecture:
-- src/daemon/     PTY sessions, ring buffer, NDJSON IPC
-- src/server/     HTTP routes, asset serving, daemon client
+- src/daemon/     PTY sessions, ring buffer, NDJSON IPC, backend abstraction (PTY or Docker)
+- src/server/     HTTP routes, asset serving, daemon client, config, shortcuts
 - src/auth/       WebAuthn, sessions, setup tokens, lockout, middleware
-- src/stream/     WebSocket handler, client tracking, message protocol
-- flutter_client/lib/features/  facet shell, terminal, settings, stage strip
-- flutter_client/lib/core/      theme, networking (API, WS, session service)
+- src/stream/     WebSocket handler, client tracking, message protocol, P2P/WebRTC
+- client/lib/     Modular vanilla JS: facet-manager, websocket-connection, p2p-manager, session-manager, terminal-keyboard, stores, tab-manager, viewport-manager, etc.
+- client/vendor/  Self-hosted deps: xterm.js, SimplePeer, simplewebauthn, Phosphor icons
 - e2e/            Playwright browser tests
 
-Key domain terms: Facet (floating panel), Session (server-side PTY process)
+Key domain terms: Facet (floating canvas panel), Session (server-side PTY process)
 
-Read ALL files in src/ and flutter_client/lib/ before forming your review.
+Read ALL files in src/ and client/lib/ before forming your review.
 Report your top 5 findings ranked by impact. For each finding, cite the specific file and line.
-Do NOT suggest changes that would reduce capabilities or fight Flutter/Rust idioms.
+Do NOT suggest changes that would reduce capabilities or fight Rust/vanilla-JS idioms.
 ```
 
 ### Agent 1: Rich Hickey — Simplicity & Data Orientation
@@ -157,7 +157,7 @@ Wait for all eight agents to complete. Then:
 1. **Cross-reference** — Look for findings that multiple agents agree on. These are highest signal. Present a consensus table showing which agents flagged each theme.
 2. **Filter** — Discard findings that would:
    - Add abstraction without clear payoff
-   - Fight the language/framework idioms (Dart/Flutter, Rust/axum in this case)
+   - Fight the language/framework idioms (Rust/axum, vanilla JS in this case)
    - Reduce capabilities or remove features
 3. **Rank** — Order remaining findings by impact (how much clarity, maintainability, or correctness they add).
 
@@ -170,7 +170,7 @@ For each phase:
 - **Motivation** — which agents/perspectives drive this, and why it matters
 - **Scope** — exact files and functions to change
 - **Steps** — numbered implementation steps, specific enough to execute without ambiguity
-- **Verification** — how to confirm the change works (`cargo test`, `flutter analyze`, manual check, etc.)
+- **Verification** — how to confirm the change works (`cargo test`, manual check, etc.)
 - **Risk** — what could go wrong, and how to mitigate
 
 Group into tiers:
@@ -203,7 +203,7 @@ Once the user approves, work through the approved plan tier by tier.
 For each phase within a tier:
 1. **Announce** — state which phase you're starting and what it does
 2. **Implement** — make the changes
-3. **Verify** — run `cargo test`, `cargo clippy`, `flutter analyze` as appropriate
+3. **Verify** — run `cargo test`, `cargo clippy` as appropriate
 4. **Checkpoint** — commit the changes with a descriptive message
 
 After completing each tier, briefly summarize what was done and confirm all tests still pass before moving to the next tier.
@@ -213,6 +213,5 @@ If a phase turns out to be larger or riskier than expected during implementation
 ## Phase 7: Ship
 
 After all approved tiers are complete:
-1. Build the Flutter client: `cd flutter_client && flutter build web --wasm`
-2. Build and test Rust: `cargo test`
-3. Create a feature branch, commit all work, and run `/ship-it` to push, review, and merge.
+1. Build and test Rust: `cargo test`
+2. Create a feature branch, commit all work, and run `/ship-it` to push, review, and merge.
