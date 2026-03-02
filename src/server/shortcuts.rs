@@ -35,6 +35,7 @@ pub async fn set_shortcuts(
     Json(shortcuts): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
 
     let path = app.data_dir.join("shortcuts.json");
     let json =

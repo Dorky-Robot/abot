@@ -46,6 +46,7 @@ pub async fn set_instance_name(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
 
     let name = body
         .get("instanceName")

@@ -36,6 +36,7 @@ pub async fn create_session(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
 
     let name = body
         .get("name")
@@ -99,6 +100,7 @@ pub async fn rename_session(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
 
     let new_name = body
         .get("name")
@@ -130,6 +132,7 @@ pub async fn delete_session(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
 
     let resp = app
         .daemon_client

@@ -18,18 +18,8 @@ pub struct ClientAssets;
 #[folder = "client/"]
 pub struct ClientAssets;
 
-/// Generate a CSRF token (random hex string)
-fn generate_csrf_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 32] = rng.gen();
-    hex::encode(bytes)
-}
-
 /// Inject CSRF meta tag into HTML content
-fn inject_csrf_meta(html: &str) -> String {
-    let token = generate_csrf_token();
-    // Insert after <head> or at top of <head> section
+fn inject_csrf_meta(html: &str, token: &str) -> String {
     html.replace(
         "<head>",
         &format!("<head>\n  <meta name=\"csrf-token\" content=\"{}\">", token),
@@ -37,10 +27,10 @@ fn inject_csrf_meta(html: &str) -> String {
 }
 
 /// Serve index.html with CSRF token injection.
-fn serve_index_with_csrf() -> Option<Response> {
+fn serve_index_with_csrf(csrf_token: &str) -> Option<Response> {
     ClientAssets::get("index.html").map(|file| {
         let html = String::from_utf8_lossy(&file.data).into_owned();
-        let html = inject_csrf_meta(&html);
+        let html = inject_csrf_meta(&html, csrf_token);
         Html(html).into_response()
     })
 }
@@ -54,7 +44,11 @@ pub async fn index(
         return Redirect::to("/login").into_response();
     }
 
-    serve_index_with_csrf()
+    // Look up the session's CSRF token so the client can send it back on
+    // mutating requests. For localhost, use a random placeholder.
+    let csrf_token = middleware::get_session_csrf(&app, &headers).unwrap_or_default();
+
+    serve_index_with_csrf(&csrf_token)
         .unwrap_or_else(|| Html("<h1>abot: client not found</h1>".to_string()).into_response())
 }
 

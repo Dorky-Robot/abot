@@ -406,7 +406,9 @@ fn revoke_credential(
 ) -> Result<(), AppError> {
     let cred_count = state::credential_count(db)?;
     if cred_count <= 1 && !is_local {
-        return Err(AppError::Forbidden);
+        return Err(AppError::Forbidden(
+            "cannot delete last credential remotely".into(),
+        ));
     }
     state::delete_sessions_for_credential(db, credential_id)?;
     state::delete_credential(db, credential_id)?;
@@ -467,6 +469,7 @@ pub async fn create_token(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -519,6 +522,7 @@ pub async fn delete_token(
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
     let is_local = middleware::is_local_request(&addr, host, origin);
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
 
     let credential_id_to_close = {
         let db = app
@@ -564,6 +568,7 @@ pub async fn delete_credential(
     let origin = headers.get("origin").and_then(|v| v.to_str().ok());
     let is_local = middleware::is_local_request(&addr, host, origin);
     middleware::require_auth(&app, &addr, &headers)?;
+    middleware::require_csrf(&app, &addr, &headers)?;
 
     {
         let db = app

@@ -128,6 +128,42 @@ pub fn validate_csrf(csrf_header: Option<&str>, expected: &str) -> bool {
     }
 }
 
+/// Look up the CSRF token for the current session (from cookie).
+/// Returns None for localhost or if no valid session exists.
+pub fn get_session_csrf(app: &AppState, headers: &HeaderMap) -> Option<String> {
+    let cookie = headers.get("cookie").and_then(|v| v.to_str().ok());
+    let token = get_session_token(cookie)?;
+    let db = app.auth.db.lock().ok()?;
+    let row = state::get_session(&db, &token).ok()??;
+    Some(row.csrf_token)
+}
+
+/// Validate CSRF for mutating requests. Call this from POST/PUT/DELETE handlers.
+/// Skips validation for localhost requests.
+pub fn require_csrf(
+    app: &AppState,
+    addr: &SocketAddr,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+
+    // Localhost is exempt from CSRF (same-origin by definition)
+    if is_local_request(addr, host, origin) {
+        return Ok(());
+    }
+
+    let csrf_header = headers.get("x-csrf-token").and_then(|v| v.to_str().ok());
+
+    let expected = get_session_csrf(app, headers).ok_or(AppError::Unauthorized)?;
+
+    if !validate_csrf(csrf_header, &expected) {
+        return Err(AppError::Forbidden("invalid CSRF token".into()));
+    }
+
+    Ok(())
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -174,5 +210,13 @@ mod tests {
         );
         assert_eq!(get_session_token(Some("other=val")), None);
         assert_eq!(get_session_token(None), None);
+    }
+
+    #[test]
+    fn test_csrf_validation() {
+        assert!(validate_csrf(Some("abc123"), "abc123"));
+        assert!(!validate_csrf(Some("wrong"), "abc123"));
+        assert!(!validate_csrf(None, "abc123"));
+        assert!(!validate_csrf(Some("abc"), "abc123")); // different length
     }
 }
