@@ -89,6 +89,11 @@
         }
       } else {
         setupView.classList.remove("hidden");
+        if (!hasWebAuthn) {
+          const check = checkWebAuthnSupport();
+          setupError.textContent = check.error;
+          document.getElementById("register-btn").disabled = true;
+        }
       }
     }
 
