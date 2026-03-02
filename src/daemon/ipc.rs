@@ -78,11 +78,14 @@ pub enum DaemonRequest {
         rows: u16,
     },
 
-    /// Fire-and-forget: detach a client
+    /// Fire-and-forget: detach a client from one or all sessions
     #[serde(rename = "detach")]
     Detach {
         #[serde(rename = "clientId")]
         client_id: String,
+        /// If set, detach from this specific session; otherwise detach from all
+        #[serde(default)]
+        session: Option<String>,
     },
 }
 
@@ -146,18 +149,10 @@ pub enum OutputEvent {
     SessionRemoved { session: String },
 }
 
-/// Resolve session name: use explicit name if provided, otherwise fall back to client attachment.
-async fn resolve_session(
-    state: &Arc<DaemonState>,
-    client_id: &str,
-    explicit: Option<String>,
-) -> Option<String> {
-    if let Some(s) = explicit {
-        Some(s)
-    } else {
-        let attachments = state.client_attachments.lock().await;
-        attachments.get(client_id).cloned()
-    }
+/// Resolve session name from explicit parameter.
+/// No fallback — clients must always specify which session they're targeting.
+fn resolve_session(explicit: Option<String>) -> Option<String> {
+    explicit
 }
 
 pub async fn handle_request(
@@ -278,10 +273,13 @@ pub async fn handle_request(
             cols: _,
             rows: _,
         } => {
-            // Record the client→session mapping
+            // Record the client→session mapping (additive — supports multi-session)
             {
                 let mut attachments = state.client_attachments.lock().await;
-                attachments.insert(client_id, session.clone());
+                attachments
+                    .entry(client_id)
+                    .or_default()
+                    .insert(session.clone());
             }
 
             let sessions = state.sessions.lock().await;
@@ -338,9 +336,9 @@ pub async fn handle_request(
                 // Update client attachments that point to old name
                 drop(sessions);
                 let mut attachments = state.client_attachments.lock().await;
-                for (_client_id, attached_session) in attachments.iter_mut() {
-                    if attached_session == &old_name {
-                        *attached_session = new_name.clone();
+                for (_client_id, attached_sessions) in attachments.iter_mut() {
+                    if attached_sessions.remove(&old_name) {
+                        attached_sessions.insert(new_name.clone());
                     }
                 }
 
@@ -363,7 +361,7 @@ pub async fn handle_request(
             session,
             data,
         } => {
-            let session_name = resolve_session(state, &client_id, session).await;
+            let session_name = resolve_session(session);
 
             if let Some(session_name) = session_name {
                 let mut sessions = state.sessions.lock().await;
@@ -402,12 +400,12 @@ pub async fn handle_request(
         }
 
         DaemonRequest::Resize {
-            client_id,
+            client_id: _,
             session,
             cols,
             rows,
         } => {
-            let session_name = resolve_session(state, &client_id, session).await;
+            let session_name = resolve_session(session);
 
             if let Some(session_name) = session_name {
                 let mut sessions = state.sessions.lock().await;
@@ -418,9 +416,20 @@ pub async fn handle_request(
             None
         }
 
-        DaemonRequest::Detach { client_id } => {
+        DaemonRequest::Detach { client_id, session } => {
             let mut attachments = state.client_attachments.lock().await;
-            attachments.remove(&client_id);
+            if let Some(session_name) = session {
+                // Detach from specific session
+                if let Some(sessions) = attachments.get_mut(&client_id) {
+                    sessions.remove(&session_name);
+                    if sessions.is_empty() {
+                        attachments.remove(&client_id);
+                    }
+                }
+            } else {
+                // Detach from all sessions
+                attachments.remove(&client_id);
+            }
             None
         }
     }
