@@ -80,7 +80,7 @@ pub enum ServerMessage {
     #[serde(rename = "p2p-closed")]
     P2pClosed,
 
-    #[serde(rename = "p2p.unavailable")]
+    #[serde(rename = "p2p-unavailable")]
     P2pUnavailable,
 
     #[serde(rename = "server-draining")]

@@ -514,16 +514,13 @@ pub async fn list_credentials(
 
 /// DELETE /auth/tokens/:id — cascade: delete linked credential + sessions + close WS
 pub async fn delete_token(
+    csrf: middleware::CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    let is_local = middleware::is_local_request(&addr, host, origin);
-    middleware::require_auth(&app, &addr, &headers)?;
-    middleware::require_csrf(&app, &addr, &headers)?;
+    let host = csrf.headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = csrf.headers.get("origin").and_then(|v| v.to_str().ok());
+    let is_local = middleware::is_local_request(&csrf.addr, host, origin);
 
     let credential_id_to_close = {
         let db = app
@@ -560,16 +557,13 @@ pub async fn delete_token(
 
 /// DELETE /api/credentials/:id — delete an orphaned credential + its sessions + close WS
 pub async fn delete_credential(
+    csrf: middleware::CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let host = headers.get("host").and_then(|v| v.to_str().ok());
-    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
-    let is_local = middleware::is_local_request(&addr, host, origin);
-    middleware::require_auth(&app, &addr, &headers)?;
-    middleware::require_csrf(&app, &addr, &headers)?;
+    let host = csrf.headers.get("host").and_then(|v| v.to_str().ok());
+    let origin = csrf.headers.get("origin").and_then(|v| v.to_str().ok());
+    let is_local = middleware::is_local_request(&csrf.addr, host, origin);
 
     {
         let db = app

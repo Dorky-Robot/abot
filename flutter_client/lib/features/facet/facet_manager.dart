@@ -112,15 +112,6 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     remove(facetId);
   }
 
-  /// Minimize a facet and delete its session on the server.
-  void closeSession(String facetId) {
-    final facet = state.facets[facetId];
-    if (facet == null) return;
-    final sessionName = facet.sessionName;
-    minimizeSession(facetId);
-    ref.read(sessionServiceProvider.notifier).deleteSession(sessionName);
-  }
-
   /// Focus an existing facet for a session, or create one and attach.
   void openOrFocusSession(String sessionName) {
     final existing = state.getBySession(sessionName);

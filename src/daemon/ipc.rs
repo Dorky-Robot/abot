@@ -156,12 +156,6 @@ pub enum OutputEvent {
     SessionRemoved { session: String },
 }
 
-/// Resolve session name from explicit parameter.
-/// No fallback — clients must always specify which session they're targeting.
-fn resolve_session(explicit: Option<String>) -> Option<String> {
-    explicit
-}
-
 pub async fn handle_request(
     state: &Arc<DaemonState>,
     req: DaemonRequest,
@@ -289,9 +283,7 @@ pub async fn handle_request(
             session,
             data,
         } => {
-            let session_name = resolve_session(session);
-
-            if let Some(session_name) = session_name {
+            if let Some(session_name) = session {
                 let mut sessions = state.sessions.lock().await;
                 if let Some(session) = sessions.get_mut(&session_name) {
                     if session.is_alive() {
@@ -333,9 +325,7 @@ pub async fn handle_request(
             cols,
             rows,
         } => {
-            let session_name = resolve_session(session);
-
-            if let Some(session_name) = session_name {
+            if let Some(session_name) = session {
                 let mut sessions = state.sessions.lock().await;
                 if let Some(session) = sessions.get_mut(&session_name) {
                     let _ = session.resize(cols, rows);
@@ -450,19 +440,6 @@ async fn handle_create_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_resolve_session_some() {
-        assert_eq!(
-            resolve_session(Some("main".to_string())),
-            Some("main".to_string())
-        );
-    }
-
-    #[test]
-    fn test_resolve_session_none() {
-        assert_eq!(resolve_session(None), None);
-    }
 
     #[test]
     fn test_daemon_request_serializes_roundtrip() {

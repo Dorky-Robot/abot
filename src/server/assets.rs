@@ -55,8 +55,8 @@ pub async fn index(
 pub async fn login() -> Response {
     #[cfg(feature = "flutter")]
     {
-        // Flutter SPA handles login route internally
-        serve_index_with_csrf().unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+        // Flutter SPA handles login route internally — no session yet, so no CSRF token
+        serve_index_with_csrf("").unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
     }
     #[cfg(not(feature = "flutter"))]
     {

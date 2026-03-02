@@ -231,10 +231,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
   }
 
   void _closeFacet(String facetId) {
-    TerminalRegistry.instance.clearGenieTransform(facetId, animate: false);
-    ref.read(facetManagerProvider.notifier).closeSession(facetId);
-    _facetKeys.remove(facetId);
-    _cardKeys.remove(facetId);
+    final facet = ref.read(facetManagerProvider).facets[facetId];
+    _minimizeFacet(facetId);
+    if (facet != null) {
+      ref
+          .read(sessionServiceProvider.notifier)
+          .deleteSession(facet.sessionName);
+    }
   }
 
   void _focusFacet(String facetId) {

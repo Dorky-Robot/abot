@@ -253,6 +253,12 @@ async fn handle_client_message(
                 app.stream_clients
                     .detach_session(client_id, &session_name)
                     .await;
+                app.daemon_client
+                    .send(&DaemonRequest::Detach {
+                        client_id: client_id.to_string(),
+                        session: Some(session_name),
+                    })
+                    .await?;
             } else {
                 app.stream_clients.detach(client_id).await;
                 app.daemon_client
