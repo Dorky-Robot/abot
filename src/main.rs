@@ -134,6 +134,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+const TOKEN_TTL_SECS: i64 = 24 * 60 * 60;
+
 fn cmd_token(data_dir: &std::path::Path, action: TokenAction) -> anyhow::Result<()> {
     let db_path = data_dir.join("abot.db");
     let db = auth::state::init_db(&db_path)?;
@@ -143,7 +145,7 @@ fn cmd_token(data_dir: &std::path::Path, action: TokenAction) -> anyhow::Result<
             let token = auth::tokens::generate_token();
             let hash = auth::tokens::hash_token(&token)?;
             let id = uuid::Uuid::new_v4().to_string();
-            let expires_at = chrono::Utc::now().timestamp() + 24 * 60 * 60;
+            let expires_at = chrono::Utc::now().timestamp() + TOKEN_TTL_SECS;
 
             auth::state::add_setup_token(&db, &id, &name, &hash, expires_at)?;
 
@@ -161,31 +163,31 @@ fn cmd_token(data_dir: &std::path::Path, action: TokenAction) -> anyhow::Result<
                 return Ok(());
             }
 
-            let now = chrono::Utc::now().timestamp();
             println!("{:<38} {:<20} EXPIRES", "ID", "NAME");
-            for t in tokens {
-                let status = if t.expires_at < now {
-                    "expired".to_string()
-                } else {
-                    format_expiry(t.expires_at)
-                };
-                let cred = auth::state::get_credential_for_token(&db, &t.id)?;
+            for token in &tokens {
+                let status = format_expiry(token.expires_at);
+                let cred = auth::state::get_credential_for_token(&db, &token.id)?;
                 let cred_info = cred.map(|c| c.name.unwrap_or_else(|| "unnamed".into()));
                 let display = match cred_info {
                     Some(name) => format!("{} (enrolled: {})", status, name),
                     None => status,
                 };
-                println!("{:<38} {:<20} {}", t.id, t.name, display);
+                println!("{:<38} {:<20} {}", token.id, token.name, display);
             }
         }
         TokenAction::Revoke { id } => {
-            // Also revoke the linked credential if one exists
+            let existing = auth::state::get_setup_tokens(&db)?
+                .into_iter()
+                .any(|t| t.id == id);
+            if !existing {
+                anyhow::bail!("no token with ID {}", id);
+            }
             if let Some(cred) = auth::state::get_credential_for_token(&db, &id)? {
                 auth::state::delete_auth_grants_for_credential(&db, &cred.id)?;
                 auth::state::delete_credential(&db, &cred.id)?;
             }
             auth::state::delete_setup_token(&db, &id)?;
-            println!("Token revoked.");
+            println!("Token {} revoked.", id);
         }
     }
 
