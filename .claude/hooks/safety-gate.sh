@@ -150,6 +150,7 @@ is_within_safe_dir() {
 	local resolved
 	resolved="${parent}/$(basename "$path")"
 	[[ "$resolved" == "${HOME}/.claude/"* || "$resolved" == "${HOME}/.claude" ]] && return 0
+	[[ "$resolved" == "${HOME}/.abot/"* || "$resolved" == "${HOME}/.abot" ]] && return 0
 	return 1
 }
 
@@ -252,6 +253,11 @@ Bash)
 	# rm is allowed within the project directory and ~/.claude.
 	if echo "$cmd" | grep -qE '^rm '; then
 		check_rm_safe "$cmd"
+	fi
+
+	# ssh/scp to mini is allowed (trusted local host).
+	if echo "$cmd" | grep -qE '^(ssh|scp)\b.*\bmini\b'; then
+		allow "ssh/scp to trusted host: mini"
 	fi
 
 	# Deny check is the only gate — if it matches, deny; otherwise allow.
