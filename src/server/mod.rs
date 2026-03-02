@@ -36,16 +36,16 @@ pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
         data_dir: data_dir.to_path_buf(),
     });
 
-    // Push stored API key to daemon at startup
+    // Push stored token/key to daemon at startup
     {
-        let api_key = {
+        let token = {
             let db = state.auth.db.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
             auth::state::get_anthropic_api_key(&db).ok().flatten()
         };
-        if let Some(key) = api_key {
-            let env = anthropic_oauth::build_env_map(Some(&key));
+        if let Some(t) = token {
+            let env = anthropic_oauth::build_env_map(Some(&t));
             anthropic_oauth::push_env_to_daemon(&state, env).await;
-            tracing::info!("pushed stored API key to daemon");
+            tracing::info!("pushed stored credentials to daemon");
         }
     }
 

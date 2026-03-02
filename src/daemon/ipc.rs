@@ -23,6 +23,9 @@ pub enum DaemonRequest {
         cols: u16,
         #[serde(default = "default_rows")]
         rows: u16,
+        /// Optional per-session environment variables
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
 
     /// RPC: attach a client to a session
@@ -97,6 +100,27 @@ pub enum DaemonRequest {
         env: HashMap<String, Option<String>>,
     },
 
+    /// RPC: update environment variables for a single session
+    #[serde(rename = "update-session-env")]
+    UpdateSessionEnv {
+        id: String,
+        session: String,
+        /// key→Some(val) to set, key→None to remove
+        env: HashMap<String, Option<String>>,
+    },
+
+    /// RPC: export a session as a .abot bundle
+    #[serde(rename = "export-session")]
+    ExportSession {
+        id: String,
+        session: String,
+        path: String,
+    },
+
+    /// RPC: import a .abot bundle as a new session
+    #[serde(rename = "import-session")]
+    ImportSession { id: String, path: String },
+
     /// RPC: health check
     #[serde(rename = "ping")]
     Ping { id: String },
@@ -143,6 +167,18 @@ pub enum DaemonResponse {
     },
     EnvUpdated {
         id: String,
+    },
+    SessionEnvUpdated {
+        id: String,
+        session: String,
+    },
+    Exported {
+        id: String,
+        path: String,
+    },
+    Imported {
+        id: String,
+        name: String,
     },
     Pong {
         id: String,
@@ -198,7 +234,8 @@ pub async fn handle_request(
             name,
             cols,
             rows,
-        } => handle_create_session(state, id, name, cols, rows).await,
+            env,
+        } => handle_create_session(state, id, name, cols, rows, env).await,
 
         DaemonRequest::Attach {
             id,
@@ -387,6 +424,164 @@ pub async fn handle_request(
             Some(DaemonResponse::EnvUpdated { id })
         }
 
+        DaemonRequest::UpdateSessionEnv { id, session, env } => {
+            let mut sessions = state.sessions.lock().await;
+            if let Some(s) = sessions.get_mut(&session) {
+                for (key, value) in &env {
+                    match value {
+                        Some(val) => {
+                            s.env.insert(key.clone(), val.clone());
+                        }
+                        None => {
+                            s.env.remove(key);
+                        }
+                    }
+                }
+                tracing::info!(
+                    "session '{}' env updated ({} entries)",
+                    session,
+                    s.env.len()
+                );
+
+                // Inject merged global + session env into the running container
+                let global_env = state.agent_env.lock().await;
+                let mut merged = global_env.clone();
+                merged.extend(s.env.clone());
+                s.backend.inject_env(&merged);
+
+                Some(DaemonResponse::SessionEnvUpdated { id, session })
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("session '{}' not found", session),
+                })
+            }
+        }
+
+        DaemonRequest::ExportSession { id, session, path } => {
+            let sessions = state.sessions.lock().await;
+            if let Some(s) = sessions.get(&session) {
+                let env = s.env.clone();
+                drop(sessions);
+
+                match super::bundle::export_bundle(&session, &env, &path).await {
+                    Ok(bundle_path) => Some(DaemonResponse::Exported {
+                        id,
+                        path: bundle_path,
+                    }),
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("export failed: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("session '{}' not found", session),
+                })
+            }
+        }
+
+        DaemonRequest::ImportSession { id, path } => {
+            match super::bundle::import_bundle(&path).await {
+                Ok(bundle) => {
+                    // Create the session with the imported env
+                    let name = bundle.name.clone();
+                    let result = state
+                        .create_backend(&name, default_cols(), default_rows())
+                        .await;
+
+                    match result {
+                        Ok(backend) => {
+                            let session = Session::new(name.clone(), backend, bundle.env.clone());
+                            let session_name = session.name.clone();
+
+                            let output_tx = state.output_tx.clone();
+                            let reader_name = session_name.clone();
+                            let state_ref = state.clone();
+
+                            let mut sessions = state.sessions.lock().await;
+                            sessions.insert(name.clone(), session);
+
+                            let rx = sessions
+                                .get_mut(&name)
+                                .and_then(|s| s.backend.take_reader());
+                            let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
+                            drop(sessions);
+
+                            // Inject imported credentials into the new container
+                            if !bundle.env.is_empty() {
+                                let global_env = state.agent_env.lock().await;
+                                let mut merged = global_env.clone();
+                                merged.extend(bundle.env);
+                                let sessions = state.sessions.lock().await;
+                                if let Some(s) = sessions.get(&name) {
+                                    s.backend.inject_env(&merged);
+                                }
+                            }
+
+                            if let Some(mut rx) = rx {
+                                tokio::spawn(async move {
+                                    while let Some(data) = rx.recv().await {
+                                        let current_name = shared_name
+                                            .as_ref()
+                                            .map(|sn| sn.lock().unwrap().clone())
+                                            .unwrap_or_else(|| reader_name.clone());
+
+                                        {
+                                            let mut sessions = state_ref.sessions.lock().await;
+                                            if let Some(s) = sessions.get_mut(&current_name) {
+                                                s.buffer.push(data.clone());
+                                            }
+                                        }
+                                        let _ = output_tx.send(OutputEvent::Output {
+                                            session: current_name,
+                                            data,
+                                        });
+                                    }
+
+                                    let current_name = shared_name
+                                        .as_ref()
+                                        .map(|sn| sn.lock().unwrap().clone())
+                                        .unwrap_or_else(|| reader_name.clone());
+
+                                    let code = {
+                                        let mut sessions = state_ref.sessions.lock().await;
+                                        if let Some(s) = sessions.get_mut(&current_name) {
+                                            let code = s.backend.try_exit_code().unwrap_or(0);
+                                            s.mark_exited(code);
+                                            Some(code)
+                                        } else {
+                                            None
+                                        }
+                                    };
+                                    if let Some(code) = code {
+                                        let _ = output_tx.send(OutputEvent::Exit {
+                                            session: current_name,
+                                            code,
+                                        });
+                                    }
+                                });
+                            }
+
+                            Some(DaemonResponse::Imported {
+                                id,
+                                name: session_name,
+                            })
+                        }
+                        Err(e) => Some(DaemonResponse::Error {
+                            id,
+                            error: format!("failed to create session from import: {}", e),
+                        }),
+                    }
+                }
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("import failed: {}", e),
+                }),
+            }
+        }
+
         DaemonRequest::Ping { id } => Some(DaemonResponse::Pong { id }),
     }
 }
@@ -398,12 +593,13 @@ async fn handle_create_session(
     name: String,
     cols: u16,
     rows: u16,
+    env: HashMap<String, String>,
 ) -> Option<DaemonResponse> {
-    let backend = state.create_backend(&name, cols, rows).await;
+    let backend = state.create_backend_with_env(&name, cols, rows, &env).await;
 
     match backend {
         Ok(backend) => {
-            let session = Session::new(name.clone(), backend);
+            let session = Session::new(name.clone(), backend, env);
             let session_name = session.name.clone();
 
             let output_tx = state.output_tx.clone();

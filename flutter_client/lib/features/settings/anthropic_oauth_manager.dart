@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:web/web.dart' as web;
 import '../../core/network/api_client.dart';
 import '../../core/theme/abot_theme.dart';
+import 'credential_input.dart';
 
-/// Manages Anthropic API key in Settings → AI tab.
+/// Manages Anthropic credentials in Settings → AI tab (default/global credentials).
+/// Supports both setup tokens (Max subscription) and API keys.
 class AnthropicOAuthManager extends StatefulWidget {
   const AnthropicOAuthManager({super.key});
 
@@ -65,7 +66,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save key: $e')),
+        SnackBar(content: Text('Failed to save: $e')),
       );
     }
   }
@@ -78,7 +79,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to remove key: $e')),
+        SnackBar(content: Text('Failed to remove: $e')),
       );
     }
   }
@@ -102,7 +103,11 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
           ),
         ),
       _KeyState.disconnected => _buildDisconnected(p),
-      _KeyState.connected => _buildConnected(p),
+      _KeyState.connected => CredentialConnectedBadge(
+          message: 'Default credentials configured',
+          subtitle: 'Applied to new sessions without their own credentials.',
+          onDisconnect: _disconnect,
+        ),
     };
   }
 
@@ -111,7 +116,7 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Paste your Anthropic API key to enable Claude in all containers.',
+          'To use your Max subscription, run this on the host:',
           style: TextStyle(
             fontSize: 11,
             color: p.subtext0,
@@ -119,134 +124,24 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
           ),
         ),
         const SizedBox(height: AbotSpacing.sm),
-        GestureDetector(
-          onTap: () => web.window.open(
-            'https://console.anthropic.com/settings/keys',
-            '_blank',
-          ),
-          child: Text(
-            'Get an API key from console.anthropic.com',
-            style: TextStyle(
-              fontSize: 11,
-              color: p.blue,
-              fontFamily: AbotFonts.mono,
-              decoration: TextDecoration.underline,
-            ),
-          ),
-        ),
-        const SizedBox(height: AbotSpacing.md),
-        Row(
-          children: [
-            Expanded(
-              child: SizedBox(
-                height: 32,
-                child: TextField(
-                  controller: _keyController,
-                  obscureText: true,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: p.text,
-                    fontFamily: AbotFonts.mono,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'sk-ant-...',
-                    hintStyle: TextStyle(
-                      fontSize: 12,
-                      color: p.overlay0,
-                      fontFamily: AbotFonts.mono,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: AbotSpacing.sm,
-                    ),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AbotRadius.sm),
-                      borderSide: BorderSide(color: p.surface1),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AbotRadius.sm),
-                      borderSide: BorderSide(color: p.surface1),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AbotRadius.sm),
-                      borderSide: BorderSide(color: p.mauve),
-                    ),
-                    filled: true,
-                    fillColor: p.surface0,
-                  ),
-                  onSubmitted: (_) => _saveKey(),
-                ),
-              ),
-            ),
-            const SizedBox(width: AbotSpacing.sm),
-            SizedBox(
-              height: 32,
-              child: TextButton(
-                onPressed: _saving ? null : _saveKey,
-                style: TextButton.styleFrom(
-                  backgroundColor: p.mauve,
-                  foregroundColor: p.base,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AbotSpacing.md,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(AbotRadius.sm),
-                  ),
-                  textStyle: const TextStyle(
-                    fontSize: 11,
-                    fontFamily: AbotFonts.mono,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                child: _saving
-                    ? SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: p.base,
-                        ),
-                      )
-                    : const Text('Save'),
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  Widget _buildConnected(CatPalette p) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
         Container(
-          padding: const EdgeInsets.all(AbotSpacing.md),
+          padding: const EdgeInsets.all(AbotSpacing.sm),
           decoration: BoxDecoration(
             color: p.surface0,
-            borderRadius: BorderRadius.circular(AbotRadius.md),
-            border: Border.all(color: p.green, width: 0.5),
+            borderRadius: BorderRadius.circular(AbotRadius.sm),
           ),
-          child: Row(
-            children: [
-              Icon(Icons.check_circle, size: 16, color: p.green),
-              const SizedBox(width: AbotSpacing.sm),
-              Expanded(
-                child: Text(
-                  'API key configured',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: p.green,
-                    fontFamily: AbotFonts.mono,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
+          child: SelectableText(
+            'claude setup-token',
+            style: TextStyle(
+              fontSize: 12,
+              color: p.text,
+              fontFamily: AbotFonts.mono,
+            ),
           ),
         ),
         const SizedBox(height: AbotSpacing.sm),
         Text(
-          'Claude will be available in new containers automatically.',
+          'Then paste the token below. An API key (sk-ant-...) also works.',
           style: TextStyle(
             fontSize: 11,
             color: p.subtext0,
@@ -254,19 +149,10 @@ class _AnthropicOAuthManagerState extends State<AnthropicOAuthManager> {
           ),
         ),
         const SizedBox(height: AbotSpacing.md),
-        SizedBox(
-          height: 32,
-          child: TextButton(
-            onPressed: _disconnect,
-            style: TextButton.styleFrom(
-              foregroundColor: p.red,
-              textStyle: const TextStyle(
-                fontSize: 11,
-                fontFamily: AbotFonts.mono,
-              ),
-            ),
-            child: const Text('Remove key'),
-          ),
+        CredentialInput(
+          controller: _keyController,
+          saving: _saving,
+          onSave: _saveKey,
         ),
       ],
     );

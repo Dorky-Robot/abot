@@ -23,7 +23,7 @@ pub struct StatusResponse {
 
 // --- Handlers ---
 
-/// POST /api/anthropic/key — Save API key, push to daemon
+/// POST /api/anthropic/key — Save API key or setup token, push to daemon
 pub async fn save_key(
     _csrf: CsrfVerified,
     State(state): State<Arc<AppState>>,
@@ -31,7 +31,7 @@ pub async fn save_key(
 ) -> Result<Json<StatusResponse>, AppError> {
     let key = body.api_key.trim().to_string();
     if key.is_empty() {
-        return Err(AppError::BadRequest("API key cannot be empty".into()));
+        return Err(AppError::BadRequest("token cannot be empty".into()));
     }
 
     // Store in DB
@@ -44,7 +44,7 @@ pub async fn save_key(
         state::upsert_anthropic_api_key(&db, &key)?;
     }
 
-    // Push to daemon
+    // Push to daemon — detect key type and set the right env var
     let env = build_env_map(Some(&key));
     push_env_to_daemon(&state, env).await;
 
@@ -70,7 +70,7 @@ pub async fn key_status(
     }))
 }
 
-/// DELETE /api/anthropic/key — Remove API key
+/// DELETE /api/anthropic/key — Remove key/token
 pub async fn delete_key(
     _csrf: CsrfVerified,
     State(state): State<Arc<AppState>>,
@@ -84,7 +84,7 @@ pub async fn delete_key(
         state::delete_anthropic_api_key(&db)?;
     }
 
-    // Remove from daemon
+    // Remove all credential env vars from daemon
     let env = build_env_map(None);
     push_env_to_daemon(&state, env).await;
 
@@ -95,13 +95,31 @@ pub async fn delete_key(
 
 // --- Helpers ---
 
-/// Build the env map for daemon IPC. None removes the keys.
-/// Sets both ANTHROPIC_API_KEY (for direct API use) and CLAUDE_API_KEY (for Claude Code).
-pub(crate) fn build_env_map(api_key: Option<&str>) -> HashMap<String, Option<String>> {
+/// Build the env map for daemon IPC. Detects token type:
+/// - `sk-ant-*` → ANTHROPIC_API_KEY (API key billing)
+/// - anything else → CLAUDE_CODE_OAUTH_TOKEN (subscription auth from `claude setup-token`)
+pub(crate) fn build_env_map(token: Option<&str>) -> HashMap<String, Option<String>> {
     let mut env = HashMap::new();
-    let val = api_key.map(String::from);
-    env.insert("ANTHROPIC_API_KEY".into(), val.clone());
-    env.insert("CLAUDE_API_KEY".into(), val);
+    match token {
+        Some(t) if t.starts_with("sk-ant-api") => {
+            // API key (sk-ant-api...) — set ANTHROPIC_API_KEY, clear OAuth token
+            env.insert("ANTHROPIC_API_KEY".into(), Some(t.to_string()));
+            env.insert("CLAUDE_API_KEY".into(), Some(t.to_string()));
+            env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), None);
+        }
+        Some(t) => {
+            // OAuth setup token (sk-ant-oat... or anything else) — set CLAUDE_CODE_OAUTH_TOKEN
+            env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), Some(t.to_string()));
+            env.insert("ANTHROPIC_API_KEY".into(), None);
+            env.insert("CLAUDE_API_KEY".into(), None);
+        }
+        None => {
+            // Clear everything
+            env.insert("ANTHROPIC_API_KEY".into(), None);
+            env.insert("CLAUDE_API_KEY".into(), None);
+            env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), None);
+        }
+    }
     env
 }
 

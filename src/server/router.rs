@@ -41,6 +41,22 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/sessions/{name}", get(sessions::get_session))
         .route("/sessions/{name}", put(sessions::rename_session))
         .route("/sessions/{name}", delete(sessions::delete_session))
+        // Per-session credentials
+        .route(
+            "/sessions/{name}/credentials",
+            post(sessions::set_session_credentials),
+        )
+        .route(
+            "/sessions/{name}/credentials/status",
+            get(sessions::session_credentials_status),
+        )
+        .route(
+            "/sessions/{name}/credentials",
+            delete(sessions::delete_session_credentials),
+        )
+        // Session export/import
+        .route("/sessions/{name}/export", post(sessions::export_session))
+        .route("/sessions/import", post(sessions::import_session))
         // Shortcuts
         .route("/shortcuts", get(shortcuts::get_shortcuts))
         .route("/shortcuts", put(shortcuts::set_shortcuts))
@@ -55,6 +71,7 @@ pub fn build(state: Arc<AppState>) -> Router {
             "/api/config/instance-name",
             put(config_routes::set_instance_name),
         )
+        .route("/api/config/bundle-dir", put(config_routes::set_bundle_dir))
         // Token/credential API aliases (legacy client uses /api/tokens, /api/credentials)
         .route("/api/tokens", get(auth_handlers::list_tokens))
         .route("/api/credentials", get(auth_handlers::list_credentials))

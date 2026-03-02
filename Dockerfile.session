@@ -33,4 +33,9 @@ RUN adduser -D -s /bin/bash dev
 USER dev
 WORKDIR /home/dev
 
+# Pre-seed Claude Code config so the interactive wizard is skipped.
+# The hasCompletedOnboarding flag prevents the first-run "Select login method" screen.
+RUN mkdir -p /home/dev/.claude && \
+    echo '{"hasCompletedOnboarding":true,"hasCompletedAuthFlow":true}' > /home/dev/.claude/settings.json
+
 CMD ["/bin/bash", "-l"]

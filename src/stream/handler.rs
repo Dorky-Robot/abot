@@ -309,6 +309,7 @@ async fn handle_attach(
                 name: session.clone(),
                 cols,
                 rows,
+                env: std::collections::HashMap::new(),
             })
             .await;
     }

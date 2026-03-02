@@ -255,10 +255,11 @@ impl SessionBackend for DockerBackend {
         if env.is_empty() {
             return;
         }
-        // Write export statements to /home/dev/.abot_env, then source it in .bashrc
+        // Write export statements to /home/dev/.abot_env, then source it in .bashrc.
+        // Also ensure Claude Code's config directory + settings exist so the
+        // interactive wizard is skipped.
         let mut script = String::new();
         for (k, v) in env {
-            // Escape single quotes in values
             let escaped = v.replace('\'', "'\\''");
             script.push_str(&format!("export {k}='{escaped}'\n"));
         }
@@ -266,21 +267,19 @@ impl SessionBackend for DockerBackend {
         let id = self.container_id.clone();
         tokio::spawn(async move {
             use bollard::exec::{CreateExecOptions, StartExecOptions};
-            // Write env file
+            let cmd = format!(
+                "mkdir -p ~/.claude && \
+                 [ -f ~/.claude/settings.json ] || echo '{{\"hasCompletedOnboarding\":true,\"hasCompletedAuthFlow\":true}}' > ~/.claude/settings.json && \
+                 printf '%s' '{}' > /home/dev/.abot_env && \
+                 grep -q 'source.*abot_env' /home/dev/.bashrc 2>/dev/null || \
+                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> /home/dev/.bashrc",
+                script.replace('\'', "'\\''")
+            );
             let write_exec = docker
                 .create_exec(
                     &id,
                     CreateExecOptions {
-                        cmd: Some(vec![
-                            "/bin/sh",
-                            "-c",
-                            &format!(
-                                "printf '%s' '{}' > /home/dev/.abot_env && \
-                                 grep -q 'source.*abot_env' /home/dev/.bashrc 2>/dev/null || \
-                                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> /home/dev/.bashrc",
-                                script.replace('\'', "'\\''")
-                            ),
-                        ]),
+                        cmd: Some(vec!["/bin/sh", "-c", &cmd]),
                         user: Some("1000:1000"),
                         ..Default::default()
                     },

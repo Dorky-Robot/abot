@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod bundle;
 #[cfg(feature = "docker")]
 pub mod docker;
 pub mod ipc;
@@ -42,12 +43,25 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    /// Create a session backend based on the configured kind
+    /// Create a session backend based on the configured kind.
+    /// Merges global `agent_env` with per-session `session_env` (session wins on conflicts).
     pub async fn create_backend(
         &self,
         #[allow(unused_variables)] name: &str,
         cols: u16,
         rows: u16,
+    ) -> anyhow::Result<Box<dyn SessionBackend>> {
+        self.create_backend_with_env(name, cols, rows, &HashMap::new())
+            .await
+    }
+
+    /// Create a session backend with additional per-session env vars.
+    pub async fn create_backend_with_env(
+        &self,
+        #[allow(unused_variables)] name: &str,
+        cols: u16,
+        rows: u16,
+        #[allow(unused_variables)] session_env: &HashMap<String, String>,
     ) -> anyhow::Result<Box<dyn SessionBackend>> {
         match self.backend_kind {
             BackendKind::Local => {
@@ -59,13 +73,11 @@ impl DaemonState {
             BackendKind::Docker => {
                 #[cfg(feature = "docker")]
                 {
-                    let env: Vec<String> = self
-                        .agent_env
-                        .lock()
-                        .await
-                        .iter()
-                        .map(|(k, v)| format!("{k}={v}"))
-                        .collect();
+                    let global_env = self.agent_env.lock().await;
+                    let mut merged = global_env.clone();
+                    // Session env overrides global on key conflicts
+                    merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+                    let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
                     let backend = docker::DockerBackend::spawn(name, cols, rows, env).await?;
                     Ok(Box::new(backend))
                 }
