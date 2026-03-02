@@ -417,11 +417,9 @@ fn revoke_credential(
 
 /// GET /auth/tokens — list setup tokens enriched with linked credentials
 pub async fn list_tokens(
+    _auth: middleware::Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
     let db = app
         .auth
         .db
@@ -463,13 +461,10 @@ pub async fn list_tokens(
 
 /// POST /auth/tokens — create a setup token
 pub async fn create_token(
+    _csrf: middleware::CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-    middleware::require_csrf(&app, &addr, &headers)?;
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -496,11 +491,9 @@ pub async fn create_token(
 
 /// GET /api/credentials — list all credentials
 pub async fn list_credentials(
+    _auth: middleware::Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
     let db = app
         .auth
         .db

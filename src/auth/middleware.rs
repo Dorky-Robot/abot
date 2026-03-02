@@ -1,5 +1,8 @@
+use axum::extract::ConnectInfo;
+use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use super::state;
 use crate::error::AppError;
@@ -173,6 +176,58 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+// --- Axum extractors ---
+
+/// Extractor: verifies the request is authenticated (local or valid session cookie).
+/// Use in handler signatures to replace manual `require_auth` calls.
+pub struct Authenticated {
+    pub addr: SocketAddr,
+    pub headers: HeaderMap,
+}
+
+impl axum::extract::FromRequestParts<Arc<AppState>> for Authenticated {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let ConnectInfo(addr) = ConnectInfo::<SocketAddr>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AppError::Internal("missing ConnectInfo".into()))?;
+        require_auth(state, &addr, &parts.headers)?;
+        Ok(Authenticated {
+            addr,
+            headers: parts.headers.clone(),
+        })
+    }
+}
+
+/// Extractor: verifies authentication + CSRF token. Use for mutating endpoints.
+pub struct CsrfVerified {
+    pub addr: SocketAddr,
+    pub headers: HeaderMap,
+}
+
+impl axum::extract::FromRequestParts<Arc<AppState>> for CsrfVerified {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        let ConnectInfo(addr) = ConnectInfo::<SocketAddr>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AppError::Internal("missing ConnectInfo".into()))?;
+        require_auth(state, &addr, &parts.headers)?;
+        require_csrf(state, &addr, &parts.headers)?;
+        Ok(CsrfVerified {
+            addr,
+            headers: parts.headers.clone(),
+        })
+    }
 }
 
 #[cfg(test)]

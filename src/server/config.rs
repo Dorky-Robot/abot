@@ -1,12 +1,10 @@
-use axum::extract::{ConnectInfo, State};
-use axum::http::HeaderMap;
+use axum::extract::State;
 use axum::Json;
 use serde_json::json;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::auth::middleware;
+use crate::auth::middleware::{Authenticated, CsrfVerified};
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -30,24 +28,18 @@ fn write_config(data_dir: &Path, config: &serde_json::Value) -> Result<(), AppEr
 
 /// GET /api/config — get instance configuration
 pub async fn get_config(
+    _auth: Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
     Ok(Json(json!({ "config": read_config(&app.data_dir) })))
 }
 
 /// PUT /api/config/instance-name — set the instance name
 pub async fn set_instance_name(
+    _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-    middleware::require_csrf(&app, &addr, &headers)?;
-
     let name = body
         .get("instanceName")
         .and_then(|v| v.as_str())

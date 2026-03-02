@@ -1,23 +1,18 @@
-use axum::extract::{ConnectInfo, Path, State};
-use axum::http::HeaderMap;
+use axum::extract::{Path, State};
 use axum::Json;
 use serde_json::json;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::auth::middleware;
+use crate::auth::middleware::{Authenticated, CsrfVerified};
 use crate::daemon::ipc::DaemonRequest;
 use crate::error::AppError;
 use crate::server::AppState;
 
 /// GET /sessions — list all sessions
 pub async fn list_sessions(
+    _auth: Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-
     let resp = app
         .daemon_client
         .rpc(DaemonRequest::ListSessions { id: String::new() })
@@ -31,14 +26,10 @@ pub async fn list_sessions(
 
 /// POST /sessions — create a new session
 pub async fn create_session(
+    _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-    middleware::require_csrf(&app, &addr, &headers)?;
-
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -66,13 +57,10 @@ pub async fn create_session(
 
 /// GET /sessions/:name — get session info
 pub async fn get_session(
+    _auth: Authenticated,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-
     let resp = app
         .daemon_client
         .rpc(DaemonRequest::GetSession {
@@ -97,15 +85,11 @@ pub async fn get_session(
 
 /// PUT /sessions/:name — rename a session
 pub async fn rename_session(
+    _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(old_name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-    middleware::require_csrf(&app, &addr, &headers)?;
-
     let new_name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -130,14 +114,10 @@ pub async fn rename_session(
 
 /// DELETE /sessions/:name — delete a session
 pub async fn delete_session(
+    _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    middleware::require_auth(&app, &addr, &headers)?;
-    middleware::require_csrf(&app, &addr, &headers)?;
-
     let resp = app
         .daemon_client
         .rpc(DaemonRequest::DeleteSession {
