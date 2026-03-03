@@ -595,7 +595,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final serverSessions = sessionsAsync.when(
       data: (list) => list,
       loading: () => <SessionInfo>[],
-      error: (_, __) => <SessionInfo>[],
+      error: (_, _) => <SessionInfo>[],
     );
     final openSessionNames = state.facets.values
         .map((f) => f.sessionName)

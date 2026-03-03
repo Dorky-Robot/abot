@@ -352,8 +352,8 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   void _setAncestorOverflow(bool allowOverflow) {
     web.Element? el = _container?.parentElement;
     for (var i = 0; i < _ancestorOverflowDepth && el != null; i++) {
-      if (el is web.HTMLElement) {
-        el.style.overflow = allowOverflow ? 'visible' : '';
+      if (el.isA<web.HTMLElement>()) {
+        (el as web.HTMLElement).style.overflow = allowOverflow ? 'visible' : '';
       }
       el = el.parentElement;
     }

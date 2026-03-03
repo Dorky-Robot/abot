@@ -23,14 +23,12 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
   final _nameController = TextEditingController();
   final _nameFocus = FocusNode();
   final _bundleDirController = TextEditingController();
-  final _bundleDirFocus = FocusNode();
   bool _nameInitialized = false;
 
   @override
   void initState() {
     super.initState();
     _nameFocus.addListener(_onNameFocusChange);
-    _bundleDirFocus.addListener(_onBundleDirFocusChange);
   }
 
   @override
@@ -39,20 +37,12 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     _nameFocus.removeListener(_onNameFocusChange);
     _nameFocus.dispose();
     _bundleDirController.dispose();
-    _bundleDirFocus.removeListener(_onBundleDirFocusChange);
-    _bundleDirFocus.dispose();
     super.dispose();
   }
 
   void _onNameFocusChange() {
     if (!_nameFocus.hasFocus) {
       _saveInstanceName();
-    }
-  }
-
-  void _onBundleDirFocusChange() {
-    if (!_bundleDirFocus.hasFocus) {
-      _saveBundleDir();
     }
   }
 
@@ -68,7 +58,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     ref.read(configProvider.notifier).setBundleDir(dir);
   }
 
-  Future<void> _pickBundleDir(CatPalette p) async {
+  Future<void> _pickBundleDir() async {
     try {
       final data =
           await const ApiClient().post('/api/pick-directory', {}) as Map<String, dynamic>;
@@ -247,7 +237,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         _SectionLabel(label: 'Bundles Location'),
         const SizedBox(height: AbotSpacing.xs),
         GestureDetector(
-          onTap: () => _pickBundleDir(p),
+          onTap: _pickBundleDir,
           child: Container(
             height: 32,
             padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
