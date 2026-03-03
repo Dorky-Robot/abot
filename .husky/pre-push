@@ -2,7 +2,7 @@
 # .husky/pre-push — full validation before push
 #
 # Hook chain:
-#   1. Test suite     (cargo test — BLOCKING)
+#   1. Rust tests     (cargo test — BLOCKING)
 #   2. Secrets scan   (gitleaks — BLOCKING)
 #
 # Activate once per clone:
@@ -21,13 +21,13 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "  pre-push checks (abot)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# ── 1. Test suite (BLOCKING) ─────────────────────────────────────────────────
-step "[1/2] Test suite (cargo test)"
+# ── 1. Rust tests (BLOCKING) ─────────────────────────────────────────────────
+step "[1/2] Rust tests (cargo test)"
 if command -v cargo >/dev/null 2>&1; then
     if ! cargo test 2>&1; then
         fail "Tests failed — push blocked. Fix failing tests before pushing."
     fi
-    echo "      OK  All tests passed"
+    echo "      OK  All Rust tests passed"
 else
     fail "cargo not found — cannot run tests. Install Rust toolchain."
 fi

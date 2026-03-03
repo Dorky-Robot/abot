@@ -6,7 +6,7 @@ Launch the issue-analyst agent to cluster open issues and recommend the highest-
 
 Use the Task tool with subagent_type `issue-analyst`:
 ```
-Analyze all open issues for the abot project. Follow your full procedure: fetch issues, cluster by subsystem, evaluate from 3 perspectives, and recommend the highest-impact next PR.
+Analyze all open issues for the abot project. Follow your full procedure: fetch issues, cluster by subsystem (daemon, server, auth, stream, flutter client), evaluate from 3 perspectives, and recommend the highest-impact next PR.
 ```
 
 Review the recommendation. Adjust scope if needed — prefer smaller, cohesive PRs over large multi-concern ones.

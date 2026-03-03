@@ -5,12 +5,12 @@ Consult the masters — review the entire abot codebase through the lens of grea
 Thoroughly explore the full project structure. Use Glob and Grep to build a complete picture:
 
 1. **Rust backend** — `src/**/*.rs`: daemon, server, auth, stream modules
-2. **Vanilla JS client** — `client/**/*.js`: app entry, login, facet manager, WebSocket, P2P, session manager, terminal keyboard, stores, and 30+ modular components
-3. **Flutter client** — `flutter_client/lib/**/*.dart`: features, core, theme, networking (optional, behind `flutter` feature flag)
-4. **Configuration** — `Cargo.toml`, `package.json`, `CLAUDE.md`
-5. **Tests** — `src/**/tests`, `e2e/**`, any test files
+2. **Flutter client** — `flutter_client/lib/**/*.dart`: features (facet, terminal, settings, auth), core (network, theme, auth, js_interop)
+3. **Configuration** — `Cargo.toml`, `pubspec.yaml`, `CLAUDE.md`
+4. **Tests** — `src/**/tests`, `flutter_client/test/**`, `e2e/**`
+5. **Infrastructure** — `Dockerfile.session`, `.github/workflows/`, `homebrew/`
 
-Read ALL source files. Every `.rs` file, every `.js` file in `client/lib/`, every `.dart` file if the Flutter client exists. Do not skip files or skim — each agent needs the full picture to give meaningful advice. This is intentionally thorough.
+Read ALL source files. Every `.rs` file, every `.dart` file in `flutter_client/lib/`. Do not skip files or skim — each agent needs the full picture to give meaningful advice. This is intentionally thorough.
 
 ## Phase 2: Launch Review Agents in Parallel
 
@@ -20,22 +20,22 @@ Use the Agent tool to launch all eight agents concurrently in a single message. 
 
 Shared context to include in every agent prompt:
 ```
-Project: abot — a spatial terminal interface. Rust binary (daemon + server) + vanilla JS canvas-rendered client + optional Flutter Web client.
+Project: abot — a spatial terminal interface. Rust binary (daemon + server) + Flutter Web (WASM) client with Riverpod state management.
 
 Architecture:
-- src/daemon/     PTY sessions, ring buffer, NDJSON IPC, backend abstraction (PTY or Docker)
-- src/server/     HTTP routes, asset serving, daemon client, config, shortcuts
-- src/auth/       WebAuthn, sessions, setup tokens, lockout, middleware
+- src/daemon/     PTY sessions, ring buffer, NDJSON IPC, backend abstraction (PTY or Docker), bundle management
+- src/server/     HTTP routes, asset serving, daemon client, config, shortcuts, browse, Anthropic OAuth
+- src/auth/       WebAuthn, sessions, setup tokens, lockout, middleware, challenge store
 - src/stream/     WebSocket handler, client tracking, message protocol, P2P/WebRTC
-- client/lib/     Modular vanilla JS: facet-manager, websocket-connection, p2p-manager, session-manager, terminal-keyboard, stores, tab-manager, viewport-manager, etc.
-- client/vendor/  Self-hosted deps: xterm.js, SimplePeer, simplewebauthn, Phosphor icons
+- flutter_client/lib/core/       Shared infra: auth providers, network services, theme, JS interop (xterm.js, WebAuthn)
+- flutter_client/lib/features/   UI: facet management, terminal rendering, settings panels, login
 - e2e/            Playwright browser tests
 
-Key domain terms: Facet (floating canvas panel), Session (server-side PTY process)
+Key domain terms: Facet (floating canvas panel), Session (server-side PTY process), Bundle (.abot directory with manifest, credentials, config, home/)
 
-Read ALL files in src/ and client/lib/ before forming your review.
+Read ALL files in src/ and flutter_client/lib/ before forming your review.
 Report your top 5 findings ranked by impact. For each finding, cite the specific file and line.
-Do NOT suggest changes that would reduce capabilities or fight Rust/vanilla-JS idioms.
+Do NOT suggest changes that would reduce capabilities or fight Rust/Flutter idioms.
 ```
 
 Include the project name, tech stack, architecture summary, and key directories you discovered in Phase 1.
@@ -74,7 +74,7 @@ You are channeling Eric Evans (author of "Domain-Driven Design").
 
 Review the entire codebase for:
 
-1. **Ubiquitous language** — Do the names in code match the domain language? Would a domain expert recognize these terms? Are there implementation-speak names where domain terms would be clearer? Flag any naming that leaks infrastructure into the domain.
+1. **Ubiquitous language** — Do the names in code match the domain language? Would a domain expert recognize these terms? Are there implementation-speak names where domain terms would be clearer? Flag any naming that leaks infrastructure into the domain. abot's domain terms: facet, session, bundle, daemon, stage strip.
 2. **Bounded contexts** — Are there clear boundaries between subsystems? Is each module responsible for one coherent slice of the domain? Or are concerns bleeding across boundaries? Where should anticorruption layers exist?
 3. **Entities vs. Value Objects** — Are things modeled correctly? Are there entities (identity matters) being treated as values? Value objects (identity doesn't matter) being given unnecessary IDs or mutability?
 4. **Aggregates** — Is there a clear consistency boundary? What's the aggregate root? Are invariants being maintained at the right level? Is there state that should be transactional but isn't?
@@ -102,11 +102,11 @@ You are channeling Joe Armstrong (creator of Erlang, co-inventor of OTP).
 
 Review the entire codebase for:
 
-1. **Process isolation** — Are failure domains isolated? Can one component crash without taking down others? Can the server crash without killing the daemon? Can one session's failure poison another?
+1. **Process isolation** — Are failure domains isolated? Can one component crash without taking down others? Can the server crash without killing the daemon? Can one session's failure poison another? Can a Docker container failure affect the daemon?
 2. **Let it crash** — Is error handling trying to recover from things that should just crash and restart? Are there try/catch blocks papering over deeper problems? Would a supervisor strategy be cleaner than defensive error handling?
-3. **Message passing and protocols** — Are components communicating through well-defined message protocols? Are messages immutable values or mutable shared state? Could you draw a message sequence diagram of the interactions?
-4. **Supervision trees** — Is there a clear hierarchy of "who watches whom"? If the daemon dies, who notices? If a WebSocket drops, who cleans up? Are there orphaned resources waiting to happen?
-5. **Hot code reloading** — Can the system evolve without downtime? Are there implicit assumptions about initialization order that would break rolling updates? Is state serializable across restarts?
+3. **Message passing and protocols** — Are components communicating through well-defined message protocols? Are messages immutable values or mutable shared state? Could you draw a message sequence diagram of the interactions? Check NDJSON IPC, WebSocket messages, and Riverpod state flows.
+4. **Supervision trees** — Is there a clear hierarchy of "who watches whom"? If the daemon dies, who notices? If a WebSocket drops, who cleans up? If a Docker container crashes, who restarts it? Are there orphaned resources waiting to happen?
+5. **Hot code reloading** — Can the system evolve without downtime? `abot update` does rolling updates — are there implicit assumptions about initialization order that would break this? Is state serializable across restarts?
 
 **Key Armstrong question**: "What happens when this fails? Who notices, and what do they do about it?"
 
@@ -116,10 +116,10 @@ You are channeling Sandi Metz (author of "Practical Object-Oriented Design in Ru
 
 Review the entire codebase for:
 
-1. **Single Responsibility** — Does each class/widget/function have one reason to change? If you had to describe what it does, would you use the word "and"? Metz rule of thumb: a class should be describable in one sentence without "and" or "or."
+1. **Single Responsibility** — Does each module/widget/function have one reason to change? If you had to describe what it does, would you use the word "and"? Check large files like `facet_shell.dart` (25KB), `ipc.rs` (36KB), `handlers.rs` (19KB).
 2. **Dependency direction** — Do dependencies point toward stability? Are volatile things depending on stable things, or vice versa? Could dependency injection make the code more flexible without adding complexity?
-3. **Tell, Don't Ask** — Is code asking objects for data and then making decisions, or telling objects what to do? Look for chains of `object.property.method()` (Law of Demeter violations). Look for conditionals based on another object's state.
-4. **Small methods, small objects** — Are methods under ~5 lines? Are classes under ~100 lines? If not, where are the natural seams to break them apart? Metz: "small objects that send messages to each other."
+3. **Tell, Don't Ask** — Is code asking objects for data and then making decisions, or telling objects what to do? Look for chains of property access. Look for conditionals based on another object's state.
+4. **Small methods, small objects** — Are methods under ~5 lines? Are widgets under ~100 lines? If not, where are the natural seams to break them apart? Metz: "small objects that send messages to each other."
 5. **Cost of change** — Is the code easy to change? Would a new requirement require editing many files or just one? Are there shotgun surgery patterns where a single concept change requires updates in 5 places?
 
 **Key Metz question**: "What is the future cost of doing nothing? Is this code easy to change, or does it resist change?"
@@ -130,10 +130,10 @@ You are channeling Leslie Lamport (creator of TLA+, LaTeX, Paxos, Lamport clocks
 
 Review the entire codebase for:
 
-1. **State machine clarity** — Can you enumerate the states this system can be in? Are transitions explicit or implicit? Draw the state machine: what states exist, what transitions are valid, what's the initial state? Are there states that should be unreachable but aren't?
-2. **Invariants** — What must always be true? "A session always has exactly one owner." "A facet always maps to a session." Are these invariants enforced by the code or just hoped for? Could they be violated by race conditions or unexpected message ordering?
+1. **State machine clarity** — Can you enumerate the states this system can be in? Session states (creating, running, closing, closed), auth states (unauthenticated, challenged, authenticated), WebSocket states (connecting, attached, detached). Are transitions explicit or implicit?
+2. **Invariants** — What must always be true? "A session always has exactly one owner." "A facet always maps to a session." "A bundle always has a manifest.json." Are these invariants enforced by the code or just hoped for? Could they be violated by race conditions or unexpected message ordering?
 3. **Temporal properties** — Are there liveness properties (something good eventually happens)? Safety properties (something bad never happens)? "A detached session is eventually cleaned up." "Two clients never write to the same session simultaneously." Are these guaranteed?
-4. **Concurrency hazards** — Are there race conditions between the daemon, server, and client? What if two WebSocket messages arrive in the wrong order? What if a session is deleted while output is being written? Think about all interleavings.
+4. **Concurrency hazards** — Are there race conditions between the daemon, server, and client? What if two WebSocket messages arrive in the wrong order? What if a session is deleted while output is being written? What if a bundle is saved while terminal I/O is active? Think about all interleavings.
 5. **Specification vs. implementation** — Could the core logic be specified as a state machine with clear pre/post conditions? Would writing that specification reveal bugs or ambiguities in the current implementation?
 
 **Key Lamport question**: "What are ALL the possible states? Which ones are valid? Can the system reach an invalid state?"
@@ -147,8 +147,8 @@ Review the entire codebase for:
 1. **Four rules of simple design** — In priority order: (a) Passes the tests. (b) Reveals intention. (c) No duplication. (d) Fewest elements. Is there code that violates these, especially (b) and (c)?
 2. **Make the change easy, then make the easy change** — Is there a refactoring that would make the *next* change trivial? Is the code resisting a change that should be easy? What preparatory refactoring would help?
 3. **YAGNI** — Is there code preparing for a future that may never come? Configuration for things that are never configured? Abstractions for variation that doesn't exist? Parameters nobody passes?
-4. **Test-driven gaps** — Looking at the code, what tests are missing? What edge cases aren't covered? What would a test-first approach have produced differently? Where would tests give the most confidence?
-5. **Courage** — Is there code everyone is afraid to touch? Complexity that persists because "it works"? Would a bold simplification (delete this class, inline this abstraction, merge these two things) make everything clearer?
+4. **Test-driven gaps** — Looking at the code, what tests are missing? What edge cases aren't covered? What would a test-first approach have produced differently? Where would tests give the most confidence? Check Rust unit tests and Playwright e2e tests.
+5. **Courage** — Is there code everyone is afraid to touch? Complexity that persists because "it works"? Would a bold simplification (delete this module, inline this abstraction, merge these two things) make everything clearer?
 
 **Key Beck question**: "What's the simplest thing that could possibly work? And then: is this simpler than what we have?"
 
@@ -159,7 +159,7 @@ Wait for all eight agents to complete. Then:
 1. **Cross-reference** — Look for findings that multiple agents agree on. These are highest signal. Present a consensus table showing which agents flagged each theme.
 2. **Filter** — Discard findings that would:
    - Add abstraction without clear payoff
-   - Fight the language/framework idioms (Rust/axum, vanilla JS in this case)
+   - Fight the language/framework idioms (Rust/axum, Flutter/Riverpod)
    - Reduce capabilities or remove features
 3. **Rank** — Order remaining findings by impact (how much clarity, maintainability, or correctness they add).
 
@@ -168,11 +168,11 @@ Wait for all eight agents to complete. Then:
 Create a detailed, phased execution plan. Each phase should be a cohesive unit of work that can be committed and verified independently. Organize by dependency order — earlier phases should unblock later ones.
 
 For each phase:
-- **Title** — short name (e.g., "Wire PTY exit detection")
+- **Title** — short name
 - **Motivation** — which agents/perspectives drive this, and why it matters
 - **Scope** — exact files and functions to change
 - **Steps** — numbered implementation steps, specific enough to execute without ambiguity
-- **Verification** — how to confirm the change works (`cargo test`, manual check, etc.)
+- **Verification** — how to confirm the change works (`cargo test`, `flutter test`, manual check, etc.)
 - **Risk** — what could go wrong, and how to mitigate
 
 Group into tiers:
@@ -205,7 +205,7 @@ Once the user approves, work through the approved plan tier by tier.
 For each phase within a tier:
 1. **Announce** — state which phase you're starting and what it does
 2. **Implement** — make the changes
-3. **Verify** — run `cargo test`, `cargo clippy` as appropriate
+3. **Verify** — run `cargo test`, `cargo clippy`, `dart analyze` as appropriate
 4. **Checkpoint** — commit the changes with a descriptive message
 
 After completing each tier, briefly summarize what was done and confirm all tests still pass before moving to the next tier.
@@ -215,5 +215,5 @@ If a phase turns out to be larger or riskier than expected during implementation
 ## Phase 7: Ship
 
 After all approved tiers are complete:
-1. Build and test Rust: `cargo test`
+1. Run the full test suite: `cargo test`
 2. Create a feature branch, commit all work, and run `/ship-it` to push, review, and merge.
