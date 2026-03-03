@@ -634,6 +634,26 @@ pub async fn handle_request(
         }
 
         DaemonRequest::SaveSessionAs { id, session, path } => {
+            // Reject save paths inside another .abot bundle
+            {
+                let mut check = std::path::Path::new(&path);
+                while let Some(parent) = check.parent() {
+                    if parent
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("abot"))
+                    {
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!(
+                                "cannot save inside another .abot bundle: {}",
+                                parent.display()
+                            ),
+                        });
+                    }
+                    check = parent;
+                }
+            }
+
             let sessions = state.sessions.lock().await;
             if let Some(s) = sessions.get(&session) {
                 let env = s.env.clone();

@@ -85,8 +85,8 @@ class AbotSizes {
   static const double buttonSmHeight = 32;
   static const double buttonMdHeight = 44; // iOS touch target
   static const double titleBarHeight = 32;
-  static const double sidebarExpandedWidth = 200;
-  static const double sidebarCollapsedWidth = 44;
+  static const double sidebarExpandedWidth = 240;
+  static const double sidebarCollapsedWidth = 56;
   static const double statusDotSize = 8;
   static const Duration sidebarAnimDuration = Duration(milliseconds: 250);
 }

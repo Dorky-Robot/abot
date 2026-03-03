@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::auth::middleware::Authenticated;
+use crate::auth::middleware::{Authenticated, CsrfVerified};
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -42,10 +42,7 @@ pub async fn browse_dir(
     let canonical = expanded.canonicalize().map_err(|_| AppError::NotFound)?;
 
     if !canonical.is_dir() {
-        return Err(AppError::BadRequest(format!(
-            "not a directory: {}",
-            canonical.display()
-        )));
+        return Err(AppError::BadRequest("path is not a directory".into()));
     }
 
     let parent = canonical.parent().map(|p| p.to_string_lossy().to_string());
@@ -104,4 +101,147 @@ pub async fn browse_dir(
         "parent": parent,
         "entries": entries,
     })))
+}
+
+/// POST /api/pick-directory — open the native OS directory picker.
+pub async fn pick_directory(_csrf: CsrfVerified) -> Result<Json<serde_json::Value>, AppError> {
+    picker_response(native_pick_directory().await)
+}
+
+/// POST /api/pick-file — open the native OS file picker (for .abot bundles).
+pub async fn pick_file(_csrf: CsrfVerified) -> Result<Json<serde_json::Value>, AppError> {
+    picker_response(native_pick_file().await)
+}
+
+/// POST /api/pick-save-location — open the native OS save dialog.
+pub async fn pick_save_location(
+    _csrf: CsrfVerified,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let default_name = body
+        .get("defaultName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("session.abot");
+    // Sanitize filename: only allow safe characters
+    let safe_name: String = default_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ')
+        .collect();
+    let safe_name = if safe_name.is_empty() {
+        "session.abot"
+    } else {
+        &safe_name
+    };
+    picker_response(native_pick_save(safe_name).await)
+}
+
+fn picker_response(
+    result: anyhow::Result<Option<String>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    match result {
+        Ok(Some(path)) => Ok(Json(json!({ "path": path }))),
+        Ok(None) => Ok(Json(json!({ "path": null }))),
+        Err(e) => Err(AppError::Internal(format!("picker failed: {e}"))),
+    }
+}
+
+// --- Platform-specific native pickers ---
+
+#[cfg(target_os = "macos")]
+async fn run_osascript(script: &str) -> anyhow::Result<Option<String>> {
+    let output = tokio::process::Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let path = path.strip_suffix('/').unwrap_or(&path).to_string();
+    Ok(Some(path))
+}
+
+#[cfg(target_os = "macos")]
+async fn native_pick_directory() -> anyhow::Result<Option<String>> {
+    run_osascript("POSIX path of (choose folder)").await
+}
+
+#[cfg(target_os = "macos")]
+async fn native_pick_file() -> anyhow::Result<Option<String>> {
+    run_osascript("POSIX path of (choose file of type {\"abot\"})").await
+}
+
+#[cfg(target_os = "macos")]
+async fn native_pick_save(default_name: &str) -> anyhow::Result<Option<String>> {
+    let script = format!(
+        "POSIX path of (choose file name default name \"{}\")",
+        default_name.replace(['\\', '"'], "")
+    );
+    run_osascript(&script).await
+}
+
+#[cfg(target_os = "linux")]
+async fn run_zenity_or_kdialog(
+    zenity_args: &[&str],
+    kdialog_args: &[&str],
+) -> anyhow::Result<Option<String>> {
+    let output = tokio::process::Command::new("zenity")
+        .args(zenity_args)
+        .output()
+        .await;
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => {
+            tokio::process::Command::new("kdialog")
+                .args(kdialog_args)
+                .output()
+                .await?
+        }
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+async fn native_pick_directory() -> anyhow::Result<Option<String>> {
+    run_zenity_or_kdialog(
+        &["--file-selection", "--directory"],
+        &["--getexistingdirectory", "."],
+    )
+}
+
+#[cfg(target_os = "linux")]
+async fn native_pick_file() -> anyhow::Result<Option<String>> {
+    run_zenity_or_kdialog(
+        &["--file-selection", "--file-filter=*.abot"],
+        &["--getopenfilename", ".", "*.abot"],
+    )
+}
+
+#[cfg(target_os = "linux")]
+async fn native_pick_save(default_name: &str) -> anyhow::Result<Option<String>> {
+    let zenity_args = vec!["--file-selection", "--save", "--filename", default_name];
+    let zenity_refs: Vec<&str> = zenity_args.iter().map(|s| s.as_ref()).collect();
+    run_zenity_or_kdialog(
+        &zenity_refs,
+        &["--getsavefilename", ".", &format!("*.abot|{default_name}")],
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+async fn native_pick_directory() -> anyhow::Result<Option<String>> {
+    anyhow::bail!("native picker not supported on this platform")
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+async fn native_pick_file() -> anyhow::Result<Option<String>> {
+    anyhow::bail!("native picker not supported on this platform")
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+async fn native_pick_save(_name: &str) -> anyhow::Result<Option<String>> {
+    anyhow::bail!("native picker not supported on this platform")
 }
