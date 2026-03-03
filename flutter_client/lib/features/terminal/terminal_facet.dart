@@ -447,32 +447,14 @@ class _TitleBar extends StatelessWidget {
           Icon(Icons.terminal, size: 14, color: textColor),
           const SizedBox(width: AbotSpacing.xs),
           Expanded(
-            child: Row(
-              children: [
-                Flexible(
-                  child: Text(
-                    sessionName,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: textColor,
-                      fontFamily: AbotFonts.mono,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                if (isDirty)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 4),
-                    child: Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: p.yellow,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ),
-              ],
+            child: Text(
+              sessionName,
+              style: TextStyle(
+                fontSize: 12,
+                color: textColor,
+                fontFamily: AbotFonts.mono,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
           if (onSettings != null)
@@ -499,7 +481,21 @@ class _TitleBar extends StatelessWidget {
               borderRadius: BorderRadius.circular(AbotRadius.sm),
               child: Padding(
                 padding: const EdgeInsets.all(4),
-                child: Icon(Icons.close, size: 14, color: textColor),
+                child: isDirty
+                    ? Container(
+                        width: 14,
+                        height: 14,
+                        alignment: Alignment.center,
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: p.subtext0,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      )
+                    : Icon(Icons.close, size: 14, color: textColor),
               ),
             ),
         ],

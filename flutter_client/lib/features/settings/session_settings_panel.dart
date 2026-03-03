@@ -2,69 +2,53 @@ import 'package:flutter/material.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/session_service.dart';
 import '../../core/theme/abot_theme.dart';
-import 'credential_input.dart';
 
 /// Per-session settings overlay — opened from session gear icon.
-/// Shows session info, per-session credentials, and document save/save-as.
+/// Shows session info, rename, and document save/save-as.
 class SessionSettingsPanel extends StatefulWidget {
   final String sessionName;
   final VoidCallback onClose;
+  final ValueChanged<String>? onRenamed;
 
   const SessionSettingsPanel({
     super.key,
     required this.sessionName,
     required this.onClose,
+    this.onRenamed,
   });
 
   @override
   State<SessionSettingsPanel> createState() => _SessionSettingsPanelState();
 }
 
-enum _CredState { loading, disconnected, connected }
-
 class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
   final _api = const ApiClient();
-  final _keyController = TextEditingController();
+  final _renameController = TextEditingController();
+  final _renameFocus = FocusNode();
 
-  _CredState _credState = _CredState.loading;
-  bool _saving = false;
   bool _savingBundle = false;
   String? _bundlePath;
   bool _dirty = false;
   String? _savedMessage;
+  bool _renaming = false;
+  late String _currentName;
 
   @override
   void initState() {
     super.initState();
-    _loadCredentialStatus();
+    _currentName = widget.sessionName;
     _loadSessionInfo();
   }
 
   @override
   void dispose() {
-    _keyController.dispose();
+    _renameController.dispose();
+    _renameFocus.dispose();
     super.dispose();
   }
 
-  Future<void> _loadCredentialStatus() async {
-    final url =
-        '/sessions/${Uri.encodeComponent(widget.sessionName)}/credentials/status';
-    try {
-      final data = await _api.get(url) as Map<String, dynamic>;
-      if (!mounted) return;
-      setState(() {
-        _credState = data['status'] == 'connected'
-            ? _CredState.connected
-            : _CredState.disconnected;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _credState = _CredState.disconnected);
-    }
-  }
-
   Future<void> _loadSessionInfo() async {
-    final url = '/sessions/${Uri.encodeComponent(widget.sessionName)}';
+    final url = '/sessions/${Uri.encodeComponent(_currentName)}';
     try {
       final data = await _api.get(url) as Map<String, dynamic>;
       if (!mounted) return;
@@ -78,41 +62,40 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
     }
   }
 
-  Future<void> _saveCredential() async {
-    final key = _keyController.text.trim();
-    if (key.isEmpty) return;
-
-    setState(() => _saving = true);
-    final url =
-        '/sessions/${Uri.encodeComponent(widget.sessionName)}/credentials';
-    try {
-      await _api.post(url, {'api_key': key});
-      if (!mounted) return;
-      setState(() {
-        _credState = _CredState.connected;
-        _saving = false;
-      });
-      _keyController.clear();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _saving = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save: $e')),
+  void _startRename() {
+    _renameController.text = _currentName;
+    setState(() => _renaming = true);
+    Future.microtask(() {
+      _renameFocus.requestFocus();
+      _renameController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _renameController.text.length,
       );
-    }
+    });
   }
 
-  Future<void> _removeCredential() async {
-    final url =
-        '/sessions/${Uri.encodeComponent(widget.sessionName)}/credentials';
+  Future<void> _submitRename() async {
+    final newName = _renameController.text.trim();
+    if (newName.isEmpty || newName == _currentName) {
+      setState(() => _renaming = false);
+      return;
+    }
     try {
-      await _api.delete(url);
+      await _api.put(
+        '/sessions/${Uri.encodeComponent(_currentName)}',
+        {'name': newName},
+      );
       if (!mounted) return;
-      setState(() => _credState = _CredState.disconnected);
+      setState(() {
+        _currentName = newName;
+        _renaming = false;
+      });
+      widget.onRenamed?.call(newName);
     } catch (e) {
       if (!mounted) return;
+      setState(() => _renaming = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to remove: $e')),
+        SnackBar(content: Text('Rename failed: $e')),
       );
     }
   }
@@ -120,7 +103,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
   Future<void> _saveSession() async {
     setState(() => _savingBundle = true);
     final url =
-        '/sessions/${Uri.encodeComponent(widget.sessionName)}/save';
+        '/sessions/${Uri.encodeComponent(_currentName)}/save';
     try {
       final data = await _api.post(url, {}) as Map<String, dynamic>;
       if (!mounted) return;
@@ -140,7 +123,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
   }
 
   Future<void> _saveSessionAs() async {
-    String defaultFileName = '${widget.sessionName}.abot';
+    String defaultFileName = '$_currentName.abot';
     if (_bundlePath != null) {
       final lastSlash = _bundlePath!.lastIndexOf('/');
       if (lastSlash >= 0 && lastSlash < _bundlePath!.length - 1) {
@@ -177,7 +160,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
 
     setState(() => _savingBundle = true);
     final url =
-        '/sessions/${Uri.encodeComponent(widget.sessionName)}/save-as';
+        '/sessions/${Uri.encodeComponent(_currentName)}/save-as';
     try {
       final data =
           await _api.post(url, {'path': path}) as Map<String, dynamic>;
@@ -241,16 +224,58 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
                           child: Row(
                             children: [
                               Flexible(
-                                child: Text(
-                                  widget.sessionName,
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: p.text,
-                                    fontFamily: AbotFonts.mono,
-                                  ),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                                child: _renaming
+                                    ? SizedBox(
+                                        height: 28,
+                                        child: TextField(
+                                          controller: _renameController,
+                                          focusNode: _renameFocus,
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: p.text,
+                                            fontFamily: AbotFonts.mono,
+                                          ),
+                                          decoration: InputDecoration(
+                                            isDense: true,
+                                            contentPadding:
+                                                const EdgeInsets.symmetric(
+                                              horizontal: AbotSpacing.xs,
+                                              vertical: AbotSpacing.xs,
+                                            ),
+                                            border: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                      AbotRadius.sm),
+                                              borderSide: BorderSide(
+                                                  color: p.mauve),
+                                            ),
+                                            focusedBorder: OutlineInputBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                      AbotRadius.sm),
+                                              borderSide: BorderSide(
+                                                  color: p.mauve),
+                                            ),
+                                            filled: true,
+                                            fillColor: p.surface0,
+                                          ),
+                                          onSubmitted: (_) => _submitRename(),
+                                        ),
+                                      )
+                                    : GestureDetector(
+                                        onDoubleTap: _startRename,
+                                        child: Text(
+                                          _currentName,
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            color: p.text,
+                                            fontFamily: AbotFonts.mono,
+                                          ),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
                               ),
                               if (_dirty)
                                 Padding(
@@ -289,13 +314,6 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
                         _SectionLabel(label: 'Document'),
                         const SizedBox(height: AbotSpacing.sm),
                         _buildDocumentSection(p),
-
-                        const SizedBox(height: AbotSpacing.xl),
-
-                        // Credentials section
-                        _SectionLabel(label: 'Session Credentials'),
-                        const SizedBox(height: AbotSpacing.sm),
-                        _buildCredentialSection(p),
                       ],
                     ),
                   ),
@@ -418,47 +436,6 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
     );
   }
 
-  Widget _buildCredentialSection(CatPalette p) {
-    return switch (_credState) {
-      _CredState.loading => Padding(
-          padding: const EdgeInsets.all(AbotSpacing.md),
-          child: Center(
-            child: SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: p.overlay0,
-              ),
-            ),
-          ),
-        ),
-      _CredState.disconnected => Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Override the default credentials for this session only.',
-              style: TextStyle(
-                fontSize: 11,
-                color: p.subtext0,
-                fontFamily: AbotFonts.mono,
-              ),
-            ),
-            const SizedBox(height: AbotSpacing.md),
-            CredentialInput(
-              controller: _keyController,
-              saving: _saving,
-              onSave: _saveCredential,
-            ),
-          ],
-        ),
-      _CredState.connected => CredentialConnectedBadge(
-          message: 'Session credentials set',
-          subtitle: 'This session uses its own credentials.',
-          onDisconnect: _removeCredential,
-        ),
-    };
-  }
 }
 
 class _SectionLabel extends StatelessWidget {

@@ -20,7 +20,7 @@ RUN apk add --no-cache \
     fd \
     tree \
     tmux \
-    && npm install -g @anthropic-ai/claude-code
+    gcompat
 
 # Set default shell
 ENV SHELL=/bin/bash
@@ -30,12 +30,15 @@ ENV LANG=en_US.UTF-8
 
 # Create a non-root user
 RUN adduser -D -s /bin/bash dev
+
+# Install Claude Code via native installer to a system path that won't be
+# shadowed by the bind mount on /home/dev
+USER dev
+RUN curl -fsSL https://claude.ai/install.sh | bash
+USER root
+RUN cp /home/dev/.local/bin/claude /usr/local/bin/claude && \
+    chmod +x /usr/local/bin/claude
 USER dev
 WORKDIR /home/dev
-
-# Pre-seed Claude Code config so the interactive wizard is skipped.
-# The hasCompletedOnboarding flag prevents the first-run "Select login method" screen.
-RUN mkdir -p /home/dev/.claude && \
-    echo '{"hasCompletedOnboarding":true,"hasCompletedAuthFlow":true}' > /home/dev/.claude/settings.json
 
 CMD ["/bin/bash", "-l"]

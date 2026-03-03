@@ -112,6 +112,21 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     remove(facetId);
   }
 
+  /// Update session name in all facets referencing the old name.
+  void renameSessionInFacets(String oldName, String newName) {
+    final newFacets = Map<String, FacetData>.from(state.facets);
+    var changed = false;
+    for (final entry in newFacets.entries) {
+      if (entry.value.sessionName == oldName) {
+        newFacets[entry.key] = entry.value.copyWith(sessionName: newName);
+        changed = true;
+      }
+    }
+    if (changed) {
+      state = state.copyWith(facets: newFacets);
+    }
+  }
+
   /// Focus an existing facet for a session, or create one and attach.
   void openOrFocusSession(String sessionName) {
     final existing = state.getBySession(sessionName);
