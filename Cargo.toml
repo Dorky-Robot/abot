@@ -7,7 +7,6 @@ license = "MIT"
 
 [features]
 docker = ["bollard"]
-flutter = []
 
 [dependencies]
 # HTTP + WebSocket

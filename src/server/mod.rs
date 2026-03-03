@@ -1,5 +1,6 @@
 pub mod anthropic_oauth;
 pub mod assets;
+pub mod browse;
 pub mod config;
 pub mod daemon_client;
 pub mod router;
