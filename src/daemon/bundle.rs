@@ -89,7 +89,7 @@ pub async fn save_bundle(
     }
     let config = serde_json::json!({
         "shell": "/bin/bash",
-        "memory_mb": 512,
+        "memory_mb": 2048,
         "cpu_percent": 50,
         "env": custom_env,
     });
@@ -176,18 +176,10 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
     // 4. Ensure home/ directory exists; migrate from legacy filesystem.tar.zst if needed
     let home_dir = bundle_dir.join("home");
     if !home_dir.exists() {
-        #[cfg(feature = "docker")]
-        {
-            let snapshot_path = bundle_dir.join("filesystem.tar.zst");
-            if snapshot_path.exists() {
-                migrate_archive_to_home(&snapshot_path, &home_dir).await?;
-            } else {
-                std::fs::create_dir_all(&home_dir)
-                    .with_context(|| "failed to create home/ in bundle")?;
-            }
-        }
-        #[cfg(not(feature = "docker"))]
-        {
+        let snapshot_path = bundle_dir.join("filesystem.tar.zst");
+        if snapshot_path.exists() {
+            migrate_archive_to_home(&snapshot_path, &home_dir).await?;
+        } else {
             std::fs::create_dir_all(&home_dir)
                 .with_context(|| "failed to create home/ in bundle")?;
         }
@@ -210,6 +202,29 @@ pub(crate) fn read_json(path: &Path) -> Result<serde_json::Value> {
     let contents = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&contents)?;
     Ok(value)
+}
+
+/// Save terminal scrollback to a bundle directory.
+/// Uses atomic write (tmp + rename) to avoid partial reads.
+/// No-op if content is empty.
+pub fn save_scrollback(bundle_path: &Path, content: &str) {
+    if content.is_empty() {
+        return;
+    }
+    let target = bundle_path.join("scrollback");
+    let tmp = bundle_path.join("scrollback.tmp");
+    if std::fs::write(&tmp, content.as_bytes()).is_ok() {
+        let _ = std::fs::rename(&tmp, &target);
+    }
+}
+
+/// Load terminal scrollback from a bundle directory.
+/// Returns `None` if the file is missing or unreadable.
+pub fn load_scrollback(bundle_path: &Path) -> Option<String> {
+    let path = bundle_path.join("scrollback");
+    std::fs::read(&path)
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Ensure a bundle's `home/` directory exists, creating the full bundle structure.
@@ -273,7 +288,6 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Migrate a legacy `filesystem.tar.zst` archive into a `home/` directory.
-#[cfg(feature = "docker")]
 async fn migrate_archive_to_home(archive_path: &Path, home_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(home_dir)
         .with_context(|| format!("failed to create home dir: {}", home_dir.display()))?;
@@ -431,7 +445,7 @@ mod tests {
             &bundle_dir.join("config.json"),
             &serde_json::json!({
                 "shell": "/bin/bash",
-                "memory_mb": 512,
+                "memory_mb": 2048,
                 "cpu_percent": 50,
                 "env": {
                     "MY_VAR": "hello"
@@ -571,6 +585,76 @@ mod tests {
         let result = open_bundle(bundle_dir.to_str().unwrap()).await;
         assert!(result.is_ok());
         assert!(bundle_dir.join("home").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_save_and_load_scrollback() {
+        let dir = std::env::temp_dir().join("abot-scrollback-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        save_scrollback(&dir, "hello\x1b[32mworld\x1b[0m");
+        let loaded = load_scrollback(&dir);
+        assert_eq!(loaded, Some("hello\x1b[32mworld\x1b[0m".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_save_scrollback_empty_is_noop() {
+        let dir = std::env::temp_dir().join("abot-scrollback-empty-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        save_scrollback(&dir, "");
+        assert!(!dir.join("scrollback").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_scrollback_missing_returns_none() {
+        let dir = std::env::temp_dir().join("abot-scrollback-missing-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert_eq!(load_scrollback(&dir), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Simulates the CreateSession → close → CreateSession round-trip:
+    /// scrollback saved to bundle on close should be loadable on next create.
+    #[test]
+    fn test_scrollback_survives_create_session_roundtrip() {
+        let dir = std::env::temp_dir().join("abot-scrollback-roundtrip-test");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 1. First session: ensure_bundle_home creates the bundle dir
+        let home = ensure_bundle_home(&dir, "main").unwrap();
+        let bundle_path = home.parent().unwrap();
+
+        // 2. Session produces terminal output, close saves scrollback
+        let terminal_output = "user@host:~$ ls\nfile1.txt  file2.txt\nuser@host:~$ ";
+        save_scrollback(bundle_path, terminal_output);
+        assert!(bundle_path.join("scrollback").exists());
+
+        // 3. Daemon restarts, ensure_bundle_home again (idempotent)
+        let home2 = ensure_bundle_home(&dir, "main").unwrap();
+        let bundle_path2 = home2.parent().unwrap();
+
+        // 4. Load scrollback — must survive the restart
+        let loaded = load_scrollback(bundle_path2);
+        assert_eq!(loaded, Some(terminal_output.to_string()));
+
+        // 5. Pre-populate ring buffer (what CreateSession should do)
+        let mut buf = crate::daemon::ring_buffer::RingBuffer::new(5000, 5 * 1024 * 1024);
+        if let Some(scrollback) = loaded {
+            buf.pre_populate(scrollback);
+        }
+        assert_eq!(buf.to_string(), terminal_output);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
