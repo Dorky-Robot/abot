@@ -1,0 +1,22 @@
+#!/bin/bash
+# abot launcher — opens .abot bundles or starts the server.
+# When double-clicking an .abot file, macOS passes the path as $1.
+
+ABOT_BIN="${ABOT_BIN:-$(command -v abot 2>/dev/null || echo /opt/homebrew/bin/abot)}"
+
+if [ ! -x "$ABOT_BIN" ]; then
+    osascript -e 'display alert "abot not found" message "Install abot via: brew install dorky-robot/tap/abot" as critical'
+    exit 1
+fi
+
+if [ -n "$1" ] && [ -d "$1" ]; then
+    # Opening a .abot bundle — start server if not running, then open in browser
+    "$ABOT_BIN" start --open-bundle "$1" 2>/dev/null &
+else
+    # No file argument — just start the server
+    "$ABOT_BIN" start 2>/dev/null &
+fi
+
+# Open the browser to the abot UI
+sleep 1
+open "http://localhost:7070"

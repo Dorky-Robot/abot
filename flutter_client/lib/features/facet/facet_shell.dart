@@ -235,13 +235,71 @@ class _FacetShellState extends ConsumerState<FacetShell>
     _cardKeys.remove(facetId);
   }
 
-  void _closeFacet(String facetId) {
+  Future<void> _closeFacet(String facetId) async {
     final facet = ref.read(facetManagerProvider).facets[facetId];
-    _minimizeFacet(facetId);
-    if (facet != null) {
-      ref
+    if (facet == null) return;
+
+    final sessionName = facet.sessionName;
+    final isDirty = ref.read(sessionServiceProvider).when(
+          data: (sessions) =>
+              sessions.where((s) => s.name == sessionName).firstOrNull?.dirty ??
+              false,
+          loading: () => false,
+          error: (_, _) => false,
+        );
+
+    if (isDirty) {
+      // Prompt: save before closing?
+      final action = await showDialog<String>(
+        context: context,
+        builder: (ctx) {
+          final p = ctx.palette;
+          return AlertDialog(
+            backgroundColor: p.base,
+            title: Text('Unsaved changes',
+                style: TextStyle(
+                    color: p.text,
+                    fontFamily: AbotFonts.mono,
+                    fontSize: 14)),
+            content: Text('Save "$sessionName" before closing?',
+                style: TextStyle(
+                    color: p.subtext0,
+                    fontFamily: AbotFonts.mono,
+                    fontSize: 12)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'discard'),
+                child: Text('Discard',
+                    style: TextStyle(color: p.red, fontFamily: AbotFonts.mono)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('Cancel',
+                    style: TextStyle(
+                        color: p.subtext0, fontFamily: AbotFonts.mono)),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, 'save'),
+                child: Text('Save & Close',
+                    style:
+                        TextStyle(color: p.mauve, fontFamily: AbotFonts.mono)),
+              ),
+            ],
+          );
+        },
+      );
+      if (!mounted || action == null) return;
+
+      _minimizeFacet(facetId);
+      final save = action == 'save';
+      await ref
           .read(sessionServiceProvider.notifier)
-          .deleteSession(facet.sessionName);
+          .closeSession(sessionName, save: save);
+    } else {
+      _minimizeFacet(facetId);
+      await ref
+          .read(sessionServiceProvider.notifier)
+          .closeSession(sessionName);
     }
   }
 
@@ -300,7 +358,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
       final path = data['path'] as String?;
       if (path == null || path.isEmpty || !mounted) return;
 
-      await ref.read(sessionServiceProvider.notifier).openBundle(path);
+      final result = await ref.read(sessionServiceProvider.notifier).openBundle(path);
+      if (!mounted) return;
+      // Open the session as a focused facet
+      final name = result['name'] as String?;
+      if (name != null) {
+        ref.read(facetManagerProvider.notifier).openOrFocusSession(name);
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -562,6 +626,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
               sessionName: _sessionSettingsName!,
               onClose: () =>
                   setState(() => _sessionSettingsName = null),
+              onRenamed: (newName) {
+                setState(() => _sessionSettingsName = newName);
+                // Refresh session list to pick up the new name
+                ref.read(sessionServiceProvider.notifier).refresh();
+              },
             ),
         ],
       ),

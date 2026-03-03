@@ -169,7 +169,7 @@ async fn native_pick_directory() -> anyhow::Result<Option<String>> {
 
 #[cfg(target_os = "macos")]
 async fn native_pick_file() -> anyhow::Result<Option<String>> {
-    run_osascript("POSIX path of (choose file of type {\"abot\"})").await
+    run_osascript("POSIX path of (choose file of type {\"com.dorkyrobot.abot.bundle\"})").await
 }
 
 #[cfg(target_os = "macos")]
