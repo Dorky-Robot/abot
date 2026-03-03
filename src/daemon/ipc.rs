@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::session::Session;
@@ -109,17 +110,37 @@ pub enum DaemonRequest {
         env: HashMap<String, Option<String>>,
     },
 
-    /// RPC: export a session as a .abot bundle
-    #[serde(rename = "export-session")]
-    ExportSession {
+    /// RPC: open a .abot bundle as a new session
+    #[serde(rename = "open-bundle")]
+    OpenBundle {
+        id: String,
+        path: String,
+        #[serde(default = "default_cols")]
+        cols: u16,
+        #[serde(default = "default_rows")]
+        rows: u16,
+    },
+
+    /// RPC: save session to its tracked bundle path
+    #[serde(rename = "save-session")]
+    SaveSession { id: String, session: String },
+
+    /// RPC: save session to a new bundle path
+    #[serde(rename = "save-session-as")]
+    SaveSessionAs {
         id: String,
         session: String,
         path: String,
     },
 
-    /// RPC: import a .abot bundle as a new session
-    #[serde(rename = "import-session")]
-    ImportSession { id: String, path: String },
+    /// RPC: close session (optionally save first)
+    #[serde(rename = "close-session")]
+    CloseSession {
+        id: String,
+        session: String,
+        #[serde(default)]
+        save: bool,
+    },
 
     /// RPC: health check
     #[serde(rename = "ping")]
@@ -172,13 +193,19 @@ pub enum DaemonResponse {
         id: String,
         session: String,
     },
-    Exported {
-        id: String,
-        path: String,
-    },
-    Imported {
+    Opened {
         id: String,
         name: String,
+        path: String,
+    },
+    Saved {
+        id: String,
+        session: String,
+        path: String,
+    },
+    Closed {
+        id: String,
+        session: String,
     },
     Pong {
         id: String,
@@ -273,7 +300,12 @@ pub async fn handle_request(
         DaemonRequest::DeleteSession { id, name } => {
             let mut sessions = state.sessions.lock().await;
             if let Some(mut session) = sessions.remove(&name) {
+                let bundle_path = session.bundle_path.clone();
                 session.backend.kill();
+                // Remove bundle directory if it exists
+                if let Some(bp) = bundle_path {
+                    let _ = std::fs::remove_dir_all(&bp);
+                }
                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                     session: name.clone(),
                 });
@@ -302,6 +334,25 @@ pub async fn handle_request(
                 session.name = new_name.clone();
                 // Update the shared name so background relay tasks use the new name
                 *session.shared_name.lock().unwrap() = new_name.clone();
+
+                // Update manifest.json name field if bundle exists
+                if let Some(ref bp) = session.bundle_path {
+                    let manifest_path = bp.join("manifest.json");
+                    if manifest_path.exists() {
+                        if let Ok(contents) = std::fs::read_to_string(&manifest_path) {
+                            if let Ok(mut manifest) =
+                                serde_json::from_str::<serde_json::Value>(&contents)
+                            {
+                                manifest["name"] = serde_json::Value::String(new_name.clone());
+                                let _ = std::fs::write(
+                                    &manifest_path,
+                                    serde_json::to_string_pretty(&manifest).unwrap_or_default(),
+                                );
+                            }
+                        }
+                    }
+                }
+
                 sessions.insert(new_name.clone(), session);
 
                 // Update client attachments that point to old name
@@ -437,6 +488,7 @@ pub async fn handle_request(
                         }
                     }
                 }
+                s.dirty = true;
                 tracing::info!(
                     "session '{}' env updated ({} entries)",
                     session,
@@ -458,42 +510,29 @@ pub async fn handle_request(
             }
         }
 
-        DaemonRequest::ExportSession { id, session, path } => {
-            let sessions = state.sessions.lock().await;
-            if let Some(s) = sessions.get(&session) {
-                let env = s.env.clone();
-                drop(sessions);
-
-                match super::bundle::export_bundle(&session, &env, &path).await {
-                    Ok(bundle_path) => Some(DaemonResponse::Exported {
-                        id,
-                        path: bundle_path,
-                    }),
-                    Err(e) => Some(DaemonResponse::Error {
-                        id,
-                        error: format!("export failed: {}", e),
-                    }),
-                }
-            } else {
-                Some(DaemonResponse::Error {
-                    id,
-                    error: format!("session '{}' not found", session),
-                })
-            }
-        }
-
-        DaemonRequest::ImportSession { id, path } => {
-            match super::bundle::import_bundle(&path).await {
+        DaemonRequest::OpenBundle {
+            id,
+            path,
+            cols,
+            rows,
+        } => {
+            match super::bundle::open_bundle(&path).await {
                 Ok(bundle) => {
-                    // Create the session with the imported env
                     let name = bundle.name.clone();
+                    let bundle_path = bundle.path.clone();
+                    let home_bind = bundle_path.join("home");
                     let result = state
-                        .create_backend(&name, default_cols(), default_rows())
+                        .create_backend_with_env(&name, cols, rows, &bundle.env, Some(&home_bind))
                         .await;
 
                     match result {
                         Ok(backend) => {
-                            let session = Session::new(name.clone(), backend, bundle.env.clone());
+                            let session = Session::new(
+                                name.clone(),
+                                backend,
+                                bundle.env.clone(),
+                                Some(bundle_path.clone()),
+                            );
                             let session_name = session.name.clone();
 
                             let output_tx = state.output_tx.clone();
@@ -509,7 +548,7 @@ pub async fn handle_request(
                             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
                             drop(sessions);
 
-                            // Inject imported credentials into the new container
+                            // Inject credentials into the new container
                             if !bundle.env.is_empty() {
                                 let global_env = state.agent_env.lock().await;
                                 let mut merged = global_env.clone();
@@ -521,69 +560,229 @@ pub async fn handle_request(
                             }
 
                             if let Some(mut rx) = rx {
-                                tokio::spawn(async move {
-                                    while let Some(data) = rx.recv().await {
-                                        let current_name = shared_name
-                                            .as_ref()
-                                            .map(|sn| sn.lock().unwrap().clone())
-                                            .unwrap_or_else(|| reader_name.clone());
-
-                                        {
-                                            let mut sessions = state_ref.sessions.lock().await;
-                                            if let Some(s) = sessions.get_mut(&current_name) {
-                                                s.buffer.push(data.clone());
-                                            }
-                                        }
-                                        let _ = output_tx.send(OutputEvent::Output {
-                                            session: current_name,
-                                            data,
-                                        });
-                                    }
-
-                                    let current_name = shared_name
-                                        .as_ref()
-                                        .map(|sn| sn.lock().unwrap().clone())
-                                        .unwrap_or_else(|| reader_name.clone());
-
-                                    let code = {
-                                        let mut sessions = state_ref.sessions.lock().await;
-                                        if let Some(s) = sessions.get_mut(&current_name) {
-                                            let code = s.backend.try_exit_code().unwrap_or(0);
-                                            s.mark_exited(code);
-                                            Some(code)
-                                        } else {
-                                            None
-                                        }
-                                    };
-                                    if let Some(code) = code {
-                                        let _ = output_tx.send(OutputEvent::Exit {
-                                            session: current_name,
-                                            code,
-                                        });
-                                    }
-                                });
+                                spawn_output_relay(
+                                    output_tx,
+                                    state_ref,
+                                    shared_name,
+                                    reader_name,
+                                    &mut rx,
+                                );
                             }
 
-                            Some(DaemonResponse::Imported {
+                            Some(DaemonResponse::Opened {
                                 id,
                                 name: session_name,
+                                path: bundle_path.to_string_lossy().to_string(),
                             })
                         }
                         Err(e) => Some(DaemonResponse::Error {
                             id,
-                            error: format!("failed to create session from import: {}", e),
+                            error: format!("failed to create session from bundle: {}", e),
                         }),
                     }
                 }
                 Err(e) => Some(DaemonResponse::Error {
                     id,
-                    error: format!("import failed: {}", e),
+                    error: format!("open failed: {}", e),
                 }),
+            }
+        }
+
+        DaemonRequest::SaveSession { id, session } => {
+            let sessions = state.sessions.lock().await;
+            if let Some(s) = sessions.get(&session) {
+                let bundle_path = match &s.bundle_path {
+                    Some(p) => p.clone(),
+                    None => {
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!(
+                                "session '{}' has no bundle path (use save-as)",
+                                session
+                            ),
+                        })
+                    }
+                };
+                let env = s.env.clone();
+                let name = s.name.clone();
+                drop(sessions);
+
+                match super::bundle::save_bundle(&bundle_path, &name, &env).await {
+                    Ok(()) => {
+                        // Clear dirty flag
+                        let mut sessions = state.sessions.lock().await;
+                        if let Some(s) = sessions.get_mut(&session) {
+                            s.dirty = false;
+                        }
+                        Some(DaemonResponse::Saved {
+                            id,
+                            session,
+                            path: bundle_path.to_string_lossy().to_string(),
+                        })
+                    }
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("save failed: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("session '{}' not found", session),
+                })
+            }
+        }
+
+        DaemonRequest::SaveSessionAs { id, session, path } => {
+            let sessions = state.sessions.lock().await;
+            if let Some(s) = sessions.get(&session) {
+                let env = s.env.clone();
+                let name = s.name.clone();
+                let existing_bundle = s.bundle_path.clone();
+                drop(sessions);
+
+                let new_bundle_path = PathBuf::from(&path);
+
+                // Copy the existing bundle directory if available, then write metadata
+                if let Some(ref src) = existing_bundle {
+                    if let Err(e) = super::bundle::copy_dir_recursive(src, &new_bundle_path) {
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!("save-as copy failed: {}", e),
+                        });
+                    }
+                }
+
+                match super::bundle::save_bundle(&new_bundle_path, &name, &env).await {
+                    Ok(()) => {
+                        // Update bundle_path and clear dirty flag
+                        let mut sessions = state.sessions.lock().await;
+                        if let Some(s) = sessions.get_mut(&session) {
+                            s.bundle_path = Some(new_bundle_path.clone());
+                            s.dirty = false;
+                        }
+                        Some(DaemonResponse::Saved {
+                            id,
+                            session,
+                            path: new_bundle_path.to_string_lossy().to_string(),
+                        })
+                    }
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("save-as failed: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("session '{}' not found", session),
+                })
+            }
+        }
+
+        DaemonRequest::CloseSession { id, session, save } => {
+            // Optionally save first
+            if save {
+                let sessions = state.sessions.lock().await;
+                if let Some(s) = sessions.get(&session) {
+                    if let Some(bundle_path) = &s.bundle_path {
+                        let bundle_path = bundle_path.clone();
+                        let env = s.env.clone();
+                        let name = s.name.clone();
+                        drop(sessions);
+
+                        if let Err(e) = super::bundle::save_bundle(&bundle_path, &name, &env).await
+                        {
+                            return Some(DaemonResponse::Error {
+                                id,
+                                error: format!("save before close failed: {}", e),
+                            });
+                        }
+                    } else {
+                        drop(sessions);
+                    }
+                } else {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("session '{}' not found", session),
+                    });
+                }
+            }
+
+            // Kill and remove
+            let mut sessions = state.sessions.lock().await;
+            if let Some(mut s) = sessions.remove(&session) {
+                s.backend.kill();
+                let _ = state.output_tx.send(OutputEvent::SessionRemoved {
+                    session: session.clone(),
+                });
+                Some(DaemonResponse::Closed { id, session })
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("session '{}' not found", session),
+                })
             }
         }
 
         DaemonRequest::Ping { id } => Some(DaemonResponse::Pong { id }),
     }
+}
+
+/// Spawn a task that relays output from a session's reader channel to the broadcast.
+fn spawn_output_relay(
+    output_tx: tokio::sync::broadcast::Sender<OutputEvent>,
+    state_ref: Arc<DaemonState>,
+    shared_name: Option<std::sync::Arc<std::sync::Mutex<String>>>,
+    reader_name: String,
+    rx: &mut tokio::sync::mpsc::Receiver<String>,
+) {
+    let mut rx = {
+        // We need to take ownership — swap with a dummy channel
+        let (_, dummy_rx) = tokio::sync::mpsc::channel(1);
+        std::mem::replace(rx, dummy_rx)
+    };
+    tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            let current_name = shared_name
+                .as_ref()
+                .map(|sn| sn.lock().unwrap().clone())
+                .unwrap_or_else(|| reader_name.clone());
+
+            {
+                let mut sessions = state_ref.sessions.lock().await;
+                if let Some(s) = sessions.get_mut(&current_name) {
+                    s.buffer.push(data.clone());
+                }
+            }
+            let _ = output_tx.send(OutputEvent::Output {
+                session: current_name,
+                data,
+            });
+        }
+
+        let current_name = shared_name
+            .as_ref()
+            .map(|sn| sn.lock().unwrap().clone())
+            .unwrap_or_else(|| reader_name.clone());
+
+        let code = {
+            let mut sessions = state_ref.sessions.lock().await;
+            if let Some(s) = sessions.get_mut(&current_name) {
+                let code = s.backend.try_exit_code().unwrap_or(0);
+                s.mark_exited(code);
+                Some(code)
+            } else {
+                None
+            }
+        };
+        if let Some(code) = code {
+            let _ = output_tx.send(OutputEvent::Exit {
+                session: current_name,
+                code,
+            });
+        }
+    });
 }
 
 /// Create a PTY session and spawn its output reader task.
@@ -595,11 +794,38 @@ async fn handle_create_session(
     rows: u16,
     env: HashMap<String, String>,
 ) -> Option<DaemonResponse> {
-    let backend = state.create_backend_with_env(&name, cols, rows, &env).await;
+    // Auto-create bundle home directory for Docker backend
+    let home_bind = if state.backend_kind == super::BackendKind::Docker {
+        match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to create bundle home: {}", e),
+                })
+            }
+        }
+    } else {
+        None
+    };
+
+    let backend = state
+        .create_backend_with_env(&name, cols, rows, &env, home_bind.as_deref())
+        .await;
 
     match backend {
         Ok(backend) => {
-            let session = Session::new(name.clone(), backend, env);
+            // Compute bundle path from home_bind (parent of home/ is the .abot dir)
+            let bundle_path = home_bind
+                .as_ref()
+                .and_then(|h| h.parent().map(|p| p.to_path_buf()));
+
+            // Write initial manifest
+            if let Some(ref bp) = bundle_path {
+                let _ = super::bundle::save_bundle(bp, &name, &env).await;
+            }
+
+            let session = Session::new(name.clone(), backend, env, bundle_path);
             let session_name = session.name.clone();
 
             let output_tx = state.output_tx.clone();
@@ -616,47 +842,7 @@ async fn handle_create_session(
             drop(sessions);
 
             if let Some(mut rx) = rx {
-                tokio::spawn(async move {
-                    while let Some(data) = rx.recv().await {
-                        let current_name = shared_name
-                            .as_ref()
-                            .map(|sn| sn.lock().unwrap().clone())
-                            .unwrap_or_else(|| reader_name.clone());
-
-                        {
-                            let mut sessions = state_ref.sessions.lock().await;
-                            if let Some(s) = sessions.get_mut(&current_name) {
-                                s.buffer.push(data.clone());
-                            }
-                        }
-                        let _ = output_tx.send(OutputEvent::Output {
-                            session: current_name,
-                            data,
-                        });
-                    }
-
-                    let current_name = shared_name
-                        .as_ref()
-                        .map(|sn| sn.lock().unwrap().clone())
-                        .unwrap_or_else(|| reader_name.clone());
-
-                    let code = {
-                        let mut sessions = state_ref.sessions.lock().await;
-                        if let Some(s) = sessions.get_mut(&current_name) {
-                            let code = s.backend.try_exit_code().unwrap_or(0);
-                            s.mark_exited(code);
-                            Some(code)
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(code) = code {
-                        let _ = output_tx.send(OutputEvent::Exit {
-                            session: current_name,
-                            code,
-                        });
-                    }
-                });
+                spawn_output_relay(output_tx, state_ref, shared_name, reader_name, &mut rx);
             }
 
             Some(DaemonResponse::SessionCreated {
@@ -736,5 +922,126 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""id":"p1""#));
+    }
+
+    #[test]
+    fn test_open_bundle_request_serde() {
+        let json = r#"{"type":"open-bundle","id":"x","path":"/tmp/test.abot","cols":80,"rows":24}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            DaemonRequest::OpenBundle {
+                id,
+                path,
+                cols,
+                rows,
+            } => {
+                assert_eq!(id, "x");
+                assert_eq!(path, "/tmp/test.abot");
+                assert_eq!(cols, 80);
+                assert_eq!(rows, 24);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_save_session_request_serde() {
+        let json = r#"{"type":"save-session","id":"x","session":"main"}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            DaemonRequest::SaveSession { id, session } => {
+                assert_eq!(id, "x");
+                assert_eq!(session, "main");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_close_session_request_serde() {
+        let json = r#"{"type":"close-session","id":"x","session":"main","save":true}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            DaemonRequest::CloseSession { id, session, save } => {
+                assert_eq!(id, "x");
+                assert_eq!(session, "main");
+                assert!(save);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_close_session_save_defaults_false() {
+        let json = r#"{"type":"close-session","id":"x","session":"main"}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            DaemonRequest::CloseSession { save, .. } => {
+                assert!(!save);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_open_bundle_uses_default_cols_rows() {
+        let json = r#"{"type":"open-bundle","id":"x","path":"/tmp/test.abot"}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            DaemonRequest::OpenBundle { cols, rows, .. } => {
+                assert_eq!(cols, 120);
+                assert_eq!(rows, 40);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_save_session_as_request_serde() {
+        let json =
+            r#"{"type":"save-session-as","id":"x","session":"proj","path":"/home/u/proj.abot"}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            DaemonRequest::SaveSessionAs { id, session, path } => {
+                assert_eq!(id, "x");
+                assert_eq!(session, "proj");
+                assert_eq!(path, "/home/u/proj.abot");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn test_opened_response_serializes() {
+        let resp = DaemonResponse::Opened {
+            id: "r1".into(),
+            name: "proj".into(),
+            path: "/tmp/proj.abot".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""name":"proj""#));
+        assert!(json.contains(r#""path":"/tmp/proj.abot""#));
+    }
+
+    #[test]
+    fn test_saved_response_serializes() {
+        let resp = DaemonResponse::Saved {
+            id: "r1".into(),
+            session: "main".into(),
+            path: "/tmp/main.abot".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""session":"main""#));
+        assert!(json.contains(r#""path":"/tmp/main.abot""#));
+    }
+
+    #[test]
+    fn test_closed_response_serializes() {
+        let resp = DaemonResponse::Closed {
+            id: "r1".into(),
+            session: "main".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""session":"main""#));
     }
 }

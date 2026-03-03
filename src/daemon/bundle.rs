@@ -1,10 +1,10 @@
-//! `.abot` bundle export/import.
+//! `.abot` bundle save/open — document-style persistence.
 //!
 //! A `.abot` bundle is a directory containing:
 //!   - manifest.json   (name, version, timestamps)
 //!   - credentials.json (extracted credential env vars)
 //!   - config.json     (shell, resource limits, custom env)
-//!   - filesystem.tar.zst (compressed snapshot of /home/dev from Docker volume)
+//!   - home/           (bind-mounted as /home/dev in Docker container)
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -20,40 +20,53 @@ const CREDENTIAL_KEYS: &[&str] = &[
     "CLAUDE_CODE_OAUTH_TOKEN",
 ];
 
-/// Result of importing a bundle — enough info to create a session.
+/// Result of opening a bundle — enough info to create a session.
 #[derive(Debug)]
-pub struct ImportedBundle {
+pub struct OpenedBundle {
     pub name: String,
     pub env: HashMap<String, String>,
+    pub path: PathBuf,
 }
 
-/// Export a session as a `.abot` bundle directory.
+/// Save a session to a `.abot` bundle directory.
 ///
-/// Creates `{path}/{name}.abot/` with manifest, credentials, config,
-/// and a filesystem snapshot from the Docker volume.
-pub async fn export_bundle(
+/// Writes manifest, credentials, config, and (if Docker) a filesystem snapshot.
+/// Preserves `created_at` from an existing manifest; adds/updates `updated_at`.
+pub async fn save_bundle(
+    bundle_path: &Path,
     name: &str,
     session_env: &HashMap<String, String>,
-    path: &str,
-) -> Result<String> {
-    let bundle_dir = PathBuf::from(path).join(format!("{name}.abot"));
-    std::fs::create_dir_all(&bundle_dir)
-        .with_context(|| format!("failed to create bundle dir: {}", bundle_dir.display()))?;
+) -> Result<()> {
+    std::fs::create_dir_all(bundle_path)
+        .with_context(|| format!("failed to create bundle dir: {}", bundle_path.display()))?;
+
+    // Read existing manifest to preserve created_at
+    let manifest_path = bundle_path.join("manifest.json");
+    let existing_created_at = if manifest_path.exists() {
+        read_json(&manifest_path).ok().and_then(|m| {
+            m.get("created_at")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+    } else {
+        None
+    };
 
     // 1. Write manifest.json
+    let now = chrono::Utc::now().to_rfc3339();
     let manifest = serde_json::json!({
         "version": BUNDLE_VERSION,
         "name": name,
-        "created_at": chrono::Utc::now().to_rfc3339(),
+        "created_at": existing_created_at.as_deref().unwrap_or(&now),
+        "updated_at": now,
         "image": SESSION_IMAGE,
     });
-    write_json(&bundle_dir.join("manifest.json"), &manifest)?;
+    write_json(&manifest_path, &manifest)?;
 
     // 2. Write credentials.json (extract credential keys from session env)
     let mut creds = serde_json::Map::new();
     for key in CREDENTIAL_KEYS {
         if let Some(val) = session_env.get(*key) {
-            // Map env var name to a friendlier JSON key
             let json_key = match *key {
                 "ANTHROPIC_API_KEY" | "CLAUDE_API_KEY" => "api_key",
                 "CLAUDE_CODE_OAUTH_TOKEN" => "claude_token",
@@ -63,7 +76,7 @@ pub async fn export_bundle(
         }
     }
     write_json(
-        &bundle_dir.join("credentials.json"),
+        &bundle_path.join("credentials.json"),
         &serde_json::Value::Object(creds),
     )?;
 
@@ -80,32 +93,24 @@ pub async fn export_bundle(
         "cpu_percent": 50,
         "env": custom_env,
     });
-    write_json(&bundle_dir.join("config.json"), &config)?;
-
-    // 4. Snapshot Docker volume via `docker cp`
-    #[cfg(feature = "docker")]
-    {
-        let snapshot_path = bundle_dir.join("filesystem.tar.zst");
-        snapshot_volume(name, &snapshot_path).await?;
-    }
+    write_json(&bundle_path.join("config.json"), &config)?;
 
     // Set directory permissions to 0o700
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bundle_dir, std::fs::Permissions::from_mode(0o700))?;
-        // Protect credentials.json
-        let creds_path = bundle_dir.join("credentials.json");
+        std::fs::set_permissions(bundle_path, std::fs::Permissions::from_mode(0o700))?;
+        let creds_path = bundle_path.join("credentials.json");
         if creds_path.exists() {
             std::fs::set_permissions(&creds_path, std::fs::Permissions::from_mode(0o600))?;
         }
     }
 
-    Ok(bundle_dir.to_string_lossy().to_string())
+    Ok(())
 }
 
-/// Import a `.abot` bundle directory, returning the session name and env.
-pub async fn import_bundle(path: &str) -> Result<ImportedBundle> {
+/// Open a `.abot` bundle directory, returning the session name, env, and path.
+pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
     let bundle_dir = PathBuf::from(path);
 
     if !bundle_dir.exists() {
@@ -141,7 +146,6 @@ pub async fn import_bundle(path: &str) -> Result<ImportedBundle> {
     if creds_path.exists() {
         let creds: serde_json::Value = read_json(&creds_path)?;
         if let Some(obj) = creds.as_object() {
-            // Map friendly JSON keys back to env var names
             if let Some(val) = obj.get("api_key").and_then(|v| v.as_str()) {
                 if val.starts_with("sk-ant-api") {
                     env.insert("ANTHROPIC_API_KEY".to_string(), val.to_string());
@@ -169,16 +173,31 @@ pub async fn import_bundle(path: &str) -> Result<ImportedBundle> {
         }
     }
 
-    // 4. Restore filesystem snapshot if present
-    #[cfg(feature = "docker")]
-    {
-        let snapshot_path = bundle_dir.join("filesystem.tar.zst");
-        if snapshot_path.exists() {
-            restore_volume(&name, &snapshot_path).await?;
+    // 4. Ensure home/ directory exists; migrate from legacy filesystem.tar.zst if needed
+    let home_dir = bundle_dir.join("home");
+    if !home_dir.exists() {
+        #[cfg(feature = "docker")]
+        {
+            let snapshot_path = bundle_dir.join("filesystem.tar.zst");
+            if snapshot_path.exists() {
+                migrate_archive_to_home(&snapshot_path, &home_dir).await?;
+            } else {
+                std::fs::create_dir_all(&home_dir)
+                    .with_context(|| "failed to create home/ in bundle")?;
+            }
+        }
+        #[cfg(not(feature = "docker"))]
+        {
+            std::fs::create_dir_all(&home_dir)
+                .with_context(|| "failed to create home/ in bundle")?;
         }
     }
 
-    Ok(ImportedBundle { name, env })
+    Ok(OpenedBundle {
+        name,
+        env,
+        path: bundle_dir,
+    })
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
@@ -193,71 +212,63 @@ fn read_json(path: &Path) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-/// Snapshot a Docker volume's /home/dev as a zstd-compressed tar archive.
-#[cfg(feature = "docker")]
-async fn snapshot_volume(session_name: &str, output_path: &Path) -> Result<()> {
-    let container_name = format!("abot-{session_name}");
-    let output = tokio::process::Command::new("docker")
-        .args(["cp", &format!("{container_name}:/home/dev/."), "-"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .with_context(|| "failed to run docker cp")?;
+/// Ensure a bundle's `home/` directory exists, creating the full bundle structure.
+/// Returns the path to the `home/` directory.
+pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
+    let bundle_dir = data_dir.join("bundles").join(format!("{name}.abot"));
+    let home_dir = bundle_dir.join("home");
+    std::fs::create_dir_all(&home_dir)
+        .with_context(|| format!("failed to create bundle home: {}", home_dir.display()))?;
+    Ok(home_dir)
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("docker cp failed: {}", stderr);
+/// Recursively copy a directory tree from `src` to `dst`.
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)
+        .with_context(|| format!("failed to create dir: {}", dst.display()))?;
+
+    for entry in
+        std::fs::read_dir(src).with_context(|| format!("failed to read dir: {}", src.display()))?
+    {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if ty.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path).with_context(|| {
+                format!(
+                    "failed to copy {} → {}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
     }
-
-    // Compress the tar data with zstd
-    let compressed =
-        zstd::encode_all(output.stdout.as_slice(), 3).with_context(|| "zstd compression failed")?;
-    std::fs::write(output_path, compressed)?;
     Ok(())
 }
 
-/// Restore a zstd-compressed tar archive into a Docker volume.
+/// Migrate a legacy `filesystem.tar.zst` archive into a `home/` directory.
 #[cfg(feature = "docker")]
-async fn restore_volume(session_name: &str, snapshot_path: &Path) -> Result<()> {
-    let volume_name = format!("abot-agent-{session_name}");
+async fn migrate_archive_to_home(archive_path: &Path, home_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(home_dir)
+        .with_context(|| format!("failed to create home dir: {}", home_dir.display()))?;
 
-    // Create the volume first
-    let status = tokio::process::Command::new("docker")
-        .args(["volume", "create", &volume_name])
-        .status()
-        .await
-        .with_context(|| "failed to create docker volume")?;
-
-    if !status.success() {
-        anyhow::bail!("docker volume create failed");
-    }
-
-    // Decompress and pipe into a temporary container that writes to the volume
-    let compressed = std::fs::read(snapshot_path)?;
+    let compressed = std::fs::read(archive_path)?;
     let decompressed =
         zstd::decode_all(compressed.as_slice()).with_context(|| "zstd decompression failed")?;
 
-    // Use a helper container to extract into the volume
-    let mut child = tokio::process::Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "-i",
-            "-v",
-            &format!("{volume_name}:/home/dev"),
-            "alpine:3",
-            "tar",
-            "xf",
-            "-",
-            "-C",
-            "/home/dev",
-        ])
+    // Extract tar into home/
+    let mut child = tokio::process::Command::new("tar")
+        .args(["xf", "-", "-C"])
+        .arg(home_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .with_context(|| "failed to spawn restore container")?;
+        .with_context(|| "failed to spawn tar for migration")?;
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
@@ -268,9 +279,13 @@ async fn restore_volume(session_name: &str, snapshot_path: &Path) -> Result<()> 
     let output = child.wait_with_output().await?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("volume restore failed: {}", stderr);
+        anyhow::bail!("archive migration failed: {}", stderr);
     }
 
+    tracing::info!(
+        "migrated legacy filesystem.tar.zst → {}",
+        home_dir.display()
+    );
     Ok(())
 }
 
@@ -294,10 +309,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_export_creates_bundle_structure() {
-        let dir = std::env::temp_dir().join("abot-export-test");
+    async fn test_save_creates_bundle_structure() {
+        let dir = std::env::temp_dir().join("abot-save-test");
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+
+        let bundle_dir = dir.join("test-session.abot");
 
         let mut env = HashMap::new();
         env.insert(
@@ -306,10 +322,9 @@ mod tests {
         );
         env.insert("CUSTOM_VAR".to_string(), "custom-value".to_string());
 
-        let result = export_bundle("test-session", &env, dir.to_str().unwrap()).await;
+        let result = save_bundle(&bundle_dir, "test-session", &env).await;
         assert!(result.is_ok());
 
-        let bundle_dir = dir.join("test-session.abot");
         assert!(bundle_dir.join("manifest.json").exists());
         assert!(bundle_dir.join("credentials.json").exists());
         assert!(bundle_dir.join("config.json").exists());
@@ -318,6 +333,7 @@ mod tests {
         let manifest = read_json(&bundle_dir.join("manifest.json")).unwrap();
         assert_eq!(manifest["version"], 1);
         assert_eq!(manifest["name"], "test-session");
+        assert!(manifest.get("updated_at").is_some());
 
         // Verify credentials
         let creds = read_json(&bundle_dir.join("credentials.json")).unwrap();
@@ -326,18 +342,47 @@ mod tests {
         // Verify config
         let config = read_json(&bundle_dir.join("config.json")).unwrap();
         assert_eq!(config["env"]["CUSTOM_VAR"], "custom-value");
-        // Credential keys should not be in config env
         assert!(config["env"].get("ANTHROPIC_API_KEY").is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
-    async fn test_import_reads_bundle() {
-        let dir = std::env::temp_dir().join("abot-import-test");
+    async fn test_save_preserves_created_at() {
+        let dir = std::env::temp_dir().join("abot-save-preserve-test");
         let _ = std::fs::remove_dir_all(&dir);
 
-        // Create a bundle manually
+        let bundle_dir = dir.join("test.abot");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+
+        // Write an initial manifest with a known created_at
+        write_json(
+            &bundle_dir.join("manifest.json"),
+            &serde_json::json!({
+                "version": 1,
+                "name": "test",
+                "created_at": "2025-01-01T00:00:00Z",
+                "image": "abot-session",
+            }),
+        )
+        .unwrap();
+
+        // Save over it
+        let env = HashMap::new();
+        save_bundle(&bundle_dir, "test", &env).await.unwrap();
+
+        let manifest = read_json(&bundle_dir.join("manifest.json")).unwrap();
+        assert_eq!(manifest["created_at"], "2025-01-01T00:00:00Z");
+        assert!(manifest.get("updated_at").is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_open_reads_bundle() {
+        let dir = std::env::temp_dir().join("abot-open-test");
+        let _ = std::fs::remove_dir_all(&dir);
+
         let bundle_dir = dir.join("my-project.abot");
         std::fs::create_dir_all(&bundle_dir).unwrap();
 
@@ -373,11 +418,12 @@ mod tests {
         )
         .unwrap();
 
-        let result = import_bundle(bundle_dir.to_str().unwrap()).await;
+        let result = open_bundle(bundle_dir.to_str().unwrap()).await;
         assert!(result.is_ok());
 
         let bundle = result.unwrap();
         assert_eq!(bundle.name, "my-project");
+        assert_eq!(bundle.path, bundle_dir);
         assert_eq!(
             bundle.env.get("CLAUDE_CODE_OAUTH_TOKEN"),
             Some(&"sk-ant-oat01-test-token".to_string())
@@ -388,7 +434,127 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_import_rejects_bad_version() {
+    async fn test_save_then_open_roundtrip() {
+        let dir = std::env::temp_dir().join("abot-roundtrip-test");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let bundle_dir = dir.join("roundtrip.abot");
+
+        let mut env = HashMap::new();
+        env.insert(
+            "ANTHROPIC_API_KEY".to_string(),
+            "sk-ant-api-roundtrip".to_string(),
+        );
+        env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), "tok-abc".to_string());
+        env.insert("MY_CUSTOM".to_string(), "value123".to_string());
+
+        // Save
+        save_bundle(&bundle_dir, "my-session", &env).await.unwrap();
+
+        // Open
+        let opened = open_bundle(bundle_dir.to_str().unwrap()).await.unwrap();
+        assert_eq!(opened.name, "my-session");
+        assert_eq!(opened.path, bundle_dir);
+
+        // Credential keys should round-trip through the friendly JSON names
+        assert_eq!(
+            opened.env.get("ANTHROPIC_API_KEY"),
+            Some(&"sk-ant-api-roundtrip".to_string())
+        );
+        assert_eq!(
+            opened.env.get("CLAUDE_CODE_OAUTH_TOKEN"),
+            Some(&"tok-abc".to_string())
+        );
+        // Custom env should be preserved
+        assert_eq!(opened.env.get("MY_CUSTOM"), Some(&"value123".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_open_nonexistent_path_fails() {
+        let result = open_bundle("/tmp/abot-does-not-exist-xyz.abot").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn test_save_creates_dir_recursively() {
+        let dir = std::env::temp_dir().join("abot-nested-test/deep/path/test.abot");
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("abot-nested-test"));
+
+        let env = HashMap::new();
+        save_bundle(&dir, "nested", &env).await.unwrap();
+        assert!(dir.join("manifest.json").exists());
+
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("abot-nested-test"));
+    }
+
+    #[test]
+    fn test_ensure_bundle_home_creates_dirs() {
+        let dir = std::env::temp_dir().join("abot-ensure-home-test");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let home = ensure_bundle_home(&dir, "test-session").unwrap();
+        assert!(home.exists());
+        assert!(home.is_dir());
+        assert_eq!(home, dir.join("bundles/test-session.abot/home"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_copy_dir_recursive() {
+        let base = std::env::temp_dir().join("abot-copydir-test");
+        let _ = std::fs::remove_dir_all(&base);
+
+        let src = base.join("src");
+        let dst = base.join("dst");
+
+        // Create source tree
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), "hello").unwrap();
+        std::fs::write(src.join("sub/b.txt"), "world").unwrap();
+
+        copy_dir_recursive(&src, &dst).unwrap();
+
+        assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("sub/b.txt")).unwrap(),
+            "world"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn test_open_creates_home_if_missing() {
+        let dir = std::env::temp_dir().join("abot-open-home-test");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let bundle_dir = dir.join("test.abot");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+
+        write_json(
+            &bundle_dir.join("manifest.json"),
+            &serde_json::json!({
+                "version": 1,
+                "name": "test",
+                "created_at": "2026-03-02T10:30:00Z",
+                "image": "abot-session",
+            }),
+        )
+        .unwrap();
+
+        let result = open_bundle(bundle_dir.to_str().unwrap()).await;
+        assert!(result.is_ok());
+        assert!(bundle_dir.join("home").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_open_rejects_bad_version() {
         let dir = std::env::temp_dir().join("abot-badver-test");
         let _ = std::fs::remove_dir_all(&dir);
         let bundle_dir = dir.join("bad.abot");
@@ -403,7 +569,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = import_bundle(bundle_dir.to_str().unwrap()).await;
+        let result = open_bundle(bundle_dir.to_str().unwrap()).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

@@ -29,7 +29,7 @@ pub enum BackendKind {
 
 pub struct DaemonState {
     pub sessions: Mutex<HashMap<String, Session>>,
-    pub _data_dir: PathBuf,
+    pub data_dir: PathBuf,
     /// Broadcast channel for session output events (sent to all connected servers)
     pub output_tx: broadcast::Sender<ipc::OutputEvent>,
     /// Client-to-session attachment mapping (clientId → set of session names)
@@ -45,23 +45,27 @@ pub struct DaemonState {
 impl DaemonState {
     /// Create a session backend based on the configured kind.
     /// Merges global `agent_env` with per-session `session_env` (session wins on conflicts).
+    #[allow(dead_code)]
     pub async fn create_backend(
         &self,
         #[allow(unused_variables)] name: &str,
         cols: u16,
         rows: u16,
+        home_bind: Option<&Path>,
     ) -> anyhow::Result<Box<dyn SessionBackend>> {
-        self.create_backend_with_env(name, cols, rows, &HashMap::new())
+        self.create_backend_with_env(name, cols, rows, &HashMap::new(), home_bind)
             .await
     }
 
     /// Create a session backend with additional per-session env vars.
+    /// For Docker backend, `home_bind` specifies the host path to bind-mount as `/home/dev`.
     pub async fn create_backend_with_env(
         &self,
         #[allow(unused_variables)] name: &str,
         cols: u16,
         rows: u16,
         #[allow(unused_variables)] session_env: &HashMap<String, String>,
+        #[allow(unused_variables)] home_bind: Option<&Path>,
     ) -> anyhow::Result<Box<dyn SessionBackend>> {
         match self.backend_kind {
             BackendKind::Local => {
@@ -73,12 +77,15 @@ impl DaemonState {
             BackendKind::Docker => {
                 #[cfg(feature = "docker")]
                 {
+                    let home_bind = home_bind
+                        .ok_or_else(|| anyhow::anyhow!("Docker backend requires home_bind path"))?;
                     let global_env = self.agent_env.lock().await;
                     let mut merged = global_env.clone();
                     // Session env overrides global on key conflicts
                     merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
                     let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                    let backend = docker::DockerBackend::spawn(name, cols, rows, env).await?;
+                    let backend =
+                        docker::DockerBackend::spawn(name, cols, rows, env, home_bind).await?;
                     Ok(Box::new(backend))
                 }
                 #[cfg(not(feature = "docker"))]
@@ -136,12 +143,53 @@ pub async fn run(data_dir: &Path) -> Result<()> {
 
     let state = Arc::new(DaemonState {
         sessions: Mutex::new(HashMap::new()),
-        _data_dir: data_dir.to_path_buf(),
+        data_dir: data_dir.to_path_buf(),
         output_tx,
         client_attachments: Mutex::new(HashMap::new()),
         backend_kind,
         agent_env: Mutex::new(agent_env),
     });
+
+    // Autosave loop — every 5 minutes, save dirty sessions with a bundle path
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // first tick is immediate, skip it
+            loop {
+                interval.tick().await;
+                let to_save: Vec<(String, std::path::PathBuf, HashMap<String, String>)> = {
+                    let sessions = state.sessions.lock().await;
+                    sessions
+                        .values()
+                        .filter(|s| s.dirty && s.bundle_path.is_some() && s.is_alive())
+                        .map(|s| {
+                            (
+                                s.name.clone(),
+                                s.bundle_path.clone().unwrap(),
+                                s.env.clone(),
+                            )
+                        })
+                        .collect()
+                };
+
+                for (name, bundle_path, env) in to_save {
+                    match bundle::save_bundle(&bundle_path, &name, &env).await {
+                        Ok(()) => {
+                            let mut sessions = state.sessions.lock().await;
+                            if let Some(s) = sessions.get_mut(&name) {
+                                s.dirty = false;
+                            }
+                            tracing::info!("autosave: saved session '{}'", name);
+                        }
+                        Err(e) => {
+                            tracing::error!("autosave: failed to save '{}': {}", name, e);
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     loop {
         let (stream, _) = listener.accept().await?;

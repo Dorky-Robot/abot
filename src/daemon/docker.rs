@@ -10,7 +10,6 @@ use bollard::container::{
 };
 use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, Mount, MountTypeEnum};
-use bollard::volume::RemoveVolumeOptions;
 use bollard::Docker;
 use futures_util::{StreamExt, TryStreamExt};
 use std::pin::Pin;
@@ -26,8 +25,6 @@ const FALLBACK_IMAGE: &str = "alpine:3";
 pub struct DockerBackend {
     docker: Docker,
     container_id: String,
-    /// Named volume for persistent storage
-    volume_name: String,
     /// Sender half of stdin pipe to the container
     stdin_tx: Arc<Mutex<Option<Pin<Box<dyn AsyncWrite + Send>>>>>,
     /// Receiver half of stdout/stderr from the container
@@ -43,8 +40,15 @@ impl DockerBackend {
         }
     }
 
-    /// Spawn a new container with TTY and return a DockerBackend
-    pub async fn spawn(name: &str, cols: u16, rows: u16, env: Vec<String>) -> Result<Self> {
+    /// Spawn a new container with TTY and return a DockerBackend.
+    /// `home_bind` is the host path to bind-mount as `/home/dev` in the container.
+    pub async fn spawn(
+        name: &str,
+        cols: u16,
+        rows: u16,
+        env: Vec<String>,
+        home_bind: &std::path::Path,
+    ) -> Result<Self> {
         let docker = Docker::connect_with_socket_defaults()?;
 
         // Try abot-session image first, fall back to alpine
@@ -83,9 +87,6 @@ impl DockerBackend {
             "/bin/sh"
         };
 
-        // Named volume for persistent home directory
-        let volume_name = format!("abot-agent-{name}");
-
         // Create container with TTY and resource limits
         let config = Config {
             image: Some(image.to_string()),
@@ -108,8 +109,8 @@ impl DockerBackend {
                 readonly_rootfs: Some(false), // Writable for shell use
                 mounts: Some(vec![Mount {
                     target: Some("/home/dev".to_string()),
-                    source: Some(volume_name.clone()),
-                    typ: Some(MountTypeEnum::VOLUME),
+                    source: Some(home_bind.to_string_lossy().to_string()),
+                    typ: Some(MountTypeEnum::BIND),
                     ..Default::default()
                 }]),
                 ..Default::default()
@@ -177,7 +178,6 @@ impl DockerBackend {
         Ok(Self {
             docker,
             container_id,
-            volume_name,
             stdin_tx,
             reader_rx: Some(rx),
         })
@@ -223,7 +223,6 @@ impl SessionBackend for DockerBackend {
     fn kill(&mut self) {
         let docker = self.docker.clone();
         let id = self.container_id.clone();
-        let volume = self.volume_name.clone();
         tokio::spawn(async move {
             let _ = docker
                 .remove_container(
@@ -233,10 +232,6 @@ impl SessionBackend for DockerBackend {
                         ..Default::default()
                     }),
                 )
-                .await;
-            // Remove persistent volume when session is deleted
-            let _ = docker
-                .remove_volume(&volume, Some(RemoveVolumeOptions { force: true }))
                 .await;
         });
     }
