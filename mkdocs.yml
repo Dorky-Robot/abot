@@ -46,10 +46,13 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Features: features.md
   - Concepts: concepts.md
   - Architecture: architecture.md
   - CLI Reference: cli-reference.md
   - Configuration: configuration.md
+  - Security: security.md
+  - API Reference: api-reference.md
 
 extra_css:
   - assets/css/dorkyrobot-theme.css

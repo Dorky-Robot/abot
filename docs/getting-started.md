@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- **Docker** — abot runs each session in a Docker container
-- **macOS or Linux** — the binary uses Unix sockets and PTY
+- **Docker** — abot runs each session in a Docker container (falls back to local PTY if Docker is unavailable)
+- **macOS or Linux** — the binary uses Unix sockets, PTY, and `setsid`
 
 ## Installation
 
@@ -30,6 +30,9 @@
     # The binary is at target/release/abot
     ```
 
+    !!! note
+        Without `--features docker`, abot falls back to local PTY sessions (no container isolation).
+
 ## Quick Start
 
 ### 1. Start abot
@@ -38,32 +41,85 @@
 abot start
 ```
 
-This launches both the daemon (PTY session owner) and the HTTP/WebSocket server on port **6969**.
+This launches the **daemon** (PTY session owner) as a detached process and the **server** (HTTP/WS) in the foreground on port **6969**.
+
+```
+INFO abot starting (daemon + server)
+INFO daemon ready, starting server
+INFO listening on 0.0.0.0:6969
+```
 
 ### 2. Open in Browser
 
 Visit **http://localhost:6969** in your browser.
 
-On localhost, authentication is bypassed automatically — you'll go straight to the workspace.
+On localhost, authentication is bypassed automatically — you'll go straight to the workspace. No passkey, no setup token, no login page.
 
-### 3. Register a Passkey
+### 3. Create a Session
 
-For remote access, register a WebAuthn passkey through the setup flow. You can create setup tokens from the CLI:
+Click the **+** button or use the search bar to create a new session. Each session spins up a Docker container with:
+
+- A persistent home directory (`~/.abot/bundles/{name}.abot/home/`)
+- TTY with xterm-256color and truecolor support
+- Memory limit (512 MB), CPU limit (50%), PID limit (256)
+- Non-root user (uid 1000)
+
+### 4. Arrange Your Workspace
+
+Drag facets around the canvas to arrange your workspace. Focus a facet to route keyboard input to its session. Unfocused facets slide into the sidebar.
+
+### 5. Set Up Remote Access
+
+For access from other devices, register a WebAuthn passkey:
 
 ```bash
-abot token create "My Laptop"
+# On the machine running abot, create a setup token
+abot token create "My Phone"
 ```
 
-### 4. Create a Session
+The token prints once — save it. Then on the remote device:
 
-Click the **+** button or use the search bar to create a new session. Each session gets its own Docker container with a persistent home directory.
+1. Navigate to `https://your-host:6969`
+2. Enter the setup token
+3. Register a passkey (Touch ID / Face ID / security key)
+4. You're in — future visits just need your passkey
 
-### 5. Arrange Your Workspace
+## Verify It's Working
 
-Drag facets around the canvas to arrange your workspace. Focus a facet to route keyboard input to its session.
+### Check service status
+
+```bash
+# Is the daemon running?
+ls ~/.abot/daemon.pid && echo "daemon PID: $(cat ~/.abot/daemon.pid)"
+
+# Is the socket alive?
+ls ~/.abot/daemon.sock && echo "daemon socket exists"
+
+# Hit the health endpoint
+curl -s http://localhost:6969/health
+# → {"ok":true}
+```
+
+### Check auth status
+
+```bash
+curl -s http://localhost:6969/auth/status
+# → {"setup":true,"accessMethod":"localhost","authenticated":true}
+```
+
+- `setup: true` means no credentials registered yet (first-time setup)
+- `accessMethod: "localhost"` means you're auto-authenticated
+
+### View daemon logs
+
+```bash
+tail -f ~/.abot/daemon.log
+```
 
 ## What's Next
 
+- [Features](features.md) — everything abot can do
 - [Concepts](concepts.md) — understand sessions, facets, and bundles
 - [CLI Reference](cli-reference.md) — all available commands
 - [Configuration](configuration.md) — customize ports, bind address, and more
+- [Security](security.md) — how auth and isolation work
