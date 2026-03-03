@@ -18,8 +18,9 @@ class StageStrip extends StatelessWidget {
   final void Function(String sessionName) onDeleteSession;
   final void Function(String sessionName)? onSessionSettings;
   final VoidCallback onNewSession;
-  final VoidCallback? onImportSession;
+  final VoidCallback? onOpenBundle;
   final WsConnectionState connectionState;
+  final Map<String, SessionInfo> sessionInfoMap;
   final bool collapsed;
   final VoidCallback onToggleCollapse;
   final VoidCallback? onSettingsTap;
@@ -37,8 +38,9 @@ class StageStrip extends StatelessWidget {
     required this.onDeleteSession,
     this.onSessionSettings,
     required this.onNewSession,
-    this.onImportSession,
+    this.onOpenBundle,
     required this.connectionState,
+    this.sessionInfoMap = const {},
     required this.collapsed,
     required this.onToggleCollapse,
     this.onSettingsTap,
@@ -97,13 +99,6 @@ class StageStrip extends StatelessWidget {
                         tooltip: 'Collapse sidebar',
                       ),
                       const Spacer(),
-                      if (onImportSession != null)
-                        _IconBtn(
-                          icon: Icons.file_download_outlined,
-                          color: p.subtext0,
-                          onTap: onImportSession,
-                          tooltip: 'Import .abot',
-                        ),
                       _IconBtn(
                         icon: Icons.add,
                         color: p.subtext0,
@@ -147,6 +142,7 @@ class StageStrip extends StatelessWidget {
                               child: _StripCard(
                                 facet: facet,
                                 isFocused: isFocused,
+                                isDirty: sessionInfoMap[facet.sessionName]?.dirty ?? false,
                                 onTap: isFocused
                                     ? null
                                     : () => onFocusFacet(facet.id),
@@ -187,7 +183,7 @@ class StageStrip extends StatelessWidget {
                                     child: Text(
                                       'Sessions',
                                       style: TextStyle(
-                                        fontSize: 10,
+                                        fontSize: 11,
                                         color: p.subtext0,
                                         fontFamily: AbotFonts.mono,
                                       ),
@@ -206,6 +202,7 @@ class StageStrip extends StatelessWidget {
                             for (final session in unattachedSessions) ...[
                               _SessionTile(
                                 session: session,
+                                isDirty: sessionInfoMap[session.name]?.dirty ?? false,
                                 onTap: () => onOpenSession(session.name),
                                 onDelete: () => onDeleteSession(session.name),
                                 onSettings: onSessionSettings != null
@@ -222,10 +219,12 @@ class StageStrip extends StatelessWidget {
               ),
             ),
 
-          // Footer: gear above dot (both states)
+          // Footer: [folder] [gear] ... [dot]
           _SidebarFooter(
             connectionState: connectionState,
             onSettingsTap: onSettingsTap,
+            onOpenBundle: onOpenBundle,
+            collapsed: collapsed,
           ),
         ],
       ),
@@ -246,7 +245,7 @@ class _IconBtn extends StatelessWidget {
     required this.color,
     this.onTap,
     this.tooltip,
-    this.size = 18,
+    this.size = 20,
   });
 
   @override
@@ -257,7 +256,7 @@ class _IconBtn extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(AbotRadius.sm),
         child: Padding(
-          padding: const EdgeInsets.all(AbotSpacing.xs),
+          padding: const EdgeInsets.all(AbotSpacing.sm),
           child: Icon(icon, size: size, color: color),
         ),
       ),
@@ -269,56 +268,109 @@ class _IconBtn extends StatelessWidget {
   }
 }
 
-/// Sidebar footer showing gear icon above connection status dot.
+/// Sidebar footer — horizontal row: [folder] [gear] ... [dot]
+/// Matches Katulong sidebar footer layout.
 class _SidebarFooter extends StatelessWidget {
   final WsConnectionState connectionState;
   final VoidCallback? onSettingsTap;
+  final VoidCallback? onOpenBundle;
+  final bool collapsed;
 
-  const _SidebarFooter({required this.connectionState, this.onSettingsTap});
+  const _SidebarFooter({
+    required this.connectionState,
+    this.onSettingsTap,
+    this.onOpenBundle,
+    required this.collapsed,
+  });
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
 
     final Color dotColor;
-    final String tooltip;
+    final String dotTooltip;
     switch (connectionState) {
       case WsConnectionState.connected:
         dotColor = p.green;
-        tooltip = 'Connected';
+        dotTooltip = 'Connected';
       case WsConnectionState.connecting:
         dotColor = p.yellow;
-        tooltip = 'Connecting...';
+        dotTooltip = 'Connecting...';
       case WsConnectionState.disconnected:
         dotColor = p.overlay0;
-        tooltip = 'Disconnected';
+        dotTooltip = 'Disconnected';
     }
 
-    return Align(
-      alignment: Alignment.bottomLeft,
-      child: Padding(
-        padding: const EdgeInsets.only(
-          left: AbotSpacing.xs,
-          top: AbotSpacing.sm,
-          bottom: AbotSpacing.sm,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _IconBtn(
-              icon: Icons.settings,
-              size: 16,
-              color: p.overlay1,
-              tooltip: 'Settings',
-              onTap: onSettingsTap,
+    if (collapsed) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Divider(color: p.surface1, height: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: AbotSpacing.sm),
+            child: Column(
+              children: [
+                if (onOpenBundle != null)
+                  _IconBtn(
+                    icon: Icons.folder_open_outlined,
+                    size: 16,
+                    color: p.overlay1,
+                    tooltip: 'Open .abot',
+                    onTap: onOpenBundle,
+                  ),
+                _IconBtn(
+                  icon: Icons.settings,
+                  size: 18,
+                  color: p.overlay1,
+                  tooltip: 'Settings',
+                  onTap: onSettingsTap,
+                ),
+                const SizedBox(height: AbotSpacing.xs),
+                Tooltip(
+                  message: dotTooltip,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: AbotSizes.statusDotSize,
+                    height: AbotSizes.statusDotSize,
+                    decoration: BoxDecoration(
+                      color: dotColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: AbotSpacing.sm),
-            Padding(
-              // Nudge dot to visually center under the 16px gear icon
-              padding: const EdgeInsets.only(left: AbotSpacing.xs + 3),
-              child: Tooltip(
-                message: tooltip,
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Divider(color: p.surface1, height: 1),
+        Padding(
+          padding: const EdgeInsets.all(AbotSpacing.sm),
+          child: Row(
+            children: [
+              if (onOpenBundle != null)
+                _IconBtn(
+                  icon: Icons.folder_open_outlined,
+                  size: 18,
+                  color: p.overlay1,
+                  tooltip: 'Open .abot',
+                  onTap: onOpenBundle,
+                ),
+              _IconBtn(
+                icon: Icons.settings,
+                size: 16,
+                color: p.overlay1,
+                tooltip: 'Settings',
+                onTap: onSettingsTap,
+              ),
+              const Spacer(),
+              Tooltip(
+                message: dotTooltip,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   width: AbotSizes.statusDotSize,
@@ -329,26 +381,27 @@ class _SidebarFooter extends StatelessWidget {
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
-      ),
+      ],
     );
   }
 }
 
-/// Sidebar card for a facet. The CSS-transformed xterm.js overlay provides the
-/// visual preview. The card itself shows a subtle border and session name as
-/// fallback (visible when no CSS overlay is present, e.g. single-facet state).
+/// Sidebar card for a facet. Matches Katulong sidebar proportions:
+/// 88px preview area + footer with pill-badge session name.
 class _StripCard extends StatefulWidget {
   final FacetData facet;
   final bool isFocused;
+  final bool isDirty;
   final VoidCallback? onTap;
   final VoidCallback? onSettings;
 
   const _StripCard({
     required this.facet,
     this.isFocused = false,
+    this.isDirty = false,
     this.onTap,
     this.onSettings,
   });
@@ -370,51 +423,89 @@ class _StripCardState extends State<_StripCard> {
         behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
         child: Container(
-          height: 100,
           decoration: BoxDecoration(
             color: p.base,
             border: Border.all(
               color: widget.isFocused ? p.mauve : p.surface1,
-              width: widget.isFocused ? 1.5 : 1,
+              width: 2,
             ),
-            borderRadius: BorderRadius.circular(AbotRadius.md),
+            borderRadius: BorderRadius.circular(AbotRadius.lg),
           ),
-          child: Stack(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Positioned(
-                right: AbotSpacing.xs,
-                bottom: AbotSpacing.xs,
-                child: Text(
-                  widget.facet.sessionName,
-                  style: TextStyle(
-                    fontSize: 9,
-                    color: p.subtext0,
-                    fontFamily: AbotFonts.mono,
-                  ),
+              // Preview area — 88px
+              SizedBox(
+                height: 88,
+                child: Stack(
+                  children: [
+                    if (_hovered && widget.onSettings != null)
+                      Positioned(
+                        right: AbotSpacing.sm,
+                        top: AbotSpacing.sm,
+                        child: InkWell(
+                          onTap: widget.onSettings,
+                          borderRadius: BorderRadius.circular(AbotRadius.sm),
+                          child: Container(
+                            padding: const EdgeInsets.all(3),
+                            decoration: BoxDecoration(
+                              color: p.surface0.withValues(alpha: 0.8),
+                              borderRadius:
+                                  BorderRadius.circular(AbotRadius.sm),
+                            ),
+                            child: Icon(
+                              Icons.settings_outlined,
+                              size: 16,
+                              color: p.subtext0,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              if (_hovered && widget.onSettings != null)
-                Positioned(
-                  right: AbotSpacing.xs,
-                  top: AbotSpacing.xs,
-                  child: InkWell(
-                    onTap: widget.onSettings,
-                    borderRadius: BorderRadius.circular(AbotRadius.sm),
-                    child: Container(
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        color: p.surface0.withValues(alpha: 0.8),
-                        borderRadius:
-                            BorderRadius.circular(AbotRadius.sm),
+              // Footer with pill badge name
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    if (widget.isDirty)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Container(
+                          width: 5,
+                          height: 5,
+                          decoration: BoxDecoration(
+                            color: p.yellow,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
                       ),
-                      child: Icon(
-                        Icons.settings_outlined,
-                        size: 14,
-                        color: p.subtext0,
+                    Flexible(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          color: p.surface0,
+                          borderRadius: BorderRadius.circular(AbotRadius.sm),
+                        ),
+                        child: Text(
+                          widget.facet.sessionName,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: widget.isFocused ? p.mauve : p.subtext0,
+                            fontFamily: AbotFonts.mono,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 ),
+              ),
             ],
           ),
         ),
@@ -426,12 +517,14 @@ class _StripCardState extends State<_StripCard> {
 /// Compact tile for an unattached server session.
 class _SessionTile extends StatefulWidget {
   final SessionInfo session;
+  final bool isDirty;
   final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback? onSettings;
 
   const _SessionTile({
     required this.session,
+    this.isDirty = false,
     required this.onTap,
     required this.onDelete,
     this.onSettings,
@@ -465,26 +558,44 @@ class _SessionTileState extends State<_SessionTile> {
           ),
           child: Row(
             children: [
-              Icon(Icons.terminal, size: 14, color: p.subtext0),
-              const SizedBox(width: AbotSpacing.xs),
+              Icon(Icons.terminal, size: 16, color: p.subtext0),
+              const SizedBox(width: AbotSpacing.sm),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      widget.session.name,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: p.text,
-                        fontFamily: AbotFonts.mono,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            widget.session.name,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: p.text,
+                              fontFamily: AbotFonts.mono,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (widget.isDirty)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 4),
+                            child: Container(
+                              width: 5,
+                              height: 5,
+                              decoration: BoxDecoration(
+                                color: p.yellow,
+                                shape: BoxShape.circle,
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                     Text(
                       widget.session.status.name,
                       style: TextStyle(
-                        fontSize: 9,
+                        fontSize: 11,
                         color: statusColor,
                         fontFamily: AbotFonts.mono,
                       ),
@@ -498,10 +609,10 @@ class _SessionTileState extends State<_SessionTile> {
                     onTap: widget.onSettings,
                     borderRadius: BorderRadius.circular(AbotRadius.sm),
                     child: Padding(
-                      padding: const EdgeInsets.all(2),
+                      padding: const EdgeInsets.all(4),
                       child: Icon(
                         Icons.settings_outlined,
-                        size: 14,
+                        size: 16,
                         color: p.subtext0,
                       ),
                     ),
@@ -510,10 +621,10 @@ class _SessionTileState extends State<_SessionTile> {
                   onTap: widget.onDelete,
                   borderRadius: BorderRadius.circular(AbotRadius.sm),
                   child: Padding(
-                    padding: const EdgeInsets.all(2),
+                    padding: const EdgeInsets.all(4),
                     child: Icon(
                       Icons.delete_outline,
-                      size: 14,
+                      size: 16,
                       color: p.subtext0,
                     ),
                   ),

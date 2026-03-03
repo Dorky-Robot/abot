@@ -4,7 +4,6 @@ import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../core/network/api_client.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
@@ -13,6 +12,7 @@ import '../terminal/terminal_facet.dart';
 import 'facet.dart';
 import 'facet_manager.dart';
 import 'stage_strip.dart';
+import '../../core/network/api_client.dart';
 import '../settings/settings_panel.dart';
 import '../settings/session_settings_panel.dart';
 
@@ -292,50 +292,19 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  /// Import a .abot bundle — prompts for path and creates a new session.
-  Future<void> _importSession() async {
-    final controller = TextEditingController();
-    final path = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Import .abot Bundle'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            hintText: '/path/to/project.abot',
-            labelText: 'Bundle path',
-          ),
-          autofocus: true,
-          onSubmitted: (v) => Navigator.pop(context, v.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () =>
-                Navigator.pop(context, controller.text.trim()),
-            child: const Text('Import'),
-          ),
-        ],
-      ),
-    );
-
-    if (path == null || path.isEmpty || !mounted) return;
-
+  /// Open a .abot bundle via native OS file picker.
+  Future<void> _openBundle() async {
     try {
-      final data = await const ApiClient()
-          .post('/sessions/import', {'path': path}) as Map<String, dynamic>;
-      if (!mounted) return;
-      final name = data['name'] as String?;
-      if (name != null) {
-        await ref.read(sessionServiceProvider.notifier).refresh();
-      }
+      final data = await const ApiClient().post('/api/pick-file', {})
+          as Map<String, dynamic>;
+      final path = data['path'] as String?;
+      if (path == null || path.isEmpty || !mounted) return;
+
+      await ref.read(sessionServiceProvider.notifier).openBundle(path);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Import failed: $e')),
+        SnackBar(content: Text('Open failed: $e')),
       );
     }
   }
@@ -636,9 +605,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
       builder: (context, constraints) {
         final narrow = constraints.maxWidth < _narrowBreakpoint;
 
+        final sessionInfoMap = {
+          for (final s in serverSessions) s.name: s,
+        };
+
         if (narrow) {
           // Narrow: focused facet fullscreen only
-          return _buildFocusedArea(state);
+          return _buildFocusedArea(state, sessionInfoMap);
         }
 
         // Wide: StageStrip always visible on left + focused area
@@ -656,15 +629,16 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onSessionSettings: (name) =>
                   setState(() => _sessionSettingsName = name),
               onNewSession: _createNewFacet,
-              onImportSession: _importSession,
+              onOpenBundle: _openBundle,
               connectionState: wsState.connectionState,
+              sessionInfoMap: sessionInfoMap,
               collapsed: _sidebarCollapsed,
               onToggleCollapse: _toggleSidebar,
               onSettingsTap: () =>
                   setState(() => _showSettings = !_showSettings),
               onScroll: _updateSidebarTransforms,
             ),
-            Expanded(child: _buildFocusedArea(state)),
+            Expanded(child: _buildFocusedArea(state, sessionInfoMap)),
           ],
         );
       },
@@ -675,7 +649,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// (Positioned.fill) so their xterm.js WebGL canvases render at full
   /// resolution. Unfocused terminals are CSS-transformed to their sidebar
   /// card positions (GPU-accelerated).
-  Widget _buildFocusedArea(FacetManagerState state) {
+  Widget _buildFocusedArea(FacetManagerState state, Map<String, SessionInfo> sessionInfoMap) {
     final focusedId = state.focusedId;
     if (focusedId == null) return const SizedBox.shrink();
 
@@ -728,6 +702,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
             facetId: focusedId,
             sessionName: state.facets[focusedId]!.sessionName,
             isFocused: true,
+            isDirty: sessionInfoMap[state.facets[focusedId]!.sessionName]?.dirty ?? false,
             showTitleBar: true,
             onSettings: () => setState(() =>
                 _sessionSettingsName =

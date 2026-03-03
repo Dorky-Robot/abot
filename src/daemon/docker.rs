@@ -118,10 +118,22 @@ impl DockerBackend {
             ..Default::default()
         };
 
+        // Remove any stale container with the same name (e.g. from a previous daemon run)
+        let container_name = format!("abot-{name}");
+        let _ = docker
+            .remove_container(
+                &container_name,
+                Some(RemoveContainerOptions {
+                    force: true,
+                    ..Default::default()
+                }),
+            )
+            .await;
+
         let container = docker
             .create_container(
                 Some(CreateContainerOptions {
-                    name: format!("abot-{name}"),
+                    name: container_name,
                     ..Default::default()
                 }),
                 config,

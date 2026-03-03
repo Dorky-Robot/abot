@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use super::anthropic_oauth;
 use super::assets;
+use super::browse;
 use super::config as config_routes;
 use super::sessions;
 use super::shortcuts;
@@ -54,9 +55,11 @@ pub fn build(state: Arc<AppState>) -> Router {
             "/sessions/{name}/credentials",
             delete(sessions::delete_session_credentials),
         )
-        // Session export/import
-        .route("/sessions/{name}/export", post(sessions::export_session))
-        .route("/sessions/import", post(sessions::import_session))
+        // Session open/save/close
+        .route("/sessions/open", post(sessions::open_bundle))
+        .route("/sessions/{name}/save", post(sessions::save_session))
+        .route("/sessions/{name}/save-as", post(sessions::save_session_as))
+        .route("/sessions/{name}/close", post(sessions::close_session))
         // Shortcuts
         .route("/shortcuts", get(shortcuts::get_shortcuts))
         .route("/shortcuts", put(shortcuts::set_shortcuts))
@@ -65,6 +68,11 @@ pub fn build(state: Arc<AppState>) -> Router {
             "/health",
             get(|| async { axum::Json(serde_json::json!({"ok": true})) }),
         )
+        // File browser
+        .route("/api/browse", get(browse::browse_dir))
+        .route("/api/pick-directory", post(browse::pick_directory))
+        .route("/api/pick-file", post(browse::pick_file))
+        .route("/api/pick-save-location", post(browse::pick_save_location))
         // Config
         .route("/api/config", get(config_routes::get_config))
         .route(

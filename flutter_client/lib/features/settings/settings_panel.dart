@@ -6,7 +6,6 @@ import '../../core/network/api_client.dart';
 import '../../core/network/config_service.dart';
 import '../../core/theme/abot_theme.dart';
 import '../../core/theme/theme_provider.dart';
-import 'anthropic_oauth_manager.dart';
 import 'token_manager.dart';
 
 /// Settings panel overlay — slides in from the sidebar footer gear icon.
@@ -20,15 +19,18 @@ class SettingsPanel extends ConsumerStatefulWidget {
 }
 
 class _SettingsPanelState extends ConsumerState<SettingsPanel> {
-  int _tabIndex = 0; // 0 = Theme, 1 = Remote, 2 = AI
+  int _tabIndex = 0; // 0 = General, 1 = Remote
   final _nameController = TextEditingController();
   final _nameFocus = FocusNode();
+  final _bundleDirController = TextEditingController();
+  final _bundleDirFocus = FocusNode();
   bool _nameInitialized = false;
 
   @override
   void initState() {
     super.initState();
     _nameFocus.addListener(_onNameFocusChange);
+    _bundleDirFocus.addListener(_onBundleDirFocusChange);
   }
 
   @override
@@ -36,12 +38,21 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     _nameController.dispose();
     _nameFocus.removeListener(_onNameFocusChange);
     _nameFocus.dispose();
+    _bundleDirController.dispose();
+    _bundleDirFocus.removeListener(_onBundleDirFocusChange);
+    _bundleDirFocus.dispose();
     super.dispose();
   }
 
   void _onNameFocusChange() {
     if (!_nameFocus.hasFocus) {
       _saveInstanceName();
+    }
+  }
+
+  void _onBundleDirFocusChange() {
+    if (!_bundleDirFocus.hasFocus) {
+      _saveBundleDir();
     }
   }
 
@@ -52,16 +63,44 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     }
   }
 
+  void _saveBundleDir() {
+    final dir = _bundleDirController.text.trim();
+    ref.read(configProvider.notifier).setBundleDir(dir);
+  }
+
+  Future<void> _pickBundleDir(CatPalette p) async {
+    try {
+      final data =
+          await const ApiClient().post('/api/pick-directory', {}) as Map<String, dynamic>;
+      if (!mounted) return;
+      final path = data['path'] as String?;
+      if (path != null && path.isNotEmpty) {
+        _bundleDirController.text = path;
+        _saveBundleDir();
+        setState(() {});
+      }
+    } catch (_) {
+      // User cancelled or picker unavailable
+    }
+  }
+
+  void _resetBundleDir() {
+    _bundleDirController.text = '';
+    ref.read(configProvider.notifier).setBundleDir('');
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
     final configAsync = ref.watch(configProvider);
     final isLocal = isLocalhost();
 
-    // Initialize name controller from config once loaded
+    // Initialize controllers from config once loaded
     configAsync.whenData((config) {
       if (!_nameInitialized) {
         _nameController.text = config.instanceName;
+        _bundleDirController.text = config.bundleDir;
         _nameInitialized = true;
       }
     });
@@ -128,7 +167,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
                       child: Row(
                         children: [
                           _TabButton(
-                            label: 'Theme',
+                            label: 'General',
                             isActive: _tabIndex == 0,
                             onTap: () => setState(() => _tabIndex = 0),
                           ),
@@ -137,12 +176,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
                             label: 'Remote',
                             isActive: _tabIndex == 1,
                             onTap: () => setState(() => _tabIndex = 1),
-                          ),
-                          const SizedBox(width: AbotSpacing.md),
-                          _TabButton(
-                            label: 'AI',
-                            isActive: _tabIndex == 2,
-                            onTap: () => setState(() => _tabIndex = 2),
                           ),
                         ],
                       ),
@@ -156,10 +189,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
                     child: configAsync.when(
                       data: (config) {
                         if (_tabIndex == 0) {
-                          return _buildThemeTab(p);
-                        }
-                        if (_tabIndex == 2) {
-                          return _buildAiTab(p);
+                          return _buildGeneralTab(p);
                         }
                         return _buildRemoteTab(p);
                       },
@@ -198,43 +228,89 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     );
   }
 
-  Widget _buildThemeTab(CatPalette p) {
+  Widget _buildGeneralTab(CatPalette p) {
     return ListView(
       padding: const EdgeInsets.all(AbotSpacing.lg),
       children: [
         // Instance name
         _SectionLabel(label: 'Instance Name'),
         const SizedBox(height: AbotSpacing.xs),
-        SizedBox(
-          height: 32,
-          child: TextField(
-            controller: _nameController,
-            focusNode: _nameFocus,
+        _buildTextField(
+          controller: _nameController,
+          focusNode: _nameFocus,
+          onSubmitted: (_) => _saveInstanceName(),
+          palette: p,
+        ),
+        const SizedBox(height: AbotSpacing.lg),
+
+        // Bundles location
+        _SectionLabel(label: 'Bundles Location'),
+        const SizedBox(height: AbotSpacing.xs),
+        GestureDetector(
+          onTap: () => _pickBundleDir(p),
+          child: Container(
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
+            decoration: BoxDecoration(
+              color: p.surface0,
+              borderRadius: BorderRadius.circular(AbotRadius.sm),
+              border: Border.all(color: p.surface1),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _bundleDirController.text.isNotEmpty
+                        ? _bundleDirController.text
+                        : '~/.abot/bundles',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _bundleDirController.text.isNotEmpty
+                          ? p.text
+                          : p.overlay0,
+                      fontFamily: AbotFonts.mono,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Icon(Icons.folder_open, size: 14, color: p.overlay0),
+              ],
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: AbotSpacing.xs),
+          child: Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: 'Default directory for .abot bundles.',
+                  style: TextStyle(color: p.overlay0),
+                ),
+                if (_bundleDirController.text.isNotEmpty) ...[
+                  const TextSpan(text: ' '),
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.baseline,
+                    baseline: TextBaseline.alphabetic,
+                    child: GestureDetector(
+                      onTap: _resetBundleDir,
+                      child: Text(
+                        'Reset',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: p.red,
+                          fontFamily: AbotFonts.mono,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
             style: TextStyle(
-              fontSize: 12,
-              color: p.text,
+              fontSize: 10,
               fontFamily: AbotFonts.mono,
             ),
-            decoration: InputDecoration(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: AbotSpacing.sm,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AbotRadius.sm),
-                borderSide: BorderSide(color: p.surface1),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AbotRadius.sm),
-                borderSide: BorderSide(color: p.surface1),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AbotRadius.sm),
-                borderSide: BorderSide(color: p.mauve),
-              ),
-              filled: true,
-              fillColor: p.surface0,
-            ),
-            onSubmitted: (_) => _saveInstanceName(),
           ),
         ),
         const SizedBox(height: AbotSpacing.lg),
@@ -247,14 +323,50 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     );
   }
 
-  Widget _buildAiTab(CatPalette p) {
-    return ListView(
-      padding: const EdgeInsets.all(AbotSpacing.lg),
-      children: [
-        _SectionLabel(label: 'Default Credentials'),
-        const SizedBox(height: AbotSpacing.sm),
-        const AnthropicOAuthManager(),
-      ],
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required FocusNode focusNode,
+    required ValueChanged<String> onSubmitted,
+    required CatPalette palette,
+    String? hintText,
+  }) {
+    return SizedBox(
+      height: 32,
+      child: TextField(
+        controller: controller,
+        focusNode: focusNode,
+        style: TextStyle(
+          fontSize: 12,
+          color: palette.text,
+          fontFamily: AbotFonts.mono,
+        ),
+        decoration: InputDecoration(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: AbotSpacing.sm,
+          ),
+          hintText: hintText,
+          hintStyle: TextStyle(
+            fontSize: 12,
+            color: palette.overlay0,
+            fontFamily: AbotFonts.mono,
+          ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AbotRadius.sm),
+            borderSide: BorderSide(color: palette.surface1),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AbotRadius.sm),
+            borderSide: BorderSide(color: palette.surface1),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AbotRadius.sm),
+            borderSide: BorderSide(color: palette.mauve),
+          ),
+          filled: true,
+          fillColor: palette.surface0,
+        ),
+        onSubmitted: onSubmitted,
+      ),
     );
   }
 

@@ -21,6 +21,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
   final VoidCallback? onClose;
   final VoidCallback? onSettings;
   final bool showTitleBar;
+  final bool isDirty;
 
   const TerminalFacet({
     super.key,
@@ -32,6 +33,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
     this.onClose,
     this.onSettings,
     this.showTitleBar = true,
+    this.isDirty = false,
   });
 
   @override
@@ -266,6 +268,12 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
       _fitAddon?.fit();
     });
 
+    // Hide unfocused terminals until their CSS transform is applied,
+    // preventing a flash of full-size content before the sidebar transform runs.
+    if (!widget.isFocused && !widget.isMirror) {
+      container.style.visibility = 'hidden';
+    }
+
     // Register this terminal with the facet registry
     TerminalRegistry.instance.register(widget.facetId, this);
 
@@ -316,6 +324,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _container!.style.transform = transform;
     _container!.style.pointerEvents = 'none';
     _container!.style.clipPath = clipPath ?? '';
+    _container!.style.visibility = 'visible';
     _setAncestorOverflow(true);
   }
 
@@ -330,6 +339,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     _container!.style.transformOrigin = '';
     _container!.style.pointerEvents = '';
     _container!.style.clipPath = '';
+    _container!.style.visibility = 'visible';
     _setAncestorOverflow(false);
   }
 
@@ -382,6 +392,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
                 ? _TitleBar(
                     sessionName: widget.sessionName,
                     isFocused: widget.isFocused,
+                    isDirty: widget.isDirty,
                     onMinimize: widget.onMinimize,
                     onClose: widget.onClose,
                     onSettings: widget.onSettings,
@@ -407,6 +418,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 class _TitleBar extends StatelessWidget {
   final String sessionName;
   final bool isFocused;
+  final bool isDirty;
   final VoidCallback? onMinimize;
   final VoidCallback? onClose;
   final VoidCallback? onSettings;
@@ -414,6 +426,7 @@ class _TitleBar extends StatelessWidget {
   const _TitleBar({
     required this.sessionName,
     required this.isFocused,
+    this.isDirty = false,
     this.onMinimize,
     this.onClose,
     this.onSettings,
@@ -434,14 +447,32 @@ class _TitleBar extends StatelessWidget {
           Icon(Icons.terminal, size: 14, color: textColor),
           const SizedBox(width: AbotSpacing.xs),
           Expanded(
-            child: Text(
-              sessionName,
-              style: TextStyle(
-                fontSize: 12,
-                color: textColor,
-                fontFamily: AbotFonts.mono,
-              ),
-              overflow: TextOverflow.ellipsis,
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    sessionName,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: textColor,
+                      fontFamily: AbotFonts.mono,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (isDirty)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: p.yellow,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
           if (onSettings != null)
