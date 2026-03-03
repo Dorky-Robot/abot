@@ -155,10 +155,7 @@ pub async fn set_session_credentials(
         return Err(AppError::BadRequest("api_key cannot be empty".into()));
     }
 
-    // Build env map using the same logic as global credentials
-    let env_map = anthropic_oauth::build_env_map(Some(&key));
-    // Convert Option<String> map to HashMap<String, Option<String>> for IPC
-    let env: HashMap<String, Option<String>> = env_map;
+    let env = anthropic_oauth::build_env_map(Some(&key));
 
     let resp = app
         .daemon_client
@@ -240,26 +237,89 @@ pub async fn delete_session_credentials(
     }
 }
 
-/// POST /sessions/:name/export — export session as .abot bundle
-pub async fn export_session(
+/// POST /sessions/open — open a .abot bundle as a new session
+pub async fn open_bundle(
+    _csrf: CsrfVerified,
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("missing path".into()))?
+        .to_string();
+
+    let resp = app
+        .daemon_client
+        .rpc(DaemonRequest::OpenBundle {
+            id: String::new(),
+            path,
+            cols: 120,
+            rows: 40,
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
+        Err(AppError::BadRequest(error.to_string()))
+    } else {
+        let name = resp
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let bundle_path = resp
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(Json(json!({ "name": name, "path": bundle_path })))
+    }
+}
+
+/// POST /sessions/:name/save — save session to its tracked bundle path
+pub async fn save_session(
+    _csrf: CsrfVerified,
+    State(app): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let resp = app
+        .daemon_client
+        .rpc(DaemonRequest::SaveSession {
+            id: String::new(),
+            session: name.clone(),
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
+        Err(AppError::BadRequest(error.to_string()))
+    } else {
+        let path = resp
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        Ok(Json(json!({ "session": name, "path": path })))
+    }
+}
+
+/// POST /sessions/:name/save-as — save session to a new bundle path
+pub async fn save_session_as(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get export path from body, or use default bundle dir
     let path = body
         .get("path")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            format!("{home}/.abot/bundles")
-        });
+        .ok_or_else(|| AppError::BadRequest("missing path".into()))?
+        .to_string();
 
     let resp = app
         .daemon_client
-        .rpc(DaemonRequest::ExportSession {
+        .rpc(DaemonRequest::SaveSessionAs {
             id: String::new(),
             session: name.clone(),
             path,
@@ -279,23 +339,21 @@ pub async fn export_session(
     }
 }
 
-/// POST /sessions/import — import a .abot bundle
-pub async fn import_session(
+/// POST /sessions/:name/close — close session (optionally save first)
+pub async fn close_session(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
+    Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let path = body
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing path".into()))?
-        .to_string();
+    let save = body.get("save").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let resp = app
         .daemon_client
-        .rpc(DaemonRequest::ImportSession {
+        .rpc(DaemonRequest::CloseSession {
             id: String::new(),
-            path,
+            session: name.clone(),
+            save,
         })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -303,11 +361,6 @@ pub async fn import_session(
     if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
         Err(AppError::BadRequest(error.to_string()))
     } else {
-        let name = resp
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        Ok(Json(json!({ "name": name })))
+        Ok(Json(json!({ "session": name })))
     }
 }

@@ -2,6 +2,7 @@ use super::backend::SessionBackend;
 use super::ring_buffer::RingBuffer;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 const DEFAULT_MAX_BUFFER_ITEMS: usize = 5000;
@@ -24,6 +25,10 @@ pub struct Session {
     /// Per-session environment variables (e.g. credentials).
     /// Merged with global agent_env when creating the backend; session env wins on conflicts.
     pub env: HashMap<String, String>,
+    /// Path to the backing `.abot` bundle directory, if saved.
+    pub bundle_path: Option<PathBuf>,
+    /// Whether the session has unsaved changes since last save.
+    pub dirty: bool,
 }
 
 impl Session {
@@ -31,6 +36,7 @@ impl Session {
         name: String,
         backend: Box<dyn SessionBackend>,
         env: HashMap<String, String>,
+        bundle_path: Option<PathBuf>,
     ) -> Self {
         let shared_name = Arc::new(Mutex::new(name.clone()));
         Self {
@@ -40,6 +46,8 @@ impl Session {
             buffer: RingBuffer::new(DEFAULT_MAX_BUFFER_ITEMS, DEFAULT_MAX_BUFFER_BYTES),
             status: SessionStatus::Running,
             env,
+            bundle_path,
+            dirty: false,
         }
     }
 
@@ -78,6 +86,8 @@ impl Session {
             "bufferItems": self.buffer.len(),
             "bufferBytes": self.buffer.bytes(),
             "envKeys": self.env.len(),
+            "bundlePath": self.bundle_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "dirty": self.dirty,
         })
     }
 }
@@ -109,7 +119,12 @@ mod tests {
 
     #[test]
     fn shared_name_tracks_rename() {
-        let mut session = Session::new("original".into(), Box::new(StubBackend), HashMap::new());
+        let mut session = Session::new(
+            "original".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+        );
         let task_name = session.shared_name.clone();
 
         // Background task would read this
@@ -125,7 +140,7 @@ mod tests {
 
     #[test]
     fn session_lifecycle() {
-        let mut session = Session::new("test".into(), Box::new(StubBackend), HashMap::new());
+        let mut session = Session::new("test".into(), Box::new(StubBackend), HashMap::new(), None);
         assert!(session.is_alive());
         assert_eq!(session.status, SessionStatus::Running);
 
@@ -140,8 +155,64 @@ mod tests {
 
     #[test]
     fn write_to_exited_session_fails() {
-        let mut session = Session::new("test".into(), Box::new(StubBackend), HashMap::new());
+        let mut session = Session::new("test".into(), Box::new(StubBackend), HashMap::new(), None);
         session.mark_exited(0);
         assert!(session.write(b"hello").is_err());
+    }
+
+    #[test]
+    fn new_session_starts_clean() {
+        let session = Session::new("s".into(), Box::new(StubBackend), HashMap::new(), None);
+        assert!(!session.dirty);
+        assert!(session.bundle_path.is_none());
+    }
+
+    #[test]
+    fn new_session_with_bundle_path() {
+        let path = PathBuf::from("/tmp/test.abot");
+        let session = Session::new(
+            "s".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            Some(path.clone()),
+        );
+        assert_eq!(session.bundle_path, Some(path));
+        assert!(!session.dirty);
+    }
+
+    #[test]
+    fn to_json_includes_bundle_path_and_dirty() {
+        let path = PathBuf::from("/home/user/project.abot");
+        let mut session = Session::new(
+            "proj".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            Some(path),
+        );
+        let json = session.to_json();
+        assert_eq!(json["bundlePath"], "/home/user/project.abot");
+        assert_eq!(json["dirty"], false);
+
+        session.dirty = true;
+        let json = session.to_json();
+        assert_eq!(json["dirty"], true);
+    }
+
+    #[test]
+    fn to_json_bundle_path_null_when_none() {
+        let session = Session::new("s".into(), Box::new(StubBackend), HashMap::new(), None);
+        let json = session.to_json();
+        assert!(json["bundlePath"].is_null());
+        assert_eq!(json["dirty"], false);
+    }
+
+    #[test]
+    fn dirty_flag_is_mutable() {
+        let mut session = Session::new("s".into(), Box::new(StubBackend), HashMap::new(), None);
+        assert!(!session.dirty);
+        session.dirty = true;
+        assert!(session.dirty);
+        session.dirty = false;
+        assert!(!session.dirty);
     }
 }

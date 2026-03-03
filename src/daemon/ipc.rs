@@ -540,6 +540,13 @@ pub async fn handle_request(
                             let state_ref = state.clone();
 
                             let mut sessions = state.sessions.lock().await;
+                            // Kill existing session with same name to prevent resource leaks
+                            if let Some(mut old) = sessions.remove(&name) {
+                                old.backend.kill();
+                                let _ = state.output_tx.send(OutputEvent::SessionRemoved {
+                                    session: name.clone(),
+                                });
+                            }
                             sessions.insert(name.clone(), session);
 
                             let rx = sessions
@@ -719,7 +726,13 @@ pub async fn handle_request(
                             });
                         }
                     } else {
-                        drop(sessions);
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!(
+                                "session '{}' has no bundle path (use save-as before close with save)",
+                                session
+                            ),
+                        });
                     }
                 } else {
                     return Some(DaemonResponse::Error {

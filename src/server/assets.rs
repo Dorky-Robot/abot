@@ -8,14 +8,8 @@ use std::sync::Arc;
 use crate::auth::middleware;
 use crate::server::AppState;
 
-#[cfg(feature = "flutter")]
 #[derive(Embed)]
 #[folder = "flutter_client/build/web/"]
-pub struct ClientAssets;
-
-#[cfg(not(feature = "flutter"))]
-#[derive(Embed)]
-#[folder = "client/"]
 pub struct ClientAssets;
 
 /// Inject CSRF meta tag into HTML content
@@ -53,18 +47,8 @@ pub async fn index(
 }
 
 pub async fn login() -> Response {
-    #[cfg(feature = "flutter")]
-    {
-        // Flutter SPA handles login route internally — no session yet, so no CSRF token
-        serve_index_with_csrf("").unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
-    }
-    #[cfg(not(feature = "flutter"))]
-    {
-        match ClientAssets::get("login.html") {
-            Some(file) => Html(String::from_utf8_lossy(&file.data).into_owned()).into_response(),
-            None => StatusCode::NOT_FOUND.into_response(),
-        }
-    }
+    // Flutter SPA handles login route internally — no session yet, so no CSRF token
+    serve_index_with_csrf("").unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
 
 /// Serve embedded assets at root paths (fallback handler)
