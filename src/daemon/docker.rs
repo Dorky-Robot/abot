@@ -255,6 +255,13 @@ impl SessionBackend for DockerBackend {
         // interactive wizard is skipped.
         let mut script = String::new();
         for (k, v) in env {
+            // Only allow valid env var names (alphanumeric + underscore, not starting with digit)
+            if !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || k.starts_with(|c: char| c.is_ascii_digit())
+                || k.is_empty()
+            {
+                continue;
+            }
             let escaped = v.replace('\'', "'\\''");
             script.push_str(&format!("export {k}='{escaped}'\n"));
         }

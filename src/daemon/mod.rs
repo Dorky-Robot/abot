@@ -43,20 +43,6 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    /// Create a session backend based on the configured kind.
-    /// Merges global `agent_env` with per-session `session_env` (session wins on conflicts).
-    #[allow(dead_code)]
-    pub async fn create_backend(
-        &self,
-        #[allow(unused_variables)] name: &str,
-        cols: u16,
-        rows: u16,
-        home_bind: Option<&Path>,
-    ) -> anyhow::Result<Box<dyn SessionBackend>> {
-        self.create_backend_with_env(name, cols, rows, &HashMap::new(), home_bind)
-            .await
-    }
-
     /// Create a session backend with additional per-session env vars.
     /// For Docker backend, `home_bind` specifies the host path to bind-mount as `/home/dev`.
     pub async fn create_backend_with_env(

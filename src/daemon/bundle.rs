@@ -30,7 +30,7 @@ pub struct OpenedBundle {
 
 /// Save a session to a `.abot` bundle directory.
 ///
-/// Writes manifest, credentials, config, and (if Docker) a filesystem snapshot.
+/// Writes manifest, credentials, and config metadata files.
 /// Preserves `created_at` from an existing manifest; adds/updates `updated_at`.
 pub async fn save_bundle(
     bundle_path: &Path,
@@ -200,13 +200,13 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
     })
 }
 
-fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
+pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
     std::fs::write(path, json)?;
     Ok(())
 }
 
-fn read_json(path: &Path) -> Result<serde_json::Value> {
+pub(crate) fn read_json(path: &Path) -> Result<serde_json::Value> {
     let contents = std::fs::read_to_string(path)?;
     let value: serde_json::Value = serde_json::from_str(&contents)?;
     Ok(value)
@@ -215,6 +215,7 @@ fn read_json(path: &Path) -> Result<serde_json::Value> {
 /// Ensure a bundle's `home/` directory exists, creating the full bundle structure.
 /// Returns the path to the `home/` directory.
 pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
+    validate_session_name(name)?;
     let bundle_dir = data_dir.join("bundles").join(format!("{name}.abot"));
     let home_dir = bundle_dir.join("home");
     std::fs::create_dir_all(&home_dir)
@@ -222,7 +223,23 @@ pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(home_dir)
 }
 
+/// Validate that a session name is safe for use in filesystem paths.
+/// Rejects path traversal components, slashes, and other dangerous characters.
+fn validate_session_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("session name cannot be empty");
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        anyhow::bail!("session name contains invalid characters: {}", name);
+    }
+    if name == "." || name == ".." || name.starts_with("../") || name.contains("/../") {
+        anyhow::bail!("session name contains path traversal: {}", name);
+    }
+    Ok(())
+}
+
 /// Recursively copy a directory tree from `src` to `dst`.
+/// Symlinks are skipped to prevent following links outside the bundle.
 pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)
         .with_context(|| format!("failed to create dir: {}", dst.display()))?;
@@ -231,11 +248,16 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         std::fs::read_dir(src).with_context(|| format!("failed to read dir: {}", src.display()))?
     {
         let entry = entry?;
-        let ty = entry.file_type()?;
+        let metadata = entry.metadata()?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
-        if ty.is_dir() {
+        // Skip symlinks to prevent following links outside the bundle
+        if src_path.symlink_metadata()?.file_type().is_symlink() {
+            continue;
+        }
+
+        if metadata.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path).with_context(|| {

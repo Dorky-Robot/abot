@@ -298,24 +298,27 @@ pub async fn handle_request(
         }
 
         DaemonRequest::DeleteSession { id, name } => {
-            let mut sessions = state.sessions.lock().await;
-            if let Some(mut session) = sessions.remove(&name) {
-                let bundle_path = session.bundle_path.clone();
-                session.backend.kill();
-                // Remove bundle directory if it exists
-                if let Some(bp) = bundle_path {
-                    let _ = std::fs::remove_dir_all(&bp);
+            let bundle_path = {
+                let mut sessions = state.sessions.lock().await;
+                if let Some(mut session) = sessions.remove(&name) {
+                    let bp = session.bundle_path.clone();
+                    session.backend.kill();
+                    let _ = state.output_tx.send(OutputEvent::SessionRemoved {
+                        session: name.clone(),
+                    });
+                    bp
+                } else {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("session '{}' not found", name),
+                    });
                 }
-                let _ = state.output_tx.send(OutputEvent::SessionRemoved {
-                    session: name.clone(),
-                });
-                Some(DaemonResponse::Deleted { id, name })
-            } else {
-                Some(DaemonResponse::Error {
-                    id,
-                    error: format!("session '{}' not found", name),
-                })
+            };
+            // Remove bundle directory outside the lock to avoid blocking
+            if let Some(bp) = bundle_path {
+                let _ = std::fs::remove_dir_all(&bp);
             }
+            Some(DaemonResponse::Deleted { id, name })
         }
 
         DaemonRequest::RenameSession {
@@ -339,16 +342,9 @@ pub async fn handle_request(
                 if let Some(ref bp) = session.bundle_path {
                     let manifest_path = bp.join("manifest.json");
                     if manifest_path.exists() {
-                        if let Ok(contents) = std::fs::read_to_string(&manifest_path) {
-                            if let Ok(mut manifest) =
-                                serde_json::from_str::<serde_json::Value>(&contents)
-                            {
-                                manifest["name"] = serde_json::Value::String(new_name.clone());
-                                let _ = std::fs::write(
-                                    &manifest_path,
-                                    serde_json::to_string_pretty(&manifest).unwrap_or_default(),
-                                );
-                            }
+                        if let Ok(mut manifest) = super::bundle::read_json(&manifest_path) {
+                            manifest["name"] = serde_json::Value::String(new_name.clone());
+                            let _ = super::bundle::write_json(&manifest_path, &manifest);
                         }
                     }
                 }
@@ -476,6 +472,11 @@ pub async fn handle_request(
         }
 
         DaemonRequest::UpdateSessionEnv { id, session, env } => {
+            // Acquire agent_env first to match lock ordering with UpdateAgentEnv
+            let global_env = state.agent_env.lock().await;
+            let global_snapshot = global_env.clone();
+            drop(global_env);
+
             let mut sessions = state.sessions.lock().await;
             if let Some(s) = sessions.get_mut(&session) {
                 for (key, value) in &env {
@@ -496,8 +497,7 @@ pub async fn handle_request(
                 );
 
                 // Inject merged global + session env into the running container
-                let global_env = state.agent_env.lock().await;
-                let mut merged = global_env.clone();
+                let mut merged = global_snapshot;
                 merged.extend(s.env.clone());
                 s.backend.inject_env(&merged);
 
