@@ -248,8 +248,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
           error: (_, _) => false,
         );
 
+    bool save = false;
     if (isDirty) {
-      // Prompt: save before closing?
       final action = await showDialog<String>(
         context: context,
         builder: (ctx) {
@@ -289,17 +289,20 @@ class _FacetShellState extends ConsumerState<FacetShell>
         },
       );
       if (!mounted || action == null) return;
+      save = action == 'save';
+    }
 
-      _minimizeFacet(facetId);
-      final save = action == 'save';
+    try {
       await ref
           .read(sessionServiceProvider.notifier)
           .closeSession(sessionName, save: save);
-    } else {
+      if (!mounted) return;
       _minimizeFacet(facetId);
-      await ref
-          .read(sessionServiceProvider.notifier)
-          .closeSession(sessionName);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Close failed: $e')),
+      );
     }
   }
 
@@ -627,7 +630,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onClose: () =>
                   setState(() => _sessionSettingsName = null),
               onRenamed: (newName) {
+                final oldName = _sessionSettingsName!;
                 setState(() => _sessionSettingsName = newName);
+                // Update facet data so terminal I/O uses the new name
+                ref
+                    .read(facetManagerProvider.notifier)
+                    .renameSessionInFacets(oldName, newName);
                 // Refresh session list to pick up the new name
                 ref.read(sessionServiceProvider.notifier).refresh();
               },

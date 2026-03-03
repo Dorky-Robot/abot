@@ -4,7 +4,7 @@ import '../../core/network/session_service.dart';
 import '../../core/theme/abot_theme.dart';
 
 /// Per-session settings overlay — opened from session gear icon.
-/// Shows session info, per-session credentials, and document save/save-as.
+/// Shows session info, rename, and document save/save-as.
 class SessionSettingsPanel extends StatefulWidget {
   final String sessionName;
   final VoidCallback onClose;
@@ -48,7 +48,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
   }
 
   Future<void> _loadSessionInfo() async {
-    final url = '/sessions/${Uri.encodeComponent(widget.sessionName)}';
+    final url = '/sessions/${Uri.encodeComponent(_currentName)}';
     try {
       final data = await _api.get(url) as Map<String, dynamic>;
       if (!mounted) return;
@@ -103,7 +103,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
   Future<void> _saveSession() async {
     setState(() => _savingBundle = true);
     final url =
-        '/sessions/${Uri.encodeComponent(widget.sessionName)}/save';
+        '/sessions/${Uri.encodeComponent(_currentName)}/save';
     try {
       final data = await _api.post(url, {}) as Map<String, dynamic>;
       if (!mounted) return;
@@ -123,7 +123,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
   }
 
   Future<void> _saveSessionAs() async {
-    String defaultFileName = '${widget.sessionName}.abot';
+    String defaultFileName = '$_currentName.abot';
     if (_bundlePath != null) {
       final lastSlash = _bundlePath!.lastIndexOf('/');
       if (lastSlash >= 0 && lastSlash < _bundlePath!.length - 1) {
@@ -160,7 +160,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
 
     setState(() => _savingBundle = true);
     final url =
-        '/sessions/${Uri.encodeComponent(widget.sessionName)}/save-as';
+        '/sessions/${Uri.encodeComponent(_currentName)}/save-as';
     try {
       final data =
           await _api.post(url, {'path': path}) as Map<String, dynamic>;
@@ -261,7 +261,6 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
                                             fillColor: p.surface0,
                                           ),
                                           onSubmitted: (_) => _submitRename(),
-                                          onEditingComplete: _submitRename,
                                         ),
                                       )
                                     : GestureDetector(
