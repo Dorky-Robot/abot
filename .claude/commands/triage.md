@@ -24,12 +24,12 @@ Send a **single message** with 2 Task tool calls so they run concurrently:
 
 1. **backlog-triager** (subagent_type: `backlog-triager`) — Pass it:
    ```
-   Triage all open issues for the abot project. Follow your full procedure: read CLAUDE.md for vision context, fetch open issues, evaluate each one against abot's vision (spatial terminal interface, single-binary, canvas UI, session-centric, passkey auth, daemon/server split), and produce a structured triage report with CLOSE/ADJUST/KEEP/MERGE recommendations.
+   Triage all open issues for the abot project. Follow your full procedure: read CLAUDE.md for vision context, fetch open issues, evaluate each one against abot's vision (spatial terminal interface, single-binary, Flutter WASM canvas UI, session-centric, passkey auth, daemon/server split, .abot bundles), and produce a structured triage report with CLOSE/ADJUST/KEEP/MERGE recommendations.
    ```
 
 2. **issue-analyst** (subagent_type: `issue-analyst`) — Pass it:
    ```
-   Analyze all open issues for the abot project. Follow your full procedure: fetch issues, cluster by abot subsystem (daemon, server, auth, stream, client), evaluate from 3 perspectives, and recommend the highest-impact next PR. Focus on issues labeled `ready`.
+   Analyze all open issues for the abot project. Follow your full procedure: fetch issues, cluster by abot subsystem (daemon, server, auth, stream, flutter client), evaluate from 3 perspectives, and recommend the highest-impact next PR. Focus on issues labeled `ready`.
    ```
 
 Wait for both agents to complete before proceeding.

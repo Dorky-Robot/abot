@@ -2,7 +2,7 @@ Run the test suite for abot and report results.
 
 ## Instructions
 
-Run abot's test suites and report results clearly. $ARGUMENTS can be `rust`, `e2e`, or `all` (default: `rust`).
+Run abot's test suites and report results clearly. $ARGUMENTS can be `rust`, `flutter`, `e2e`, or `all` (default: `rust`).
 
 ### Step 1: Run cargo test
 
@@ -39,7 +39,32 @@ cargo check 2>&1
 
 Report any compiler warnings that should be addressed.
 
-### Step 5: E2E tests (if requested)
+### Step 5: Flutter tests (if requested)
+
+If `$ARGUMENTS` is `flutter` or `all`, run the Flutter tests:
+
+```bash
+cd flutter_client && flutter test 2>&1
+```
+
+Also run Dart static analysis:
+
+```bash
+cd flutter_client && dart analyze 2>&1
+```
+
+Parse the output:
+- Count passing and failing tests
+- For failures, identify the test name, file, and failure reason
+- For analysis warnings/errors, list them with file and line
+
+Report:
+```
+Flutter: N tests passed, M failed.
+Dart analyze: N issues (E errors, W warnings, I infos).
+```
+
+### Step 6: E2E tests (if requested)
 
 If `$ARGUMENTS` is `e2e` or `all`, run the Playwright e2e tests:
 
@@ -58,12 +83,14 @@ E2E: N passed, M failed, K skipped.
 
 **Note**: E2E tests require a running abot server (`cargo run -- start`). If the server is not running, tell the user to start it first.
 
-### Step 6: Summary
+### Step 7: Summary
 
 Print a final summary:
 ```
-## Test Results
+## Test Results for abot
 - Rust: N passed, M failed, K ignored
+- Flutter: N passed, M failed (if run)
+- Dart analyze: clean / N issues (if run)
 - E2E: N passed, M failed, K skipped (if run)
 - Build check: clean / N warnings
 ```

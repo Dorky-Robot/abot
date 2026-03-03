@@ -6,6 +6,7 @@
 #   2. Spell check    (typos — BLOCKING)
 #   3. Formatting     (cargo fmt — BLOCKING)
 #   4. Lint           (cargo clippy — BLOCKING)
+#   5. Dart analysis  (dart analyze — BLOCKING, if flutter_client changed)
 #
 # Activate once per clone:
 #   git config core.hooksPath .husky
@@ -19,12 +20,23 @@ warn() { echo "  WARN  $*" >&2; }
 fail() { echo "  ERROR $*" >&2; exit 1; }
 step() { echo ""; echo "==> $*"; }
 
+# Check if any staged files match a pattern
+staged_files_match() {
+    git diff --cached --name-only | grep -q "$1" 2>/dev/null
+}
+
+# Determine step count based on whether Flutter files are staged
+TOTAL_STEPS=4
+if staged_files_match "^flutter_client/"; then
+    TOTAL_STEPS=5
+fi
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  pre-commit checks (abot)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── 1. Secrets scan (BLOCKING) ────────────────────────────────────────────────
-step "[1/4] Secrets scan (gitleaks)"
+step "[1/$TOTAL_STEPS] Secrets scan (gitleaks)"
 if command -v gitleaks >/dev/null 2>&1; then
     if ! gitleaks git --pre-commit --no-banner --verbose; then
         fail "Secrets detected — commit blocked. Remove secrets before committing."
@@ -36,7 +48,7 @@ else
 fi
 
 # ── 2. Spell check (BLOCKING) ────────────────────────────────────────────────
-step "[2/4] Spell check (typos)"
+step "[2/$TOTAL_STEPS] Spell check (typos)"
 if command -v typos >/dev/null 2>&1; then
     if ! typos; then
         fail "Spelling errors found — commit blocked. Fix typos before committing."
@@ -48,7 +60,7 @@ else
 fi
 
 # ── 3. Formatting (BLOCKING) ─────────────────────────────────────────────────
-step "[3/4] Rust formatting (cargo fmt)"
+step "[3/$TOTAL_STEPS] Rust formatting (cargo fmt)"
 if command -v cargo >/dev/null 2>&1; then
     if ! cargo fmt --all -- --check; then
         fail "Formatting errors — commit blocked. Run 'cargo fmt --all' to fix."
@@ -59,7 +71,7 @@ else
 fi
 
 # ── 4. Lint (BLOCKING) ───────────────────────────────────────────────────────
-step "[4/4] Rust lint (cargo clippy)"
+step "[4/$TOTAL_STEPS] Rust lint (cargo clippy)"
 if command -v cargo >/dev/null 2>&1; then
     if ! cargo clippy --all-targets -- -D warnings 2>&1; then
         fail "Clippy warnings — commit blocked. Fix clippy issues before committing."
@@ -67,6 +79,20 @@ if command -v cargo >/dev/null 2>&1; then
     echo "      OK  No clippy warnings"
 else
     warn "cargo not found — skipping Rust lint check."
+fi
+
+# ── 5. Dart analysis (BLOCKING, only if flutter_client changed) ──────────────
+if [ "$TOTAL_STEPS" -eq 5 ]; then
+    step "[5/$TOTAL_STEPS] Dart analysis (dart analyze)"
+    if command -v dart >/dev/null 2>&1; then
+        if ! (cd flutter_client && dart analyze --fatal-infos 2>&1); then
+            fail "Dart analysis errors — commit blocked. Fix issues in flutter_client/ before committing."
+        fi
+        echo "      OK  No Dart analysis issues"
+    else
+        warn "dart not found — skipping Dart analysis."
+        warn "Install: https://docs.flutter.dev/get-started/install"
+    fi
 fi
 
 echo ""
