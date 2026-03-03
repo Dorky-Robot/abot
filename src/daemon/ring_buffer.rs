@@ -49,6 +49,13 @@ impl RingBuffer {
     pub fn bytes(&self) -> usize {
         self.current_bytes
     }
+
+    /// Seed the buffer with previously saved content (e.g. scrollback from disk).
+    pub fn pre_populate(&mut self, data: String) {
+        if !data.is_empty() {
+            self.push(data);
+        }
+    }
 }
 
 impl fmt::Display for RingBuffer {
@@ -90,6 +97,26 @@ mod tests {
         buf.push("abc".into()); // 3 bytes
         buf.push("def".into()); // 6 bytes total, evict "abc"
         assert_eq!(buf.to_string(), "def");
+    }
+
+    #[test]
+    fn test_pre_populate() {
+        let mut buf = RingBuffer::new(10, 1024);
+        buf.pre_populate("saved scrollback".into());
+        assert_eq!(buf.to_string(), "saved scrollback");
+        assert_eq!(buf.len(), 1);
+
+        // New output appends after pre-populated content
+        buf.push("new data".into());
+        assert_eq!(buf.to_string(), "saved scrollbacknew data");
+    }
+
+    #[test]
+    fn test_pre_populate_empty_is_noop() {
+        let mut buf = RingBuffer::new(10, 1024);
+        buf.pre_populate("".into());
+        assert_eq!(buf.len(), 0);
+        assert_eq!(buf.bytes(), 0);
     }
 
     #[test]

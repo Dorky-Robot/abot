@@ -522,7 +522,7 @@ pub async fn handle_request(
                     let bundle_path = bundle.path.clone();
                     let home_bind = bundle_path.join("home");
                     let result = state
-                        .create_backend_with_env(&name, cols, rows, &bundle.env, Some(&home_bind))
+                        .create_backend_with_env(&name, cols, rows, &bundle.env, &home_bind)
                         .await;
 
                     match result {
@@ -554,6 +554,14 @@ pub async fn handle_request(
                                 .and_then(|s| s.backend.take_reader());
                             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
                             drop(sessions);
+
+                            // Restore saved scrollback into the ring buffer
+                            if let Some(scrollback) = super::bundle::load_scrollback(&bundle_path) {
+                                let mut sessions = state.sessions.lock().await;
+                                if let Some(s) = sessions.get_mut(&name) {
+                                    s.buffer.pre_populate(scrollback);
+                                }
+                            }
 
                             // Inject credentials into the new container
                             if !bundle.env.is_empty() {
@@ -612,10 +620,12 @@ pub async fn handle_request(
                 };
                 let env = s.env.clone();
                 let name = s.name.clone();
+                let scrollback = s.get_buffer();
                 drop(sessions);
 
                 match super::bundle::save_bundle(&bundle_path, &name, &env).await {
                     Ok(()) => {
+                        super::bundle::save_scrollback(&bundle_path, &scrollback);
                         // Clear dirty flag
                         let mut sessions = state.sessions.lock().await;
                         if let Some(s) = sessions.get_mut(&session) {
@@ -666,6 +676,7 @@ pub async fn handle_request(
                 let env = s.env.clone();
                 let name = s.name.clone();
                 let existing_bundle = s.bundle_path.clone();
+                let scrollback = s.get_buffer();
                 drop(sessions);
 
                 let new_bundle_path = PathBuf::from(&path);
@@ -682,6 +693,7 @@ pub async fn handle_request(
 
                 match super::bundle::save_bundle(&new_bundle_path, &name, &env).await {
                     Ok(()) => {
+                        super::bundle::save_scrollback(&new_bundle_path, &scrollback);
                         // Update bundle_path and clear dirty flag
                         let mut sessions = state.sessions.lock().await;
                         if let Some(s) = sessions.get_mut(&session) {
@@ -745,6 +757,10 @@ pub async fn handle_request(
             // Kill and remove
             let mut sessions = state.sessions.lock().await;
             if let Some(mut s) = sessions.remove(&session) {
+                // Save scrollback to bundle before killing (always, regardless of save flag)
+                if let Some(ref bp) = s.bundle_path {
+                    super::bundle::save_scrollback(bp, &s.get_buffer());
+                }
                 s.backend.kill();
                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                     session: session.clone(),
@@ -827,38 +843,32 @@ async fn handle_create_session(
     rows: u16,
     env: HashMap<String, String>,
 ) -> Option<DaemonResponse> {
-    // Auto-create bundle home directory for Docker backend
-    let home_bind = if state.backend_kind == super::BackendKind::Docker {
-        match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
-            Ok(path) => Some(path),
-            Err(e) => {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to create bundle home: {}", e),
-                })
-            }
+    // Auto-create bundle home directory
+    let home_bind = match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
+        Ok(path) => path,
+        Err(e) => {
+            return Some(DaemonResponse::Error {
+                id,
+                error: format!("failed to create bundle home: {}", e),
+            })
         }
-    } else {
-        None
     };
 
     let backend = state
-        .create_backend_with_env(&name, cols, rows, &env, home_bind.as_deref())
+        .create_backend_with_env(&name, cols, rows, &env, &home_bind)
         .await;
 
     match backend {
         Ok(backend) => {
             // Compute bundle path from home_bind (parent of home/ is the .abot dir)
-            let bundle_path = home_bind
-                .as_ref()
-                .and_then(|h| h.parent().map(|p| p.to_path_buf()));
+            let bundle_path = home_bind.parent().map(|p| p.to_path_buf());
 
             // Write initial manifest
             if let Some(ref bp) = bundle_path {
                 let _ = super::bundle::save_bundle(bp, &name, &env).await;
             }
 
-            let session = Session::new(name.clone(), backend, env, bundle_path);
+            let session = Session::new(name.clone(), backend, env, bundle_path.clone());
             let session_name = session.name.clone();
 
             let output_tx = state.output_tx.clone();
@@ -873,6 +883,16 @@ async fn handle_create_session(
                 .and_then(|s| s.backend.take_reader());
             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
             drop(sessions);
+
+            // Restore saved scrollback from a previous session (e.g. after close + restart)
+            if let Some(ref bp) = bundle_path {
+                if let Some(scrollback) = super::bundle::load_scrollback(bp) {
+                    let mut sessions = state.sessions.lock().await;
+                    if let Some(s) = sessions.get_mut(&name) {
+                        s.buffer.pre_populate(scrollback);
+                    }
+                }
+            }
 
             if let Some(mut rx) = rx {
                 spawn_output_relay(output_tx, state_ref, shared_name, reader_name, &mut rx);

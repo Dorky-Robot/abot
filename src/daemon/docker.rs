@@ -22,11 +22,13 @@ use super::backend::SessionBackend;
 const SESSION_IMAGE: &str = "abot-session";
 const FALLBACK_IMAGE: &str = "alpine:3";
 
+type StdinWriter = Pin<Box<dyn AsyncWrite + Send>>;
+
 pub struct DockerBackend {
     docker: Docker,
     container_id: String,
     /// Sender half of stdin pipe to the container
-    stdin_tx: Arc<Mutex<Option<Pin<Box<dyn AsyncWrite + Send>>>>>,
+    stdin_tx: Arc<Mutex<Option<StdinWriter>>>,
     /// Receiver half of stdout/stderr from the container
     reader_rx: Option<mpsc::Receiver<String>>,
 }
@@ -77,6 +79,7 @@ impl DockerBackend {
             "TERM=xterm-256color".to_string(),
             "COLORTERM=truecolor".to_string(),
             "LANG=en_US.UTF-8".to_string(),
+            "PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
         ];
         env_vars.extend(env);
 
@@ -95,12 +98,22 @@ impl DockerBackend {
             attach_stdout: Some(true),
             attach_stderr: Some(true),
             open_stdin: Some(true),
-            cmd: Some(vec![shell.to_string(), "-l".to_string()]),
+            cmd: if image == SESSION_IMAGE {
+                // Ensure ~/.local/bin exists and symlink claude from /usr/local/bin
+                // (the bind-mount of /home/dev hides the image's .local/bin)
+                Some(vec![
+                    shell.to_string(),
+                    "-c".to_string(),
+                    "mkdir -p ~/.local/bin && ln -sf /usr/local/bin/claude ~/.local/bin/claude && grep -q '.local/bin' ~/.profile 2>/dev/null || echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.profile; exec /bin/bash -l".to_string(),
+                ])
+            } else {
+                Some(vec![shell.to_string(), "-l".to_string()])
+            },
             env: Some(env_vars),
             user: Some("1000:1000".to_string()), // Run as non-root
             host_config: Some(HostConfig {
-                memory: Some(512 * 1024 * 1024),         // 512 MB
-                memory_swap: Some(512 * 1024 * 1024),    // No swap
+                memory: Some(2048 * 1024 * 1024),        // 2 GB
+                memory_swap: Some(2048 * 1024 * 1024),   // No swap
                 cpu_period: Some(100_000),               // 100ms period
                 cpu_quota: Some(50_000),                 // 50% of one CPU
                 pids_limit: Some(256),                   // Max 256 processes

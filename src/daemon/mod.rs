@@ -1,9 +1,7 @@
 pub mod backend;
 pub mod bundle;
-#[cfg(feature = "docker")]
 pub mod docker;
 pub mod ipc;
-pub mod pty;
 pub mod ring_buffer;
 pub mod session;
 
@@ -19,14 +17,6 @@ use self::backend::SessionBackend;
 use self::ipc::DaemonRequest;
 use self::session::Session;
 
-/// Which backend to use for new sessions
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-pub enum BackendKind {
-    Local,
-    Docker,
-}
-
 pub struct DaemonState {
     pub sessions: Mutex<HashMap<String, Session>>,
     pub data_dir: PathBuf,
@@ -34,52 +24,29 @@ pub struct DaemonState {
     pub output_tx: broadcast::Sender<ipc::OutputEvent>,
     /// Client-to-session attachment mapping (clientId → set of session names)
     pub client_attachments: Mutex<HashMap<String, HashSet<String>>>,
-    /// Which backend to use for new sessions
-    pub backend_kind: BackendKind,
     /// Environment variables to inject into agent containers (used by Docker backend).
     /// Wrapped in Mutex so the server can update it at runtime via IPC.
-    #[cfg_attr(not(feature = "docker"), allow(dead_code))]
     pub agent_env: Mutex<HashMap<String, String>>,
 }
 
 impl DaemonState {
-    /// Create a session backend with additional per-session env vars.
-    /// For Docker backend, `home_bind` specifies the host path to bind-mount as `/home/dev`.
+    /// Create a Docker container backend with additional per-session env vars.
+    /// `home_bind` specifies the host path to bind-mount as `/home/dev`.
     pub async fn create_backend_with_env(
         &self,
-        #[allow(unused_variables)] name: &str,
+        name: &str,
         cols: u16,
         rows: u16,
-        #[allow(unused_variables)] session_env: &HashMap<String, String>,
-        #[allow(unused_variables)] home_bind: Option<&Path>,
+        session_env: &HashMap<String, String>,
+        home_bind: &Path,
     ) -> anyhow::Result<Box<dyn SessionBackend>> {
-        match self.backend_kind {
-            BackendKind::Local => {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-                let pty = pty::PtyHandle::spawn(&shell, cols, rows, &home)?;
-                Ok(Box::new(pty))
-            }
-            BackendKind::Docker => {
-                #[cfg(feature = "docker")]
-                {
-                    let home_bind = home_bind
-                        .ok_or_else(|| anyhow::anyhow!("Docker backend requires home_bind path"))?;
-                    let global_env = self.agent_env.lock().await;
-                    let mut merged = global_env.clone();
-                    // Session env overrides global on key conflicts
-                    merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-                    let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                    let backend =
-                        docker::DockerBackend::spawn(name, cols, rows, env, home_bind).await?;
-                    Ok(Box::new(backend))
-                }
-                #[cfg(not(feature = "docker"))]
-                {
-                    anyhow::bail!("Docker backend not available (compiled without docker feature)")
-                }
-            }
-        }
+        let global_env = self.agent_env.lock().await;
+        let mut merged = global_env.clone();
+        // Session env overrides global on key conflicts
+        merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let backend = docker::DockerBackend::spawn(name, cols, rows, env, home_bind).await?;
+        Ok(Box::new(backend))
     }
 }
 
@@ -117,9 +84,12 @@ pub async fn run(data_dir: &Path) -> Result<()> {
 
     let (output_tx, _) = broadcast::channel(4096);
 
-    // Detect available backend
-    let backend_kind = detect_backend().await;
-    tracing::info!("session backend: {:?}", backend_kind);
+    // Log Docker availability (sessions will fail with a clear error if Docker is down)
+    if docker::DockerBackend::is_available().await {
+        tracing::info!("Docker daemon detected");
+    } else {
+        tracing::warn!("Docker not available — sessions will fail until Docker is started");
+    }
 
     // Collect environment variables to inject into agent containers
     let mut agent_env = HashMap::new();
@@ -132,7 +102,6 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         data_dir: data_dir.to_path_buf(),
         output_tx,
         client_attachments: Mutex::new(HashMap::new()),
-        backend_kind,
         agent_env: Mutex::new(agent_env),
     });
 
@@ -144,7 +113,7 @@ pub async fn run(data_dir: &Path) -> Result<()> {
             interval.tick().await; // first tick is immediate, skip it
             loop {
                 interval.tick().await;
-                let to_save: Vec<(String, std::path::PathBuf, HashMap<String, String>)> = {
+                let to_save: Vec<(String, std::path::PathBuf, HashMap<String, String>, String)> = {
                     let sessions = state.sessions.lock().await;
                     sessions
                         .values()
@@ -154,14 +123,16 @@ pub async fn run(data_dir: &Path) -> Result<()> {
                                 s.name.clone(),
                                 s.bundle_path.clone().unwrap(),
                                 s.env.clone(),
+                                s.get_buffer(),
                             )
                         })
                         .collect()
                 };
 
-                for (name, bundle_path, env) in to_save {
+                for (name, bundle_path, env, scrollback) in to_save {
                     match bundle::save_bundle(&bundle_path, &name, &env).await {
                         Ok(()) => {
+                            bundle::save_scrollback(&bundle_path, &scrollback);
                             let mut sessions = state.sessions.lock().await;
                             if let Some(s) = sessions.get_mut(&name) {
                                 s.dirty = false;
@@ -177,34 +148,48 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         });
     }
 
+    // Listen for connections, but also handle SIGTERM/SIGINT for graceful shutdown
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+
     loop {
-        let (stream, _) = listener.accept().await?;
-        let state = state.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(state, stream).await {
-                tracing::error!("daemon connection error: {}", e);
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, _) = result?;
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_connection(state, stream).await {
+                        tracing::error!("daemon connection error: {}", e);
+                    }
+                });
             }
-        });
-    }
-}
-
-/// Detect which backend to use at startup.
-/// Checks for Docker socket availability when the docker feature is enabled.
-async fn detect_backend() -> BackendKind {
-    #[cfg(feature = "docker")]
-    {
-        match docker::DockerBackend::is_available().await {
-            true => {
-                tracing::info!("Docker daemon detected, using container backend");
-                return BackendKind::Docker;
+            _ = sigterm.recv() => {
+                tracing::info!("daemon received SIGTERM, saving scrollback…");
+                save_all_scrollback(&state).await;
+                break;
             }
-            false => {
-                tracing::info!("Docker not available, falling back to local PTY");
+            _ = sigint.recv() => {
+                tracing::info!("daemon received SIGINT, saving scrollback…");
+                save_all_scrollback(&state).await;
+                break;
             }
         }
     }
-    BackendKind::Local
+
+    // Clean up PID file and socket
+    let _ = std::fs::remove_file(&pid_path);
+    let _ = std::fs::remove_file(&sock_path);
+    Ok(())
+}
+
+/// Save scrollback for all sessions that have a bundle path.
+async fn save_all_scrollback(state: &DaemonState) {
+    let sessions = state.sessions.lock().await;
+    for s in sessions.values() {
+        if let Some(ref bp) = s.bundle_path {
+            bundle::save_scrollback(bp, &s.get_buffer());
+        }
+    }
 }
 
 async fn handle_connection(state: Arc<DaemonState>, stream: tokio::net::UnixStream) -> Result<()> {
