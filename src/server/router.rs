@@ -6,6 +6,7 @@ use super::anthropic_oauth;
 use super::assets;
 use super::browse;
 use super::config as config_routes;
+use super::kubos;
 use super::sessions;
 use super::shortcuts;
 use super::AppState;
@@ -60,6 +61,11 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/sessions/{name}/save", post(sessions::save_session))
         .route("/sessions/{name}/save-as", post(sessions::save_session_as))
         .route("/sessions/{name}/close", post(sessions::close_session))
+        // Kubos
+        .route("/kubos", get(kubos::list_kubos))
+        .route("/kubos", post(kubos::create_kubo))
+        .route("/kubos/{name}/stop", post(kubos::stop_kubo))
+        .route("/kubos/{name}/abots", post(kubos::add_abot_to_kubo))
         // Shortcuts
         .route("/shortcuts", get(shortcuts::get_shortcuts))
         .route("/shortcuts", put(shortcuts::set_shortcuts))

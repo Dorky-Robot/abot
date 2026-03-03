@@ -3,6 +3,7 @@ pub mod assets;
 pub mod browse;
 pub mod config;
 pub mod daemon_client;
+pub mod kubos;
 pub mod router;
 pub mod sessions;
 pub mod shortcuts;

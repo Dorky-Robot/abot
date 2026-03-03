@@ -310,6 +310,7 @@ async fn handle_attach(
                 cols,
                 rows,
                 env: std::collections::HashMap::new(),
+                kubo: None,
             })
             .await;
     }

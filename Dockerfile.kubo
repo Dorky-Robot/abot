@@ -1,0 +1,12 @@
+FROM alpine:3
+RUN apk add --no-cache bash zsh git curl wget openssh-client \
+    build-base python3 py3-pip nodejs npm vim less htop jq \
+    ripgrep fd tree tmux gcompat
+ENV SHELL=/bin/bash TERM=xterm-256color COLORTERM=truecolor \
+    PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN mkdir -p /home/abots && chown 1000:1000 /home/abots
+RUN curl -fsSL https://claude.ai/install.sh | bash && \
+    cp /root/.local/bin/claude /usr/local/bin/claude || true
+USER 1000:1000
+WORKDIR /home/abots
+CMD ["sleep", "infinity"]

@@ -2,6 +2,8 @@ pub mod backend;
 pub mod bundle;
 pub mod docker;
 pub mod ipc;
+pub mod kubo;
+pub mod kubo_exec;
 pub mod ring_buffer;
 pub mod session;
 
@@ -27,6 +29,8 @@ pub struct DaemonState {
     /// Environment variables to inject into agent containers (used by Docker backend).
     /// Wrapped in Mutex so the server can update it at runtime via IPC.
     pub agent_env: Mutex<HashMap<String, String>>,
+    /// Active kubos (shared runtime rooms). Keyed by kubo name.
+    pub kubos: Mutex<HashMap<String, kubo::Kubo>>,
 }
 
 impl DaemonState {
@@ -47,6 +51,62 @@ impl DaemonState {
         let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let backend = docker::DockerBackend::spawn(name, cols, rows, env, home_bind).await?;
         Ok(Box::new(backend))
+    }
+
+    /// Create a session backend via `docker exec` inside a kubo container.
+    /// Starts the kubo container lazily if not already running.
+    pub async fn create_kubo_backend(
+        &self,
+        kubo_name: &str,
+        abot_name: &str,
+        cols: u16,
+        rows: u16,
+        session_env: &HashMap<String, String>,
+    ) -> anyhow::Result<Box<dyn SessionBackend>> {
+        let global_env = self.agent_env.lock().await;
+        let mut merged = global_env.clone();
+        merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        drop(global_env);
+
+        let mut kubos = self.kubos.lock().await;
+        let kubo = kubos
+            .get_mut(kubo_name)
+            .ok_or_else(|| anyhow::anyhow!("kubo '{}' not found", kubo_name))?;
+
+        // Ensure container is running
+        kubo.start().await?;
+        let container_id = kubo
+            .container_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("kubo '{}' failed to start", kubo_name))?
+            .clone();
+
+        // Ensure abot home dir exists in the kubo
+        kubo.ensure_abot_home(abot_name)?;
+        kubo.session_opened();
+        drop(kubos);
+
+        let backend =
+            kubo_exec::KuboExecBackend::spawn(&container_id, abot_name, cols, rows, env).await?;
+
+        Ok(Box::new(backend))
+    }
+
+    /// Get or create the default kubo, returning its name.
+    pub async fn ensure_default_kubo(&self) -> anyhow::Result<String> {
+        let kubos_dir = self.data_dir.join("kubos");
+        std::fs::create_dir_all(&kubos_dir)?;
+
+        let mut kubos = self.kubos.lock().await;
+        if kubos.contains_key("default") {
+            return Ok("default".to_string());
+        }
+
+        let kubo_path = kubo::Kubo::ensure_kubo_dir(&kubos_dir, "default")?;
+        let new_kubo = kubo::new_kubo("default".to_string(), kubo_path)?;
+        kubos.insert("default".to_string(), new_kubo);
+        Ok("default".to_string())
     }
 }
 
@@ -97,12 +157,32 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         agent_env.insert("ANTHROPIC_API_KEY".into(), key);
     }
 
+    // Migrate v1 data directory layout to v2 (bundles/ → abots/, create kubos/)
+    if let Err(e) = bundle::migrate_data_dir(data_dir) {
+        tracing::warn!("data dir migration failed: {}", e);
+    }
+
+    // Initialize kubos from existing kubo directories
+    let kubos_dir = data_dir.join("kubos");
+    let _ = std::fs::create_dir_all(&kubos_dir);
+    let mut kubos_map = HashMap::new();
+    for (name, path) in kubo::list_kubo_dirs(&kubos_dir) {
+        match kubo::new_kubo(name.clone(), path) {
+            Ok(k) => {
+                tracing::info!("discovered kubo '{}'", name);
+                kubos_map.insert(name, k);
+            }
+            Err(e) => tracing::warn!("failed to load kubo '{}': {}", name, e),
+        }
+    }
+
     let state = Arc::new(DaemonState {
         sessions: Mutex::new(HashMap::new()),
         data_dir: data_dir.to_path_buf(),
         output_tx,
         client_attachments: Mutex::new(HashMap::new()),
         agent_env: Mutex::new(agent_env),
+        kubos: Mutex::new(kubos_map),
     });
 
     // Autosave loop — every 5 minutes, save dirty sessions with a bundle path
@@ -133,6 +213,22 @@ pub async fn run(data_dir: &Path) -> Result<()> {
                     match bundle::save_bundle(&bundle_path, &name, &env).await {
                         Ok(()) => {
                             bundle::save_scrollback(&bundle_path, &scrollback);
+                            // Auto-commit to git if this is a v2 abot repo
+                            if bundle_path.join(".git").exists() {
+                                match bundle::auto_commit_abot(&bundle_path) {
+                                    Ok(true) => {
+                                        tracing::debug!("autosave: git commit for '{}'", name);
+                                    }
+                                    Ok(false) => {} // nothing to commit
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "autosave: git commit failed for '{}': {}",
+                                            name,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
                             let mut sessions = state.sessions.lock().await;
                             if let Some(s) = sessions.get_mut(&name) {
                                 s.dirty = false;
@@ -141,6 +237,32 @@ pub async fn run(data_dir: &Path) -> Result<()> {
                         }
                         Err(e) => {
                             tracing::error!("autosave: failed to save '{}': {}", name, e);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Kubo idle check loop — stops kubos with no active sessions after timeout
+    {
+        let state_ref = state.clone();
+        tokio::spawn(async move {
+            let kubos = state_ref;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let mut kubos = kubos.kubos.lock().await;
+                let names: Vec<String> = kubos
+                    .values()
+                    .filter(|k| k.should_idle_stop())
+                    .map(|k| k.name.clone())
+                    .collect();
+                for name in names {
+                    if let Some(kubo) = kubos.get_mut(&name) {
+                        if let Err(e) = kubo.stop().await {
+                            tracing::error!("failed to idle-stop kubo '{}': {}", name, e);
                         }
                     }
                 }

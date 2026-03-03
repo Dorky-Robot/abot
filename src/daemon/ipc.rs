@@ -27,6 +27,10 @@ pub enum DaemonRequest {
         /// Optional per-session environment variables
         #[serde(default)]
         env: HashMap<String, String>,
+        /// Optional kubo name. If set, session runs inside the kubo container.
+        /// If not set, falls back to legacy 1-container-per-session.
+        #[serde(default)]
+        kubo: Option<String>,
     },
 
     /// RPC: attach a client to a session
@@ -145,6 +149,47 @@ pub enum DaemonRequest {
     /// RPC: health check
     #[serde(rename = "ping")]
     Ping { id: String },
+
+    // ── Kubo management ───────────────────────────────────────────
+    /// RPC: create a new kubo (shared runtime room)
+    #[serde(rename = "create-kubo")]
+    CreateKubo { id: String, name: String },
+
+    /// RPC: list all kubos
+    #[serde(rename = "list-kubos")]
+    ListKubos { id: String },
+
+    /// RPC: stop a kubo container
+    #[serde(rename = "stop-kubo")]
+    StopKubo { id: String, name: String },
+
+    /// RPC: add an abot to a kubo
+    #[serde(rename = "add-abot-to-kubo")]
+    AddAbotToKubo {
+        id: String,
+        kubo: String,
+        abot: String,
+    },
+
+    // ── Abot git operations ───────────────────────────────────────
+    /// RPC: clone an abot (create a variant)
+    #[serde(rename = "clone-abot")]
+    CloneAbot {
+        id: String,
+        /// Source abot name
+        source: String,
+        /// Target abot name
+        target: String,
+    },
+
+    /// RPC: run a git operation on an abot
+    #[serde(rename = "abot-git")]
+    AbotGit {
+        id: String,
+        abot: String,
+        /// Git subcommand: "status", "log", "diff"
+        op: String,
+    },
 }
 
 fn default_cols() -> u16 {
@@ -214,6 +259,37 @@ pub enum DaemonResponse {
         id: String,
         error: String,
     },
+    // ── Kubo responses ────────────────────────────────────────────
+    KuboCreated {
+        id: String,
+        name: String,
+        path: String,
+    },
+    KuboList {
+        id: String,
+        kubos: Vec<serde_json::Value>,
+    },
+    KuboStopped {
+        id: String,
+        name: String,
+    },
+    AbotAddedToKubo {
+        id: String,
+        kubo: String,
+        abot: String,
+    },
+    AbotCloned {
+        id: String,
+        source: String,
+        target: String,
+        path: String,
+    },
+    AbotGitResult {
+        id: String,
+        abot: String,
+        op: String,
+        output: String,
+    },
 }
 
 /// Broadcast events from daemon (no id, sent to all connected servers)
@@ -262,7 +338,8 @@ pub async fn handle_request(
             cols,
             rows,
             env,
-        } => handle_create_session(state, id, name, cols, rows, env).await,
+            kubo,
+        } => handle_create_session(state, id, name, cols, rows, env, kubo).await,
 
         DaemonRequest::Attach {
             id,
@@ -775,6 +852,196 @@ pub async fn handle_request(
         }
 
         DaemonRequest::Ping { id } => Some(DaemonResponse::Pong { id }),
+
+        // ── Kubo management ───────────────────────────────────────────
+        DaemonRequest::CreateKubo { id, name } => {
+            let kubos_dir = state.data_dir.join("kubos");
+            match super::kubo::Kubo::ensure_kubo_dir(&kubos_dir, &name) {
+                Ok(kubo_path) => match super::kubo::new_kubo(name.clone(), kubo_path.clone()) {
+                    Ok(new_kubo) => {
+                        let mut kubos = state.kubos.lock().await;
+                        kubos.insert(name.clone(), new_kubo);
+                        Some(DaemonResponse::KuboCreated {
+                            id,
+                            name,
+                            path: kubo_path.to_string_lossy().to_string(),
+                        })
+                    }
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to create kubo: {}", e),
+                    }),
+                },
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to create kubo dir: {}", e),
+                }),
+            }
+        }
+
+        DaemonRequest::ListKubos { id } => {
+            let kubos = state.kubos.lock().await;
+            let list: Vec<serde_json::Value> = kubos.values().map(|k| k.to_json()).collect();
+            Some(DaemonResponse::KuboList { id, kubos: list })
+        }
+
+        DaemonRequest::StopKubo { id, name } => {
+            let mut kubos = state.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(&name) {
+                match kubo.stop().await {
+                    Ok(()) => Some(DaemonResponse::KuboStopped { id, name }),
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to stop kubo: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("kubo '{}' not found", name),
+                })
+            }
+        }
+
+        DaemonRequest::CloneAbot { id, source, target } => {
+            let abots_dir = state.data_dir.join("abots");
+            let source_path = abots_dir.join(format!("{}.abot", source));
+            let target_path = abots_dir.join(format!("{}.abot", target));
+
+            if !source_path.exists() {
+                // Try legacy bundles/ path
+                let legacy_source = state
+                    .data_dir
+                    .join("bundles")
+                    .join(format!("{}.abot", source));
+                if !legacy_source.exists() {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("source abot '{}' not found", source),
+                    });
+                }
+            }
+
+            if target_path.exists() {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("target abot '{}' already exists", target),
+                });
+            }
+
+            // Clone git repo
+            let source_str = source_path.to_string_lossy().to_string();
+            let target_str = target_path.to_string_lossy().to_string();
+            match std::process::Command::new("git")
+                .args(["clone", &source_str, &target_str])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    // Update manifest name in clone
+                    let manifest_path = target_path.join("manifest.json");
+                    if let Ok(mut manifest) = super::bundle::read_json(&manifest_path) {
+                        manifest["name"] = serde_json::Value::String(target.clone());
+                        let _ = super::bundle::write_json(&manifest_path, &manifest);
+                    }
+                    Some(DaemonResponse::AbotCloned {
+                        id,
+                        source,
+                        target,
+                        path: target_str,
+                    })
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    Some(DaemonResponse::Error {
+                        id,
+                        error: format!("git clone failed: {}", stderr),
+                    })
+                }
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to run git clone: {}", e),
+                }),
+            }
+        }
+
+        DaemonRequest::AbotGit { id, abot, op } => {
+            let abots_dir = state.data_dir.join("abots");
+            let abot_path = abots_dir.join(format!("{}.abot", abot));
+
+            if !abot_path.exists() {
+                // Try legacy
+                let legacy = state
+                    .data_dir
+                    .join("bundles")
+                    .join(format!("{}.abot", abot));
+                if !legacy.exists() {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("abot '{}' not found", abot),
+                    });
+                }
+            }
+
+            let args: Vec<&str> = match op.as_str() {
+                "status" => vec!["status", "--short"],
+                "log" => vec!["log", "--oneline", "-20"],
+                "diff" => vec!["diff"],
+                _ => {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("unsupported git op: {}", op),
+                    })
+                }
+            };
+
+            match std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&abot_path)
+                .output()
+            {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    Some(DaemonResponse::AbotGitResult {
+                        id,
+                        abot,
+                        op,
+                        output: stdout,
+                    })
+                }
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("git failed: {}", e),
+                }),
+            }
+        }
+
+        DaemonRequest::AddAbotToKubo { id, kubo, abot } => {
+            let mut kubos = state.kubos.lock().await;
+            if let Some(k) = kubos.get_mut(&kubo) {
+                match k.ensure_abot_home(&abot) {
+                    Ok(_abot_dir) => {
+                        // Update manifest
+                        if let Ok(mut manifest) = super::kubo::Kubo::read_manifest(&k.path) {
+                            if !manifest.abots.contains(&abot) {
+                                manifest.abots.push(abot.clone());
+                                manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                                let _ = super::kubo::Kubo::write_manifest(&k.path, &manifest);
+                            }
+                        }
+                        Some(DaemonResponse::AbotAddedToKubo { id, kubo, abot })
+                    }
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to add abot to kubo: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("kubo '{}' not found", kubo),
+                })
+            }
+        }
     }
 }
 
@@ -835,6 +1102,8 @@ fn spawn_output_relay(
 }
 
 /// Create a PTY session and spawn its output reader task.
+/// If `kubo` is Some, the session runs inside the named kubo container via `docker exec`.
+/// Otherwise, falls back to legacy 1-container-per-session via `DockerBackend`.
 async fn handle_create_session(
     state: &Arc<DaemonState>,
     id: String,
@@ -842,27 +1111,53 @@ async fn handle_create_session(
     cols: u16,
     rows: u16,
     env: HashMap<String, String>,
+    kubo: Option<String>,
 ) -> Option<DaemonResponse> {
-    // Auto-create bundle home directory
-    let home_bind = match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
-        Ok(path) => path,
-        Err(e) => {
-            return Some(DaemonResponse::Error {
-                id,
-                error: format!("failed to create bundle home: {}", e),
-            })
+    // Determine which backend to use
+    let (backend_result, bundle_path) = if let Some(kubo_name) = kubo {
+        // Kubo path: ensure default kubo exists if "default" requested
+        if kubo_name == "default" {
+            if let Err(e) = state.ensure_default_kubo().await {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to ensure default kubo: {}", e),
+                });
+            }
         }
+
+        // The abot dir inside the kubo
+        let kubos_dir = state.data_dir.join("kubos");
+        let kubo_path = kubos_dir.join(format!("{}.kubo", kubo_name));
+        let abot_dir = kubo_path.join(&name);
+        let _ = std::fs::create_dir_all(abot_dir.join("home"));
+
+        let backend = state
+            .create_kubo_backend(&kubo_name, &name, cols, rows, &env)
+            .await;
+
+        (backend, Some(abot_dir))
+    } else {
+        // Legacy path: 1 container per session
+        let home_bind = match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
+            Ok(path) => path,
+            Err(e) => {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to create bundle home: {}", e),
+                })
+            }
+        };
+
+        let bundle_path = home_bind.parent().map(|p| p.to_path_buf());
+        let backend = state
+            .create_backend_with_env(&name, cols, rows, &env, &home_bind)
+            .await;
+
+        (backend, bundle_path)
     };
 
-    let backend = state
-        .create_backend_with_env(&name, cols, rows, &env, &home_bind)
-        .await;
-
-    match backend {
+    match backend_result {
         Ok(backend) => {
-            // Compute bundle path from home_bind (parent of home/ is the .abot dir)
-            let bundle_path = home_bind.parent().map(|p| p.to_path_buf());
-
             // Write initial manifest
             if let Some(ref bp) = bundle_path {
                 let _ = super::bundle::save_bundle(bp, &name, &env).await;
