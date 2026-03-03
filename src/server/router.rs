@@ -36,7 +36,7 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/auth/tokens/{id}", delete(auth_handlers::delete_token))
         // WebSocket stream
         .route("/stream", get(stream_handler::ws_upgrade))
-        // Session CRUD (legacy client compatibility)
+        // Session CRUD
         .route("/sessions", get(sessions::list_sessions))
         .route("/sessions", post(sessions::create_session))
         .route("/sessions/{name}", get(sessions::get_session))

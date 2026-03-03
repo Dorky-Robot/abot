@@ -155,10 +155,7 @@ pub async fn set_session_credentials(
         return Err(AppError::BadRequest("api_key cannot be empty".into()));
     }
 
-    // Build env map using the same logic as global credentials
-    let env_map = anthropic_oauth::build_env_map(Some(&key));
-    // Convert Option<String> map to HashMap<String, Option<String>> for IPC
-    let env: HashMap<String, Option<String>> = env_map;
+    let env = anthropic_oauth::build_env_map(Some(&key));
 
     let resp = app
         .daemon_client

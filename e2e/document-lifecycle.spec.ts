@@ -179,8 +179,10 @@ test.describe('Document lifecycle — save/open/close API', () => {
       { data: { path: bundlePath } },
     );
 
-    // Delete the session (not close — raw delete, no save).
-    await page.request.delete(`/sessions/${encodeURIComponent(testSession)}`);
+    // Close the session (not delete — close preserves the bundle on disk).
+    await page.request.post(`/sessions/${encodeURIComponent(testSession)}/close`, {
+      data: { save: false },
+    });
 
     // Verify it's gone.
     let sessions = await sessionNames(page);
