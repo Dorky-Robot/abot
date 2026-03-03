@@ -16,7 +16,9 @@ class StageStrip extends StatelessWidget {
   final void Function(String facetId) onFocusFacet;
   final void Function(String sessionName) onOpenSession;
   final void Function(String sessionName) onDeleteSession;
+  final void Function(String sessionName)? onSessionSettings;
   final VoidCallback onNewSession;
+  final VoidCallback? onImportSession;
   final WsConnectionState connectionState;
   final bool collapsed;
   final VoidCallback onToggleCollapse;
@@ -33,7 +35,9 @@ class StageStrip extends StatelessWidget {
     required this.onFocusFacet,
     required this.onOpenSession,
     required this.onDeleteSession,
+    this.onSessionSettings,
     required this.onNewSession,
+    this.onImportSession,
     required this.connectionState,
     required this.collapsed,
     required this.onToggleCollapse,
@@ -93,6 +97,13 @@ class StageStrip extends StatelessWidget {
                         tooltip: 'Collapse sidebar',
                       ),
                       const Spacer(),
+                      if (onImportSession != null)
+                        _IconBtn(
+                          icon: Icons.file_download_outlined,
+                          color: p.subtext0,
+                          onTap: onImportSession,
+                          tooltip: 'Import .abot',
+                        ),
                       _IconBtn(
                         icon: Icons.add,
                         color: p.subtext0,
@@ -139,6 +150,9 @@ class StageStrip extends StatelessWidget {
                                 onTap: isFocused
                                     ? null
                                     : () => onFocusFacet(facet.id),
+                                onSettings: onSessionSettings != null
+                                    ? () => onSessionSettings!(facet.sessionName)
+                                    : null,
                               ),
                             ),
                           );
@@ -194,6 +208,9 @@ class StageStrip extends StatelessWidget {
                                 session: session,
                                 onTap: () => onOpenSession(session.name),
                                 onDelete: () => onDeleteSession(session.name),
+                                onSettings: onSessionSettings != null
+                                    ? () => onSessionSettings!(session.name)
+                                    : null,
                               ),
                               const SizedBox(height: AbotSpacing.xs),
                             ],
@@ -323,37 +340,82 @@ class _SidebarFooter extends StatelessWidget {
 /// Sidebar card for a facet. The CSS-transformed xterm.js overlay provides the
 /// visual preview. The card itself shows a subtle border and session name as
 /// fallback (visible when no CSS overlay is present, e.g. single-facet state).
-class _StripCard extends StatelessWidget {
+class _StripCard extends StatefulWidget {
   final FacetData facet;
   final bool isFocused;
   final VoidCallback? onTap;
+  final VoidCallback? onSettings;
 
-  const _StripCard({required this.facet, this.isFocused = false, this.onTap});
+  const _StripCard({
+    required this.facet,
+    this.isFocused = false,
+    this.onTap,
+    this.onSettings,
+  });
+
+  @override
+  State<_StripCard> createState() => _StripCardState();
+}
+
+class _StripCardState extends State<_StripCard> {
+  bool _hovered = false;
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Container(
-        height: 100,
-        decoration: BoxDecoration(
-          color: p.base,
-          border: Border.all(
-            color: isFocused ? p.mauve : p.surface1,
-            width: isFocused ? 1.5 : 1,
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: Container(
+          height: 100,
+          decoration: BoxDecoration(
+            color: p.base,
+            border: Border.all(
+              color: widget.isFocused ? p.mauve : p.surface1,
+              width: widget.isFocused ? 1.5 : 1,
+            ),
+            borderRadius: BorderRadius.circular(AbotRadius.md),
           ),
-          borderRadius: BorderRadius.circular(AbotRadius.md),
-        ),
-        alignment: Alignment.bottomRight,
-        padding: const EdgeInsets.all(AbotSpacing.xs),
-        child: Text(
-          facet.sessionName,
-          style: TextStyle(
-            fontSize: 9,
-            color: p.subtext0,
-            fontFamily: AbotFonts.mono,
+          child: Stack(
+            children: [
+              Positioned(
+                right: AbotSpacing.xs,
+                bottom: AbotSpacing.xs,
+                child: Text(
+                  widget.facet.sessionName,
+                  style: TextStyle(
+                    fontSize: 9,
+                    color: p.subtext0,
+                    fontFamily: AbotFonts.mono,
+                  ),
+                ),
+              ),
+              if (_hovered && widget.onSettings != null)
+                Positioned(
+                  right: AbotSpacing.xs,
+                  top: AbotSpacing.xs,
+                  child: InkWell(
+                    onTap: widget.onSettings,
+                    borderRadius: BorderRadius.circular(AbotRadius.sm),
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        color: p.surface0.withValues(alpha: 0.8),
+                        borderRadius:
+                            BorderRadius.circular(AbotRadius.sm),
+                      ),
+                      child: Icon(
+                        Icons.settings_outlined,
+                        size: 14,
+                        color: p.subtext0,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -366,11 +428,13 @@ class _SessionTile extends StatefulWidget {
   final SessionInfo session;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback? onSettings;
 
   const _SessionTile({
     required this.session,
     required this.onTap,
     required this.onDelete,
+    this.onSettings,
   });
 
   @override
@@ -428,7 +492,20 @@ class _SessionTileState extends State<_SessionTile> {
                   ],
                 ),
               ),
-              if (_hovered)
+              if (_hovered) ...[
+                if (widget.onSettings != null)
+                  InkWell(
+                    onTap: widget.onSettings,
+                    borderRadius: BorderRadius.circular(AbotRadius.sm),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: Icon(
+                        Icons.settings_outlined,
+                        size: 14,
+                        color: p.subtext0,
+                      ),
+                    ),
+                  ),
                 InkWell(
                   onTap: widget.onDelete,
                   borderRadius: BorderRadius.circular(AbotRadius.sm),
@@ -441,6 +518,7 @@ class _SessionTileState extends State<_SessionTile> {
                     ),
                   ),
                 ),
+              ],
             ],
           ),
         ),

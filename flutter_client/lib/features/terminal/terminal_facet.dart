@@ -19,6 +19,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
   final bool isMirror;
   final VoidCallback? onMinimize;
   final VoidCallback? onClose;
+  final VoidCallback? onSettings;
   final bool showTitleBar;
 
   const TerminalFacet({
@@ -29,6 +30,7 @@ class TerminalFacet extends ConsumerStatefulWidget {
     this.isMirror = false,
     this.onMinimize,
     this.onClose,
+    this.onSettings,
     this.showTitleBar = true,
   });
 
@@ -382,6 +384,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
                     isFocused: widget.isFocused,
                     onMinimize: widget.onMinimize,
                     onClose: widget.onClose,
+                    onSettings: widget.onSettings,
                   )
                 : null,
           ),
@@ -406,12 +409,14 @@ class _TitleBar extends StatelessWidget {
   final bool isFocused;
   final VoidCallback? onMinimize;
   final VoidCallback? onClose;
+  final VoidCallback? onSettings;
 
   const _TitleBar({
     required this.sessionName,
     required this.isFocused,
     this.onMinimize,
     this.onClose,
+    this.onSettings,
   });
 
   @override
@@ -439,6 +444,15 @@ class _TitleBar extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (onSettings != null)
+            InkWell(
+              onTap: onSettings,
+              borderRadius: BorderRadius.circular(AbotRadius.sm),
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: Icon(Icons.settings_outlined, size: 14, color: textColor),
+              ),
+            ),
           if (onMinimize != null)
             InkWell(
               onTap: onMinimize,

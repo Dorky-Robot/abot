@@ -251,7 +251,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     return ListView(
       padding: const EdgeInsets.all(AbotSpacing.lg),
       children: [
-        _SectionLabel(label: 'Anthropic Account'),
+        _SectionLabel(label: 'Default Credentials'),
         const SizedBox(height: AbotSpacing.sm),
         const AnthropicOAuthManager(),
       ],

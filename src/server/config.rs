@@ -51,3 +51,21 @@ pub async fn set_instance_name(
 
     Ok(Json(json!({ "instanceName": name })))
 }
+
+/// PUT /api/config/bundle-dir — set the bundle directory path
+pub async fn set_bundle_dir(
+    _csrf: CsrfVerified,
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let dir = body
+        .get("bundleDir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("missing bundleDir".into()))?;
+
+    let mut config = read_config(&app.data_dir);
+    config["bundleDir"] = json!(dir);
+    write_config(&app.data_dir, &config)?;
+
+    Ok(Json(json!({ "bundleDir": dir })))
+}

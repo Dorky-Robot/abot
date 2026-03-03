@@ -4,6 +4,7 @@ import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/network/api_client.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
@@ -13,6 +14,7 @@ import 'facet.dart';
 import 'facet_manager.dart';
 import 'stage_strip.dart';
 import '../settings/settings_panel.dart';
+import '../settings/session_settings_panel.dart';
 
 const double _narrowBreakpoint = 768;
 const String _offscreenTransform = 'translate(-9999px, 0) scale(0.01, 0.01)';
@@ -50,6 +52,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   /// Whether the settings panel overlay is visible.
   bool _showSettings = false;
+
+  /// Session name for per-session settings overlay (null = hidden).
+  String? _sessionSettingsName;
 
   @override
   void initState() {
@@ -284,6 +289,54 @@ class _FacetShellState extends ConsumerState<FacetShell>
           );
         }
       }
+    }
+  }
+
+  /// Import a .abot bundle — prompts for path and creates a new session.
+  Future<void> _importSession() async {
+    final controller = TextEditingController();
+    final path = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Import .abot Bundle'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            hintText: '/path/to/project.abot',
+            labelText: 'Bundle path',
+          ),
+          autofocus: true,
+          onSubmitted: (v) => Navigator.pop(context, v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, controller.text.trim()),
+            child: const Text('Import'),
+          ),
+        ],
+      ),
+    );
+
+    if (path == null || path.isEmpty || !mounted) return;
+
+    try {
+      final data = await const ApiClient()
+          .post('/sessions/import', {'path': path}) as Map<String, dynamic>;
+      if (!mounted) return;
+      final name = data['name'] as String?;
+      if (name != null) {
+        await ref.read(sessionServiceProvider.notifier).refresh();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: $e')),
+      );
     }
   }
 
@@ -535,6 +588,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
             SettingsPanel(
               onClose: () => setState(() => _showSettings = false),
             ),
+          if (_sessionSettingsName != null)
+            SessionSettingsPanel(
+              sessionName: _sessionSettingsName!,
+              onClose: () =>
+                  setState(() => _sessionSettingsName = null),
+            ),
         ],
       ),
     );
@@ -594,7 +653,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onFocusFacet: _focusFacet,
               onOpenSession: _onOpenSession,
               onDeleteSession: _onDeleteSession,
+              onSessionSettings: (name) =>
+                  setState(() => _sessionSettingsName = name),
               onNewSession: _createNewFacet,
+              onImportSession: _importSession,
               connectionState: wsState.connectionState,
               collapsed: _sidebarCollapsed,
               onToggleCollapse: _toggleSidebar,
@@ -667,6 +729,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
             sessionName: state.facets[focusedId]!.sessionName,
             isFocused: true,
             showTitleBar: true,
+            onSettings: () => setState(() =>
+                _sessionSettingsName =
+                    state.facets[focusedId]!.sessionName),
             onMinimize: state.count > 1
                 ? () => _minimizeFacet(focusedId)
                 : null,

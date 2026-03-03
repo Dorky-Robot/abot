@@ -62,5 +62,9 @@ libc = "0.2"
 # WebRTC
 webrtc = "0.17"
 
+# Bundle export/import (filesystem snapshots)
+zstd = "0.13"
+tar = "0.4"
+
 # Docker (optional — enables container backend for sessions)
 bollard = { version = "0.18", optional = true }

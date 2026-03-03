@@ -5,7 +5,7 @@ A spatial interface between human and computer intelligence, rendered on canvas,
 ## Architecture
 
 - **Rust binary** (`src/`): daemon (PTY session owner) + server (HTTP/WS), single binary with subcommands
-- **Browser client** (`client/`): vanilla JS canvas rendering, facet-based spatial UI
+- **Flutter client** (`flutter_client/`): Flutter Web (WASM) canvas rendering, facet-based spatial UI
 - **Assets** embedded in binary via rust-embed for single-binary distribution
 
 ### Daemon/Server Split
@@ -38,10 +38,29 @@ src/stream/     WebSocket handler, client tracking, message protocol
 - Localhost auto-auth bypass
 - Focus-based routing: client tracks which facet has focus, tags outgoing input with session ID
 
+## Session Sandbox Model
+
+Each `.abot` bundle IS the container's sandbox. The bundle's `home/` subdirectory is bind-mounted as `/home/dev` in the Docker container — no snapshot/restore cycle.
+
+```
+~/.abot/bundles/main.abot/
+  manifest.json      ← name, version, timestamps
+  credentials.json   ← API keys
+  config.json        ← shell, env vars
+  home/              ← bind-mounted as /home/dev in container
+```
+
+- **Create session** → auto-creates `~/.abot/bundles/{name}.abot/home/`
+- **Terminal I/O** → writes directly to bind-mounted `home/` (live)
+- **Save** → writes metadata files only (filesystem is always live)
+- **Save As** → copies entire bundle directory to new path
+- **Delete** → kills container + deletes bundle directory
+- **Close** → kills container, bundle directory stays for reopening
+
 ## Conventions
 
 - Rust: `axum` patterns, `tracing` for logging, `anyhow`/`thiserror` for errors
-- Client JS: vanilla JS, no framework, canvas-rendered everything
+- Client: Flutter Web (WASM), Riverpod state management, xterm.js via HtmlElementView
 - All rendering on `<canvas>` — DOM only for xterm.js, IME input, clipboard
 - Sessions are the core abstraction (not files)
 - The UI term is "facet" (not panel, window, or plate)
@@ -49,7 +68,9 @@ src/stream/     WebSocket handler, client tracking, message protocol
 ## Development
 
 ```
-cargo run -- start    # Start daemon + server
-cargo run -- serve    # Server only (daemon must be running)
-cargo test            # Run tests
+cd flutter_client && flutter build web --wasm   # Build Flutter client
+cargo run -- start                               # Start daemon + server
+cargo run -- serve                               # Server only (daemon must be running)
+cargo test                                       # Run Rust tests
+npx playwright test                              # Run e2e tests (server must be running)
 ```
