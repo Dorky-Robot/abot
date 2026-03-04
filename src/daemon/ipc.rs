@@ -1155,11 +1155,18 @@ pub async fn handle_request(
             }
 
             // Update kubo manifest
-            if let Ok(mut manifest) = super::kubo::Kubo::read_manifest(&kubo_path) {
-                if !manifest.abots.contains(&abot) {
-                    manifest.abots.push(abot.clone());
-                    manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
-                    let _ = super::kubo::Kubo::write_manifest(&kubo_path, &manifest);
+            match super::kubo::Kubo::read_manifest(&kubo_path) {
+                Ok(mut manifest) => {
+                    if !manifest.abots.contains(&abot) {
+                        manifest.abots.push(abot.clone());
+                        manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                        if let Err(e) = super::kubo::Kubo::write_manifest(&kubo_path, &manifest) {
+                            tracing::warn!("failed to write kubo manifest for '{}': {}", kubo, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to read kubo manifest for '{}': {}", kubo, e);
                 }
             }
 

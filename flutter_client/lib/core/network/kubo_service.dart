@@ -65,7 +65,7 @@ class KuboServiceNotifier extends AsyncNotifier<List<KuboInfo>> {
       'cols': cols,
       'rows': rows,
     };
-    final data = await _api.post('/kubos/$kuboName/abots', body);
+    final data = await _api.post('/kubos/${Uri.encodeComponent(kuboName)}/abots', body);
     // Refresh kubo list to pick up new abot count
     state = AsyncData(await listKubos());
     return data as Map<String, dynamic>;

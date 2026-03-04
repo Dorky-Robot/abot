@@ -269,52 +269,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  Future<String?> _showNewAbotDialog(String kuboName) {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (ctx) {
-        final p = ctx.palette;
-        return AlertDialog(
-          backgroundColor: p.base,
-          title: Text('New Abot in $kuboName',
-              style: TextStyle(
-                  color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            style: TextStyle(
-                color: p.text, fontFamily: AbotFonts.mono, fontSize: 13),
-            decoration: InputDecoration(
-              hintText: 'abot name',
-              hintStyle: TextStyle(color: p.overlay0, fontFamily: AbotFonts.mono),
-              enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: p.surface1)),
-              focusedBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: p.mauve)),
-            ),
-            onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: Text('Cancel',
-                  style:
-                      TextStyle(color: p.subtext0, fontFamily: AbotFonts.mono)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-              child: Text('Create',
-                  style:
-                      TextStyle(color: p.mauve, fontFamily: AbotFonts.mono)),
-            ),
-          ],
-        );
-      },
-    ).whenComplete(() => controller.dispose());
-  }
+  Future<String?> _showNewAbotDialog(String kuboName) =>
+      _showNameDialog(title: 'New Abot in $kuboName', hint: 'abot name');
 
-  Future<String?> _showNewKuboDialog() {
+  Future<String?> _showNewKuboDialog() =>
+      _showNameDialog(title: 'New Kubo', hint: 'kubo name');
+
+  Future<String?> _showNameDialog({required String title, required String hint}) {
     final controller = TextEditingController();
     return showDialog<String>(
       context: context,
@@ -322,7 +283,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
         final p = ctx.palette;
         return AlertDialog(
           backgroundColor: p.base,
-          title: Text('New Kubo',
+          title: Text(title,
               style: TextStyle(
                   color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
           content: TextField(
@@ -331,7 +292,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
             style: TextStyle(
                 color: p.text, fontFamily: AbotFonts.mono, fontSize: 13),
             decoration: InputDecoration(
-              hintText: 'kubo name',
+              hintText: hint,
               hintStyle: TextStyle(color: p.overlay0, fontFamily: AbotFonts.mono),
               enabledBorder: UnderlineInputBorder(
                   borderSide: BorderSide(color: p.surface1)),

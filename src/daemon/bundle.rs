@@ -239,9 +239,10 @@ pub fn load_scrollback(bundle_path: &Path) -> Option<String> {
 /// Ensure a bundle's `home/` directory exists, creating the full bundle structure.
 /// Returns the path to the `home/` directory.
 /// Uses configured abots dir (v2), falling back to `bundles/` if it exists (v1 compat).
+/// Used by CreateSession and tests; will be superseded by worktree model for kubo sessions.
 #[allow(dead_code)]
 pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
-    validate_session_name(name)?;
+    super::kubo::validate_name(name)?;
 
     // Check v2 path first (respects bundleDir config), then legacy v1 path
     let abots_dir = resolve_abots_dir(data_dir);
@@ -265,22 +266,6 @@ pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
     }
 
     Ok(home_dir)
-}
-
-/// Validate that a session name is safe for use in filesystem paths.
-/// Rejects path traversal components, slashes, and other dangerous characters.
-#[allow(dead_code)]
-fn validate_session_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        anyhow::bail!("session name cannot be empty");
-    }
-    if name.contains('/') || name.contains('\\') || name.contains('\0') {
-        anyhow::bail!("session name contains invalid characters: {}", name);
-    }
-    if name == "." || name == ".." || name.starts_with("../") || name.contains("/../") {
-        anyhow::bail!("session name contains path traversal: {}", name);
-    }
-    Ok(())
 }
 
 /// Recursively copy a directory tree from `src` to `dst`.
@@ -538,8 +523,10 @@ pub fn resolve_abots_dir(data_dir: &Path) -> PathBuf {
 
 /// Create a canonical `.abot` bundle in the abots directory.
 /// Returns the path to the created bundle (e.g. `{abots_dir}/{name}.abot/`).
-/// Skips if the bundle already exists.
+/// Skips if the bundle already exists. Validates name for path and git-ref safety.
 pub fn create_canonical_abot(abots_dir: &Path, name: &str) -> Result<PathBuf> {
+    super::kubo::validate_name(name)?;
+
     let bundle_path = abots_dir.join(format!("{name}.abot"));
     if bundle_path.exists() {
         return Ok(bundle_path);
@@ -548,6 +535,16 @@ pub fn create_canonical_abot(abots_dir: &Path, name: &str) -> Result<PathBuf> {
     let home_dir = bundle_path.join("home");
     std::fs::create_dir_all(&home_dir)
         .with_context(|| format!("failed to create canonical abot: {}", bundle_path.display()))?;
+
+    // Write a minimal manifest so the canonical abot is a valid bundle
+    let now = chrono::Utc::now().to_rfc3339();
+    let manifest = serde_json::json!({
+        "version": BUNDLE_VERSION,
+        "name": name,
+        "created_at": now,
+        "updated_at": now,
+    });
+    write_json(&bundle_path.join("manifest.json"), &manifest)?;
 
     git_init_abot(&bundle_path)?;
 
@@ -558,12 +555,16 @@ pub fn create_canonical_abot(abots_dir: &Path, name: &str) -> Result<PathBuf> {
 /// Add an abot as a git worktree in a kubo directory.
 /// Creates a `kubo/<kubo_name>` branch in the canonical abot repo, then
 /// runs `git worktree add` to place it at `{kubo_path}/{abot_name}`.
+/// Validates names for path and git-ref safety.
 pub fn worktree_add_abot(
     canonical_path: &Path,
     kubo_path: &Path,
     abot_name: &str,
     kubo_name: &str,
 ) -> Result<()> {
+    super::kubo::validate_name(abot_name)?;
+    super::kubo::validate_name(kubo_name)?;
+
     let worktree_path = kubo_path.join(abot_name);
     if worktree_path.exists() {
         // Already set up — check if it's a valid worktree
@@ -572,6 +573,10 @@ pub fn worktree_add_abot(
             return Ok(());
         }
         // Directory exists but isn't a worktree — remove it so we can create one
+        tracing::warn!(
+            "removing non-worktree directory at {} to set up worktree",
+            worktree_path.display()
+        );
         std::fs::remove_dir_all(&worktree_path)?;
     }
 
@@ -604,12 +609,14 @@ pub fn worktree_add_abot(
 }
 
 /// Remove an abot's worktree from a kubo directory.
+/// Reserved for future "remove abot from kubo" endpoint (see TODO.md).
 #[allow(dead_code)]
 pub fn worktree_remove_abot(
     canonical_path: &Path,
     kubo_path: &Path,
     abot_name: &str,
 ) -> Result<()> {
+    super::kubo::validate_name(abot_name)?;
     let worktree_path = kubo_path.join(abot_name);
     if !worktree_path.exists() {
         return Ok(());

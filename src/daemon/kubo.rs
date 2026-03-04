@@ -43,7 +43,8 @@ pub struct KuboManifest {
     pub abots: Vec<String>,
 }
 
-/// Validate that a kubo or abot name is safe for filesystem paths.
+/// Validate that a kubo or abot name is safe for filesystem paths and git refs.
+/// Rejects path traversal, slashes, null bytes, and characters invalid in git branch names.
 pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() {
         anyhow::bail!("name cannot be empty");
@@ -53,6 +54,20 @@ pub fn validate_name(name: &str) -> Result<()> {
     }
     if name == "." || name == ".." || name.starts_with("../") || name.contains("/../") {
         anyhow::bail!("name contains path traversal: {}", name);
+    }
+    // Reject characters invalid in git refs (used as branch names in kubo/<name>)
+    const GIT_INVALID: &[char] = &[' ', '~', '^', ':', '?', '*', '[', '@'];
+    if name.contains(GIT_INVALID) {
+        anyhow::bail!("name contains characters invalid in git refs: {}", name);
+    }
+    if name.contains("..") {
+        anyhow::bail!("name contains '..' which is invalid in git refs: {}", name);
+    }
+    if name.ends_with('.') || name.ends_with(".lock") {
+        anyhow::bail!(
+            "name ends with '.' or '.lock' which is invalid in git refs: {}",
+            name
+        );
     }
     Ok(())
 }
