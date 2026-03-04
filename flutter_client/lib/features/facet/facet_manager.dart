@@ -180,6 +180,7 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
       focusedId: newFocused,
     );
     _persistOrder();
+    _persistFocused();
   }
 
   /// Focus a specific facet — just changes focusedId, order is stable.

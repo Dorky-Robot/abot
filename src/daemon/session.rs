@@ -3,7 +3,11 @@ use super::ring_buffer::RingBuffer;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Global monotonic counter for session generations.
+static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 const DEFAULT_MAX_BUFFER_ITEMS: usize = 5000;
 const DEFAULT_MAX_BUFFER_BYTES: usize = 5 * 1024 * 1024; // 5MB
@@ -31,6 +35,9 @@ pub struct Session {
     pub dirty: bool,
     /// Kubo this session belongs to (None = legacy standalone session).
     pub kubo: Option<String>,
+    /// Monotonic generation — incremented on each session creation so stale
+    /// output relays can detect they belong to an overwritten session.
+    pub generation: u64,
 }
 
 impl Session {
@@ -52,6 +59,7 @@ impl Session {
             bundle_path,
             dirty: false,
             kubo,
+            generation: GENERATION_COUNTER.fetch_add(1, Ordering::Relaxed),
         }
     }
 

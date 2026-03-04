@@ -638,6 +638,7 @@ pub async fn handle_request(
                                 .get_mut(&name)
                                 .and_then(|s| s.backend.take_reader());
                             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
+                            let gen = sessions.get(&name).map(|s| s.generation).unwrap_or(0);
                             drop(sessions);
 
                             // Restore saved scrollback into the ring buffer
@@ -666,6 +667,7 @@ pub async fn handle_request(
                                     shared_name,
                                     reader_name,
                                     &mut rx,
+                                    gen,
                                 );
                             }
 
@@ -1086,12 +1088,15 @@ pub async fn handle_request(
 }
 
 /// Spawn a task that relays output from a session's reader channel to the broadcast.
+/// `generation` is the session's generation at spawn time — used to detect stale relays
+/// when a session name is reused (overwritten).
 fn spawn_output_relay(
     output_tx: tokio::sync::broadcast::Sender<OutputEvent>,
     state_ref: Arc<DaemonState>,
     shared_name: Option<std::sync::Arc<std::sync::Mutex<String>>>,
     reader_name: String,
     rx: &mut tokio::sync::mpsc::Receiver<String>,
+    generation: u64,
 ) {
     let mut rx = {
         // We need to take ownership — swap with a dummy channel
@@ -1108,7 +1113,10 @@ fn spawn_output_relay(
             {
                 let mut sessions = state_ref.sessions.lock().await;
                 if let Some(s) = sessions.get_mut(&current_name) {
-                    s.buffer.push(data.clone());
+                    // Only push data if this relay belongs to the current session generation
+                    if s.generation == generation {
+                        s.buffer.push(data.clone());
+                    }
                 }
             }
             let _ = output_tx.send(OutputEvent::Output {
@@ -1122,12 +1130,20 @@ fn spawn_output_relay(
             .map(|sn| sn.lock().unwrap().clone())
             .unwrap_or_else(|| reader_name.clone());
 
+        // Only mark exited and call session_closed if the session still belongs to this
+        // generation. If the session was overwritten (new session with same name), the
+        // generation will differ and we must not touch the new session's state.
         let (code, kubo_name) = {
             let mut sessions = state_ref.sessions.lock().await;
             if let Some(s) = sessions.get_mut(&current_name) {
-                let code = s.backend.try_exit_code().unwrap_or(0);
-                s.mark_exited(code);
-                (Some(code), s.kubo.clone())
+                if s.generation == generation {
+                    let code = s.backend.try_exit_code().unwrap_or(0);
+                    s.mark_exited(code);
+                    (Some(code), s.kubo.clone())
+                } else {
+                    // Stale relay — session was overwritten, skip cleanup
+                    (None, None)
+                }
             } else {
                 (None, None)
             }
@@ -1239,16 +1255,28 @@ async fn handle_create_session(
 
             let mut sessions = state.sessions.lock().await;
             // Kill old session if it exists to avoid orphaning backends
-            if let Some(mut old) = sessions.remove(&name) {
+            let old_kubo_name = if let Some(mut old) = sessions.remove(&name) {
                 old.backend.kill();
-            }
+                old.kubo.clone()
+            } else {
+                None
+            };
             sessions.insert(name.clone(), session);
 
             let rx = sessions
                 .get_mut(&name)
                 .and_then(|s| s.backend.take_reader());
             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
+            let gen = sessions.get(&name).map(|s| s.generation).unwrap_or(0);
             drop(sessions);
+
+            // Decrement session count for the old session's kubo (if overwriting)
+            if let Some(kn) = old_kubo_name {
+                let mut kubos = state.kubos.lock().await;
+                if let Some(kubo) = kubos.get_mut(&kn) {
+                    kubo.session_closed();
+                }
+            }
 
             // Restore saved scrollback from a previous session (e.g. after close + restart)
             if let Some(ref bp) = bundle_path {
@@ -1261,7 +1289,7 @@ async fn handle_create_session(
             }
 
             if let Some(mut rx) = rx {
-                spawn_output_relay(output_tx, state_ref, shared_name, reader_name, &mut rx);
+                spawn_output_relay(output_tx, state_ref, shared_name, reader_name, &mut rx, gen);
             }
 
             Some(DaemonResponse::SessionCreated {
