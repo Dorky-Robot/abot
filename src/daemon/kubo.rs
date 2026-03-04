@@ -147,6 +147,7 @@ impl Kubo {
             open_stdin: Some(false),
             cmd: Some(vec!["sleep".to_string(), "infinity".to_string()]),
             env: Some(env_vars),
+            user: Some("1000:1000".to_string()),
             host_config: Some(HostConfig {
                 memory: Some(2048 * 1024 * 1024),      // 2 GB base
                 memory_swap: Some(2048 * 1024 * 1024), // No swap

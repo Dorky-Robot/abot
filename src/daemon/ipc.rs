@@ -626,12 +626,15 @@ pub async fn handle_request(
 
                             let mut sessions = state.sessions.lock().await;
                             // Kill existing session with same name to prevent resource leaks
-                            if let Some(mut old) = sessions.remove(&name) {
+                            let old_kubo_name = if let Some(mut old) = sessions.remove(&name) {
                                 old.backend.kill();
                                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                                     session: name.clone(),
                                 });
-                            }
+                                old.kubo.clone()
+                            } else {
+                                None
+                            };
                             sessions.insert(name.clone(), session);
 
                             let rx = sessions
@@ -640,6 +643,14 @@ pub async fn handle_request(
                             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
                             let gen = sessions.get(&name).map(|s| s.generation).unwrap_or(0);
                             drop(sessions);
+
+                            // Decrement session count for the old session's kubo (if overwriting)
+                            if let Some(kn) = old_kubo_name {
+                                let mut kubos = state.kubos.lock().await;
+                                if let Some(kubo) = kubos.get_mut(&kn) {
+                                    kubo.session_closed();
+                                }
+                            }
 
                             // Restore saved scrollback into the ring buffer
                             if let Some(scrollback) = super::bundle::load_scrollback(&bundle_path) {
@@ -935,7 +946,7 @@ pub async fn handle_request(
                 });
             }
             let abots_dir = state.data_dir.join("abots");
-            let source_path = abots_dir.join(format!("{}.abot", source));
+            let mut source_path = abots_dir.join(format!("{}.abot", source));
             let target_path = abots_dir.join(format!("{}.abot", target));
 
             if !source_path.exists() {
@@ -950,6 +961,7 @@ pub async fn handle_request(
                         error: format!("source abot '{}' not found", source),
                     });
                 }
+                source_path = legacy_source;
             }
 
             if target_path.exists() {
@@ -1002,7 +1014,7 @@ pub async fn handle_request(
                 });
             }
             let abots_dir = state.data_dir.join("abots");
-            let abot_path = abots_dir.join(format!("{}.abot", abot));
+            let mut abot_path = abots_dir.join(format!("{}.abot", abot));
 
             if !abot_path.exists() {
                 // Try legacy
@@ -1016,6 +1028,7 @@ pub async fn handle_request(
                         error: format!("abot '{}' not found", abot),
                     });
                 }
+                abot_path = legacy;
             }
 
             let args: Vec<&str> = match op.as_str() {
@@ -1110,19 +1123,26 @@ fn spawn_output_relay(
                 .map(|sn| sn.lock().unwrap().clone())
                 .unwrap_or_else(|| reader_name.clone());
 
-            {
+            let is_current = {
                 let mut sessions = state_ref.sessions.lock().await;
                 if let Some(s) = sessions.get_mut(&current_name) {
-                    // Only push data if this relay belongs to the current session generation
                     if s.generation == generation {
                         s.buffer.push(data.clone());
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
                 }
+            };
+            // Only broadcast if this relay belongs to the current session generation
+            if is_current {
+                let _ = output_tx.send(OutputEvent::Output {
+                    session: current_name,
+                    data,
+                });
             }
-            let _ = output_tx.send(OutputEvent::Output {
-                session: current_name,
-                data,
-            });
         }
 
         let current_name = shared_name
