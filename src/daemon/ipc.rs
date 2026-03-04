@@ -379,7 +379,13 @@ pub async fn handle_request(
                 let mut sessions = state.sessions.lock().await;
                 if let Some(mut session) = sessions.remove(&name) {
                     let bp = session.bundle_path.clone();
-                    let kn = session.kubo.clone();
+                    // Only decrement kubo count if the session was still running
+                    // (if already exited, the output relay already called session_closed)
+                    let kn = if session.is_alive() {
+                        session.kubo.clone()
+                    } else {
+                        None
+                    };
                     session.backend.kill();
                     let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                         session: name.clone(),
@@ -859,7 +865,9 @@ pub async fn handle_request(
                 if let Some(ref bp) = s.bundle_path {
                     super::bundle::save_scrollback(bp, &s.get_buffer());
                 }
-                let kubo_name = s.kubo.clone();
+                // Only decrement kubo count if the session was still running
+                // (if already exited, the output relay already called session_closed)
+                let kubo_name = if s.is_alive() { s.kubo.clone() } else { None };
                 s.backend.kill();
                 drop(sessions);
                 if let Some(kn) = kubo_name {
