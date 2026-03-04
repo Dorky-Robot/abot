@@ -633,11 +633,17 @@ pub async fn handle_request(
                             let mut sessions = state.sessions.lock().await;
                             // Kill existing session with same name to prevent resource leaks
                             let old_kubo_name = if let Some(mut old) = sessions.remove(&name) {
+                                // Only decrement kubo count if the session was still running
+                                let kn = if old.is_alive() {
+                                    old.kubo.clone()
+                                } else {
+                                    None
+                                };
                                 old.backend.kill();
                                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                                     session: name.clone(),
                                 });
-                                old.kubo.clone()
+                                kn
                             } else {
                                 None
                             };
@@ -1284,8 +1290,14 @@ async fn handle_create_session(
             let mut sessions = state.sessions.lock().await;
             // Kill old session if it exists to avoid orphaning backends
             let old_kubo_name = if let Some(mut old) = sessions.remove(&name) {
+                // Only decrement kubo count if the session was still running
+                let kn = if old.is_alive() {
+                    old.kubo.clone()
+                } else {
+                    None
+                };
                 old.backend.kill();
-                old.kubo.clone()
+                kn
             } else {
                 None
             };
