@@ -15,23 +15,46 @@ A Flutter Web (WASM) canvas that renders translucent floating panels — **facet
 
 ## Container Sandbox
 
-Every session runs in its own Docker container. No shared state, no accidental cross-contamination.
+Every session runs inside a **kubo** — a Docker container that hosts one or more abots.
 
-- **Isolated filesystem** — each container has its own rootfs
-- **Resource limits** — memory (512 MB), CPU (50%), PID count (256)
+- **Isolated filesystem** — each kubo container has its own rootfs
+- **Resource limits** — 2 GB memory, 100% CPU, 512 PIDs per kubo
 - **Security hardened** — all capabilities dropped, no-new-privileges, non-root user
-- **Persistent home** — `home/` directory bind-mounted from the host, survives container restarts
-- **Fallback** — when Docker is unavailable, falls back to local PTY (same UX, no isolation)
+- **Persistent home** — each abot's `home/` directory bind-mounted from the host, survives container restarts
+
+## Kubos — Runtime Rooms
+
+A **kubo** is a long-lived Docker container that hosts abots. Sessions are created via `docker exec` into the kubo. Think of a kubo as an office where you employ workers (abots).
+
+- **Multi-abot containers** — several abots share one container via `docker exec`
+- **Resource sharing** — abots in a kubo share 2 GB memory, 100% CPU, 512 PIDs
+- **Kubo-level credentials** — API keys belong to the kubo, not individual abots. Abots are safe to share.
+- **Idle timeout** — 5 minutes with no active sessions → container auto-stops
+- **Custom Dockerfiles** — install project-specific tools that all abots share
+- **Session ref-counting** — container lifecycle managed by active session count
+- **Shareable** — copy a kubo directory to transfer the entire workspace. Abots arrive with their current state; the receiver sets up their own credentials.
 
 ## .abot Bundles
 
 Portable session packages. Each bundle IS the container's sandbox — the `home/` directory is bind-mounted live, no export/import step.
 
-- **Save / Save As** — snapshot metadata (filesystem is always live)
+- **Save / Save As** — snapshot metadata + auto-commit git (filesystem is always live)
 - **Open** — restore a session from a bundle
 - **Close** — kill container, keep bundle for later
 - **Delete** — kill container and remove bundle
 - **Auto-save** — dirty sessions saved every 5 minutes
+
+## Git-Backed Abots
+
+Every `.abot` bundle is automatically a **git repository**. Changes are tracked without any manual intervention.
+
+- **Auto-init** — git repo initialized on bundle creation
+- **Auto-commit** — every save produces an `autosave {timestamp}` commit
+- **Worktree model** — when employed in a kubo, the abot appears as a git worktree on a `kubo/<kubo-name>` branch. Commits land directly on that branch — no push needed. The same abot can be employed in multiple kubos without conflicts.
+- **Clone** — duplicate an abot via the `clone-abot` IPC message
+- **Status / Log / Diff** — query git state via the `abot-git` IPC message
+- **Sensitive files excluded** — credentials, scrollback, caches excluded via `.gitignore`
+- **v1 → v2 migration** — legacy bundles auto-migrated to git on open
 
 ## Passwordless Authentication
 
@@ -51,6 +74,7 @@ The daemon owns all sessions independently of the server. This means:
 - **Rolling update** — swap the binary, `abot update`, zero downtime
 - **Daemon supervisor** — if the daemon crashes, the server restarts it within 5 seconds
 - **Ring buffer replay** — on reconnect, clients receive the last 5000 lines (or 5 MB) of output
+- **Scrollback persistence** — terminal scrollback saved to disk across close/reopen cycles
 
 ## Real-Time Terminal I/O
 
@@ -66,7 +90,7 @@ WebSocket-based terminal I/O with optional WebRTC upgrade for lower latency.
 One binary contains everything:
 
 - **Rust server** — HTTP, WebSocket, auth, session management
-- **Rust daemon** — PTY management, Docker orchestration
+- **Rust daemon** — PTY management, Docker orchestration, kubo lifecycle
 - **Flutter client** — embedded via rust-embed, served as static assets
 - **No external dependencies** — no Node.js, no npm, no separate frontend build in production
 

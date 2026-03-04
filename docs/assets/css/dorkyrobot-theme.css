@@ -1,6 +1,9 @@
 /*
  * Dorky Robot dark theme for MkDocs Material
  * Matches dorkyrobot.com design system
+ *
+ * Canonical source: dorky_robot/docs-shared/dorkyrobot-theme.css
+ * Sync to projects: ../scripts/sync-docs.sh
  */
 
 [data-md-color-scheme="slate"] {

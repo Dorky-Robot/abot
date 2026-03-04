@@ -1,48 +1,12 @@
+INHERIT: ../docs-shared/mkdocs-base.yml
+
 site_name: abot
 site_url: https://dorkyrobot.com/abot/
 site_description: A spatial interface between human and computer intelligence.
-site_author: Dorky-Robot
 
 repo_url: https://github.com/Dorky-Robot/abot
 repo_name: Dorky-Robot/abot
 edit_uri: edit/main/docs/
-
-theme:
-  name: material
-  font: false
-  palette:
-    scheme: slate
-  features:
-    - navigation.instant
-    - navigation.tracking
-    - navigation.sections
-    - navigation.expand
-    - navigation.top
-    - search.highlight
-    - search.share
-    - content.code.copy
-    - content.code.annotate
-    - toc.follow
-    - toc.integrate
-
-plugins:
-  - search
-
-markdown_extensions:
-  - admonition
-  - pymdownx.details
-  - pymdownx.superfences
-  - pymdownx.highlight:
-      anchor_linenums: true
-  - pymdownx.inlinehilite
-  - pymdownx.snippets
-  - pymdownx.tabbed:
-      alternate_style: true
-  - tables
-  - toc:
-      permalink: true
-  - attr_list
-  - md_in_html
 
 nav:
   - Home: index.md
@@ -54,9 +18,6 @@ nav:
   - Configuration: configuration.md
   - Security: security.md
   - API Reference: api-reference.md
-
-extra_css:
-  - assets/css/dorkyrobot-theme.css
 
 extra:
   social:

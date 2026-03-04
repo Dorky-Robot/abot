@@ -81,6 +81,9 @@ pub async fn stop_kubo(
 }
 
 /// POST /kubos/:name/abots — add an abot to a kubo
+///
+/// Body: `{ "abot": "name", "createSession": true, "cols": 120, "rows": 40, "env": {} }`
+/// When `createSession` is true, also creates a terminal session and returns its name.
 pub async fn add_abot_to_kubo(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
@@ -93,12 +96,35 @@ pub async fn add_abot_to_kubo(
         .ok_or_else(|| AppError::BadRequest("missing abot".into()))?
         .to_string();
 
+    let create_session = body
+        .get("createSession")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let cols = body.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
+
+    let rows = body.get("rows").and_then(|v| v.as_u64()).unwrap_or(40) as u16;
+
+    let env = body
+        .get("env")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect::<std::collections::HashMap<String, String>>()
+        })
+        .unwrap_or_default();
+
     let resp = app
         .daemon_client
         .rpc(DaemonRequest::AddAbotToKubo {
             id: String::new(),
             kubo: kubo_name.clone(),
             abot: abot_name.clone(),
+            create_session,
+            cols,
+            rows,
+            env,
         })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -106,6 +132,14 @@ pub async fn add_abot_to_kubo(
     if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
         Err(AppError::BadRequest(error.to_string()))
     } else {
-        Ok(Json(json!({ "kubo": kubo_name, "abot": abot_name })))
+        let session = resp
+            .get("session")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let mut result = json!({ "kubo": kubo_name, "abot": abot_name });
+        if let Some(s) = session {
+            result["session"] = json!(s);
+        }
+        Ok(Json(result))
     }
 }

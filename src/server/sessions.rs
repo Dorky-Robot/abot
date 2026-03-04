@@ -43,7 +43,8 @@ pub async fn create_session(
     let kubo = body
         .get("kubo")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .unwrap_or("default")
+        .to_string();
 
     let resp = app
         .daemon_client

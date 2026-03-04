@@ -103,16 +103,16 @@ When using the Docker backend, each session is sandboxed:
 | **User** | `1000:1000` (non-root) |
 | **Capabilities** | All dropped |
 | **Privileges** | `no-new-privileges` |
-| **Memory limit** | 512 MB (configurable) |
-| **CPU limit** | 50% of one core (configurable) |
-| **PID limit** | 256 processes max |
-| **Filesystem** | Only `/home/dev` is writable (bind-mounted from host) |
+| **Memory limit** | 2 GB per kubo container |
+| **CPU limit** | 100% of one core (shared across abots in the kubo) |
+| **PID limit** | 512 processes max per kubo |
+| **Filesystem** | Only `/home/abots/` is writable (bind-mounted from host) |
 
 ### What containers prevent
 
-- A compromised session cannot access other sessions' data
 - A runaway process cannot consume all system memory or CPU
-- A fork bomb is limited to 256 processes
+- A fork bomb is limited to 512 processes per kubo
+- Root escalation is blocked by dropped capabilities and no-new-privileges
 - Root escalation is blocked by dropped capabilities and no-new-privileges
 
 ### What containers don't prevent

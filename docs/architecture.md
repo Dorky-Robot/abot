@@ -4,8 +4,9 @@
 Browser (Flutter WASM) ──WebSocket──┐
                                      ├── Server (HTTP/WS) ──Unix Socket──  Daemon
 Tablet browser ─────────WebSocket──┘    (abot serve)         (NDJSON)     (abot daemon)
-                                                                           PTY sessions
+                                                                           Sessions
                                                                            Docker containers
+                                                                           Kubos
                                                                            Ring buffers
 ```
 
@@ -15,7 +16,7 @@ abot is a single Rust binary with two main runtime modes that communicate over a
 
 | Component | Command | Responsibility | Lifetime |
 |-----------|---------|---------------|----------|
-| **Daemon** | `abot daemon` | Owns PTY sessions, manages Docker containers, ring buffers for output replay | Long-lived — survives server restarts |
+| **Daemon** | `abot daemon` | Owns sessions, manages Docker containers + kubos, ring buffers for output replay | Long-lived — survives server restarts |
 | **Server** | `abot serve` | HTTP routes, WebSocket handler, asset serving, WebAuthn auth | Stateless — can be restarted freely |
 | **Both** | `abot start` | Spawns daemon as detached process (with `setsid`), waits for socket, runs server in foreground | Normal way to run abot |
 
@@ -36,12 +37,14 @@ src/
 
   daemon/
     mod.rs            Daemon main loop, Unix socket listener, connection handlers
-    session.rs        Session state (name, alive, exit_code, dirty, bundle_path)
+    session.rs        Session state (name, alive, exit_code, dirty, bundle_path, kubo, generation)
     ring_buffer.rs    FIFO buffer (5000 items / 5 MB) for output replay
-    pty.rs            Local PTY backend (portable-pty)
-    docker.rs         Docker container backend (bollard)
-    bundle.rs         .abot bundle format (read/write manifest, config, credentials)
-    ipc.rs            NDJSON request/response types for daemon IPC
+    backend.rs        SessionBackend trait (write, resize, take_reader, kill)
+    docker.rs         Docker/bollard utilities
+    kubo.rs           Kubo container lifecycle, manifest, idle timeout, session ref-counting
+    kubo_exec.rs      KuboExecBackend — docker exec sessions inside kubo containers
+    bundle.rs         .abot bundle format, git init/commit/clone, worktree ops, v1→v2 migration
+    ipc.rs            NDJSON request/response types for daemon IPC (sessions + kubos + git)
 
   server/
     mod.rs            Axum router, middleware stack, state initialization
@@ -93,11 +96,22 @@ src/
 
 ```
 1. Check for stale daemon.pid → remove if process is dead
-2. Detect backend: Docker socket exists? → DockerBackend : LocalPTY
-3. Start autosave loop (every 5 min for dirty sessions)
-4. Listen on Unix socket (daemon.sock, mode 0o600)
-5. Spawn handler task per connection
+2. Detect backend: Docker socket exists? → DockerBackend
+3. Run data dir migration (bundles/ → abots/, init kubos/)
+4. Load existing kubos from ~/.abot/kubos/
+5. Start autosave loop (every 5 min for dirty sessions — writes metadata + git auto-commit)
+6. Start idle-check loop (every 60s — stops kubo containers with no sessions for 5+ min)
+7. Listen on Unix socket (daemon.sock, mode 0o600)
+8. Spawn handler task per connection
 ```
+
+## Session Generation Counter
+
+Each session carries a monotonic `generation` counter (global `AtomicU64`, starts at 1). When a session is created, it gets the next generation value. This prevents stale output relays from corrupting overwritten sessions:
+
+1. Session "main" created → generation 1, output relay task spawned
+2. Session "main" deleted, then recreated → generation 2, new relay task spawned
+3. Old relay task (generation 1) detects mismatch → stops relaying
 
 ## IPC Protocol
 
@@ -126,40 +140,47 @@ See [API Reference](api-reference.md) for the complete IPC message catalog.
 
 ## Docker Backend
 
-When the Docker socket (`/var/run/docker.sock`) is available and the `docker` feature is enabled:
+abot requires Docker for all sessions. Every session runs inside a **kubo** container via `docker exec`.
 
 ### Image Selection
 
-1. Check for `abot-session` image → use if available
-2. Fall back to `alpine:3` → pull if needed
+1. Custom `Dockerfile` in kubo dir → build `abot-kubo-{name}` image
+2. Check for `abot-kubo` image → use if available
+3. Fall back to `alpine:3` → pull if needed
 
-### Container Configuration
+### Kubo Container Configuration
 
 | Setting | Value |
 |---------|-------|
-| TTY | Enabled |
+| CMD | `sleep infinity` (long-lived container) |
 | User | `1000:1000` (non-root) |
-| Memory | 512 MB (configurable per bundle) |
-| CPU | 50% of one core (100ms period, 50ms quota) |
-| PIDs | Max 256 processes |
+| Memory | 2 GB |
+| CPU | 100% of one core (shared across all abots) |
+| PIDs | Max 512 processes |
 | Capabilities | All dropped |
 | Security | `no-new-privileges` |
-| Home mount | `{bundle}/home/` → `/home/dev` (read-write bind) |
+| Mount | `{kubo_dir}/` → `/home/abots/` (read-write bind) |
 
 ### Container Lifecycle
 
 ```
-1. Remove any stale container with the same name
-2. Create container with config above
-3. Start container
-4. Resize TTY to requested cols/rows
-5. Attach stdin/stdout/stderr
-6. Spawn reader task → relay output to daemon → broadcast to clients
+1. Check if kubo container is already running → reattach if so
+2. Remove stale container with same name (if exists but not running)
+3. Resolve image (custom Dockerfile > abot-kubo > alpine:3)
+4. Create container with config above
+5. Start container
 ```
 
-### Local PTY Fallback
+### Session via `docker exec`
 
-When Docker is unavailable, abot uses `portable-pty` to spawn shells directly on the host. Same session management, same ring buffers, same WebSocket protocol — just no container isolation.
+```
+1. Ensure kubo container is running (start if needed — idempotent)
+2. Create docker exec with TTY, working dir /home/abots/{abot}/home
+3. Attach stdin/stdout/stderr
+4. Spawn reader task → relay output to daemon → broadcast to clients
+5. Call kubo.session_opened()
+6. On session close → kubo.session_closed() → idle timer starts if count == 0
+```
 
 ## Flutter Web Client
 

@@ -1,8 +1,10 @@
 //! Kubo — a shared runtime room (one Docker container hosting many abots).
 //!
-//! Each kubo is a git repo under `~/.abot/kubos/{name}.kubo/` and runs as a
-//! single long-lived Docker container. Abots are added as git subtrees and
-//! share the container's tools. Sessions use `docker exec` into the container.
+//! Each kubo is a directory under `~/.abot/kubos/{name}.kubo/` and runs as a
+//! single long-lived Docker container. A kubo is NOT a git repo — it's
+//! infrastructure (container config + credentials + manifest). Abots are
+//! added as git worktrees and share the container's tools. Sessions use
+//! `docker exec` into the container.
 
 use anyhow::{Context, Result};
 use bollard::container::{Config, CreateContainerOptions, RemoveContainerOptions};
@@ -36,7 +38,7 @@ pub struct KuboManifest {
     pub created_at: String,
     #[serde(default)]
     pub updated_at: Option<String>,
-    /// Abot names currently subtree'd into this kubo.
+    /// Abot names currently employed (as worktrees) in this kubo.
     #[serde(default)]
     pub abots: Vec<String>,
 }
@@ -318,8 +320,9 @@ impl Kubo {
         Ok(())
     }
 
-    /// Ensure an abot's home directory exists inside this kubo,
-    /// and initialize it as a git repo if it isn't one already.
+    /// Ensure an abot's home directory exists inside this kubo.
+    /// If the abot dir already has a `.git` file (worktree) or `.git` dir,
+    /// skip git init — the worktree setup handles git state.
     pub fn ensure_abot_home(&self, abot_name: &str) -> Result<PathBuf> {
         validate_name(abot_name)?;
         let abot_dir = self.path.join(abot_name);
@@ -327,9 +330,13 @@ impl Kubo {
         std::fs::create_dir_all(&home_dir).with_context(|| {
             format!("failed to create abot home in kubo: {}", home_dir.display())
         })?;
-        // Initialize git repo (idempotent — skips if .git already exists)
-        if let Err(e) = super::bundle::git_init_abot(&abot_dir) {
-            tracing::warn!("failed to git-init abot {}: {}", abot_name, e);
+        // Only init git if .git doesn't exist at all. A worktree has a .git
+        // *file* (not dir), which also satisfies .exists(), so we skip init
+        // for both regular repos and worktrees.
+        if !abot_dir.join(".git").exists() {
+            if let Err(e) = super::bundle::git_init_abot(&abot_dir) {
+                tracing::warn!("failed to git-init abot {}: {}", abot_name, e);
+            }
         }
         Ok(abot_dir)
     }

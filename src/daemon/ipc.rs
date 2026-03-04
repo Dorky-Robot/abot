@@ -27,10 +27,8 @@ pub enum DaemonRequest {
         /// Optional per-session environment variables
         #[serde(default)]
         env: HashMap<String, String>,
-        /// Optional kubo name. If set, session runs inside the kubo container.
-        /// If not set, falls back to legacy 1-container-per-session.
-        #[serde(default)]
-        kubo: Option<String>,
+        /// Kubo name. Session runs inside the named kubo container.
+        kubo: String,
     },
 
     /// RPC: attach a client to a session
@@ -163,12 +161,20 @@ pub enum DaemonRequest {
     #[serde(rename = "stop-kubo")]
     StopKubo { id: String, name: String },
 
-    /// RPC: add an abot to a kubo
+    /// RPC: add an abot to a kubo (create canonical abot + worktree + optionally a session)
     #[serde(rename = "add-abot-to-kubo")]
     AddAbotToKubo {
         id: String,
         kubo: String,
         abot: String,
+        #[serde(default, rename = "createSession")]
+        create_session: bool,
+        #[serde(default = "default_cols")]
+        cols: u16,
+        #[serde(default = "default_rows")]
+        rows: u16,
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
 
     // ── Abot git operations ───────────────────────────────────────
@@ -277,6 +283,8 @@ pub enum DaemonResponse {
         id: String,
         kubo: String,
         abot: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
     },
     AbotCloned {
         id: String,
@@ -610,9 +618,17 @@ pub async fn handle_request(
                 Ok(bundle) => {
                     let name = bundle.name.clone();
                     let bundle_path = bundle.path.clone();
-                    let home_bind = bundle_path.join("home");
+
+                    // Ensure default kubo exists and create abot home dir inside it
+                    if let Err(e) = state.ensure_default_kubo().await {
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!("failed to ensure default kubo: {}", e),
+                        });
+                    }
+
                     let result = state
-                        .create_backend_with_env(&name, cols, rows, &bundle.env, &home_bind)
+                        .create_kubo_backend("default", &name, cols, rows, &bundle.env)
                         .await;
 
                     match result {
@@ -622,7 +638,7 @@ pub async fn handle_request(
                                 backend,
                                 bundle.env.clone(),
                                 Some(bundle_path.clone()),
-                                None,
+                                Some("default".to_string()),
                             );
                             let session_name = session.name.clone();
 
@@ -959,7 +975,7 @@ pub async fn handle_request(
                     error: format!("invalid target name: {}", e),
                 });
             }
-            let abots_dir = state.data_dir.join("abots");
+            let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
             let mut source_path = abots_dir.join(format!("{}.abot", source));
             let target_path = abots_dir.join(format!("{}.abot", target));
 
@@ -1027,7 +1043,7 @@ pub async fn handle_request(
                     error: format!("invalid abot name: {}", e),
                 });
             }
-            let abots_dir = state.data_dir.join("abots");
+            let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
             let mut abot_path = abots_dir.join(format!("{}.abot", abot));
 
             if !abot_path.exists() {
@@ -1078,36 +1094,113 @@ pub async fn handle_request(
             }
         }
 
-        DaemonRequest::AddAbotToKubo { id, kubo, abot } => {
+        DaemonRequest::AddAbotToKubo {
+            id,
+            kubo,
+            abot,
+            create_session,
+            cols,
+            rows,
+            env,
+        } => {
+            // Validate names
             if let Err(e) = super::kubo::validate_name(&abot) {
                 return Some(DaemonResponse::Error {
                     id,
                     error: format!("invalid abot name: {}", e),
                 });
             }
-            let mut kubos = state.kubos.lock().await;
-            if let Some(k) = kubos.get_mut(&kubo) {
-                match k.ensure_abot_home(&abot) {
-                    Ok(_abot_dir) => {
-                        // Update manifest
-                        if let Ok(mut manifest) = super::kubo::Kubo::read_manifest(&k.path) {
-                            if !manifest.abots.contains(&abot) {
-                                manifest.abots.push(abot.clone());
-                                manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
-                                let _ = super::kubo::Kubo::write_manifest(&k.path, &manifest);
-                            }
-                        }
-                        Some(DaemonResponse::AbotAddedToKubo { id, kubo, abot })
-                    }
-                    Err(e) => Some(DaemonResponse::Error {
+            if let Err(e) = super::kubo::validate_name(&kubo) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid kubo name: {}", e),
+                });
+            }
+
+            // Resolve canonical abots dir and create the canonical abot
+            let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
+            let _ = std::fs::create_dir_all(&abots_dir);
+            let canonical_path = match super::bundle::create_canonical_abot(&abots_dir, &abot) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Some(DaemonResponse::Error {
                         id,
-                        error: format!("failed to add abot to kubo: {}", e),
+                        error: format!("failed to create canonical abot: {}", e),
+                    })
+                }
+            };
+
+            // Get kubo path
+            let kubo_path = {
+                let kubos = state.kubos.lock().await;
+                match kubos.get(&kubo) {
+                    Some(k) => k.path.clone(),
+                    None => {
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!("kubo '{}' not found", kubo),
+                        })
+                    }
+                }
+            };
+
+            // Create worktree in the kubo
+            if let Err(e) =
+                super::bundle::worktree_add_abot(&canonical_path, &kubo_path, &abot, &kubo)
+            {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to add worktree: {}", e),
+                });
+            }
+
+            // Update kubo manifest
+            if let Ok(mut manifest) = super::kubo::Kubo::read_manifest(&kubo_path) {
+                if !manifest.abots.contains(&abot) {
+                    manifest.abots.push(abot.clone());
+                    manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                    let _ = super::kubo::Kubo::write_manifest(&kubo_path, &manifest);
+                }
+            }
+
+            // Optionally create a session
+            if create_session {
+                match handle_create_session(
+                    state,
+                    id.clone(),
+                    abot.clone(),
+                    cols,
+                    rows,
+                    env,
+                    kubo.clone(),
+                )
+                .await
+                {
+                    Some(DaemonResponse::SessionCreated { name, .. }) => {
+                        Some(DaemonResponse::AbotAddedToKubo {
+                            id,
+                            kubo,
+                            abot,
+                            session: Some(name),
+                        })
+                    }
+                    Some(DaemonResponse::Error { error, .. }) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("abot added but session creation failed: {}", error),
+                    }),
+                    _ => Some(DaemonResponse::AbotAddedToKubo {
+                        id,
+                        kubo,
+                        abot,
+                        session: None,
                     }),
                 }
             } else {
-                Some(DaemonResponse::Error {
+                Some(DaemonResponse::AbotAddedToKubo {
                     id,
-                    error: format!("kubo '{}' not found", kubo),
+                    kubo,
+                    abot,
+                    session: None,
                 })
             }
         }
@@ -1198,8 +1291,7 @@ fn spawn_output_relay(
 }
 
 /// Create a PTY session and spawn its output reader task.
-/// If `kubo` is Some, the session runs inside the named kubo container via `docker exec`.
-/// Otherwise, falls back to legacy 1-container-per-session via `DockerBackend`.
+/// The session runs inside the named kubo container via `docker exec`.
 async fn handle_create_session(
     state: &Arc<DaemonState>,
     id: String,
@@ -1207,65 +1299,42 @@ async fn handle_create_session(
     cols: u16,
     rows: u16,
     env: HashMap<String, String>,
-    kubo: Option<String>,
+    kubo: String,
 ) -> Option<DaemonResponse> {
-    // Determine which backend to use
-    let kubo_for_session = kubo.clone();
-    let (backend_result, bundle_path) = if let Some(kubo_name) = kubo {
-        // Kubo path: ensure default kubo exists if "default" requested
-        if kubo_name == "default" {
-            if let Err(e) = state.ensure_default_kubo().await {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to ensure default kubo: {}", e),
-                });
-            }
-        }
-
-        // Validate names for path safety
-        if let Err(e) = super::kubo::validate_name(&kubo_name) {
+    // Ensure default kubo exists if "default" requested
+    if kubo == "default" {
+        if let Err(e) = state.ensure_default_kubo().await {
             return Some(DaemonResponse::Error {
                 id,
-                error: format!("invalid kubo name: {}", e),
+                error: format!("failed to ensure default kubo: {}", e),
             });
         }
-        if let Err(e) = super::kubo::validate_name(&name) {
-            return Some(DaemonResponse::Error {
-                id,
-                error: format!("invalid session name: {}", e),
-            });
-        }
+    }
 
-        // The abot dir inside the kubo
-        let kubos_dir = state.data_dir.join("kubos");
-        let kubo_path = kubos_dir.join(format!("{}.kubo", kubo_name));
-        let abot_dir = kubo_path.join(&name);
-        let _ = std::fs::create_dir_all(abot_dir.join("home"));
+    // Validate names for path safety
+    if let Err(e) = super::kubo::validate_name(&kubo) {
+        return Some(DaemonResponse::Error {
+            id,
+            error: format!("invalid kubo name: {}", e),
+        });
+    }
+    if let Err(e) = super::kubo::validate_name(&name) {
+        return Some(DaemonResponse::Error {
+            id,
+            error: format!("invalid session name: {}", e),
+        });
+    }
 
-        let backend = state
-            .create_kubo_backend(&kubo_name, &name, cols, rows, &env)
-            .await;
+    // The abot dir inside the kubo
+    let kubos_dir = state.data_dir.join("kubos");
+    let kubo_path = kubos_dir.join(format!("{}.kubo", &kubo));
+    let abot_dir = kubo_path.join(&name);
+    let _ = std::fs::create_dir_all(abot_dir.join("home"));
 
-        (backend, Some(abot_dir))
-    } else {
-        // Legacy path: 1 container per session
-        let home_bind = match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
-            Ok(path) => path,
-            Err(e) => {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to create bundle home: {}", e),
-                })
-            }
-        };
-
-        let bundle_path = home_bind.parent().map(|p| p.to_path_buf());
-        let backend = state
-            .create_backend_with_env(&name, cols, rows, &env, &home_bind)
-            .await;
-
-        (backend, bundle_path)
-    };
+    let backend_result = state
+        .create_kubo_backend(&kubo, &name, cols, rows, &env)
+        .await;
+    let bundle_path = Some(abot_dir);
 
     match backend_result {
         Ok(backend) => {
@@ -1274,13 +1343,7 @@ async fn handle_create_session(
                 let _ = super::bundle::save_bundle(bp, &name, &env).await;
             }
 
-            let session = Session::new(
-                name.clone(),
-                backend,
-                env,
-                bundle_path.clone(),
-                kubo_for_session,
-            );
+            let session = Session::new(name.clone(), backend, env, bundle_path.clone(), Some(kubo));
             let session_name = session.name.clone();
 
             let output_tx = state.output_tx.clone();

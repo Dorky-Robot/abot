@@ -1,6 +1,5 @@
 pub mod backend;
 pub mod bundle;
-pub mod docker;
 pub mod ipc;
 pub mod kubo;
 pub mod kubo_exec;
@@ -34,25 +33,6 @@ pub struct DaemonState {
 }
 
 impl DaemonState {
-    /// Create a Docker container backend with additional per-session env vars.
-    /// `home_bind` specifies the host path to bind-mount as `/home/dev`.
-    pub async fn create_backend_with_env(
-        &self,
-        name: &str,
-        cols: u16,
-        rows: u16,
-        session_env: &HashMap<String, String>,
-        home_bind: &Path,
-    ) -> anyhow::Result<Box<dyn SessionBackend>> {
-        let global_env = self.agent_env.lock().await;
-        let mut merged = global_env.clone();
-        // Session env overrides global on key conflicts
-        merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        let backend = docker::DockerBackend::spawn(name, cols, rows, env, home_bind).await?;
-        Ok(Box::new(backend))
-    }
-
     /// Create a session backend via `docker exec` inside a kubo container.
     /// Starts the kubo container lazily if not already running.
     pub async fn create_kubo_backend(
@@ -148,13 +128,6 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     tracing::info!("daemon listening on {:?}", sock_path);
 
     let (output_tx, _) = broadcast::channel(4096);
-
-    // Log Docker availability (sessions will fail with a clear error if Docker is down)
-    if docker::DockerBackend::is_available().await {
-        tracing::info!("Docker daemon detected");
-    } else {
-        tracing::warn!("Docker not available — sessions will fail until Docker is started");
-    }
 
     // Collect environment variables to inject into agent containers
     let mut agent_env = HashMap::new();

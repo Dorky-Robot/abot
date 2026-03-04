@@ -238,12 +238,14 @@ pub fn load_scrollback(bundle_path: &Path) -> Option<String> {
 
 /// Ensure a bundle's `home/` directory exists, creating the full bundle structure.
 /// Returns the path to the `home/` directory.
-/// Uses `abots/` dir (v2), falling back to `bundles/` if it exists (v1 compat).
+/// Uses configured abots dir (v2), falling back to `bundles/` if it exists (v1 compat).
+#[allow(dead_code)]
 pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
     validate_session_name(name)?;
 
-    // Check v2 path first, then legacy v1 path
-    let v2_dir = data_dir.join("abots").join(format!("{name}.abot"));
+    // Check v2 path first (respects bundleDir config), then legacy v1 path
+    let abots_dir = resolve_abots_dir(data_dir);
+    let v2_dir = abots_dir.join(format!("{name}.abot"));
     let v1_dir = data_dir.join("bundles").join(format!("{name}.abot"));
 
     let bundle_dir = if v1_dir.exists() && !v2_dir.exists() {
@@ -257,7 +259,7 @@ pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
     std::fs::create_dir_all(&home_dir)
         .with_context(|| format!("failed to create bundle home: {}", home_dir.display()))?;
 
-    // Init git if not already a repo
+    // Init git if not already a repo or worktree (.git can be a file for worktrees)
     if !bundle_dir.join(".git").exists() {
         let _ = git_init_abot(&bundle_dir);
     }
@@ -267,6 +269,7 @@ pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
 
 /// Validate that a session name is safe for use in filesystem paths.
 /// Rejects path traversal components, slashes, and other dangerous characters.
+#[allow(dead_code)]
 fn validate_session_name(name: &str) -> Result<()> {
     if name.is_empty() {
         anyhow::bail!("session name cannot be empty");
@@ -369,7 +372,7 @@ home/.python_history
 ";
 
 /// Initialize an abot directory as a git repo with .gitignore and initial commit.
-/// No-op if `.git/` already exists.
+/// No-op if `.git` already exists (as directory for regular repos, or file for worktrees).
 pub fn git_init_abot(abot_path: &Path) -> Result<()> {
     if abot_path.join(".git").exists() {
         return Ok(());
@@ -405,6 +408,7 @@ pub fn git_init_abot(abot_path: &Path) -> Result<()> {
 }
 
 /// Auto-commit changes in an abot git repo (used by autosave loop).
+/// Works for both regular repos (.git dir) and worktrees (.git file).
 /// Returns Ok(true) if a commit was made, Ok(false) if nothing to commit.
 pub fn auto_commit_abot(abot_path: &Path) -> Result<bool> {
     if !abot_path.join(".git").exists() {
@@ -427,7 +431,7 @@ pub fn auto_commit_abot(abot_path: &Path) -> Result<bool> {
 /// Also creates a default kubo and adds all existing abots as subdirectories.
 pub fn migrate_data_dir(data_dir: &Path) -> Result<()> {
     let bundles_dir = data_dir.join("bundles");
-    let abots_dir = data_dir.join("abots");
+    let abots_dir = resolve_abots_dir(data_dir);
     let kubos_dir = data_dir.join("kubos");
 
     if !bundles_dir.exists() {
@@ -470,7 +474,7 @@ pub fn migrate_data_dir(data_dir: &Path) -> Result<()> {
     if !default_kubo_path.exists() {
         super::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "default")?;
 
-        // Copy abot dirs into kubo as subdirectories (not subtrees yet — just dirs for now)
+        // Copy abot dirs into kubo as subdirectories (worktrees set up on demand)
         if let Ok(entries) = std::fs::read_dir(&abots_dir) {
             let mut abot_names = Vec::new();
             for entry in entries.flatten() {
@@ -500,7 +504,7 @@ pub fn migrate_data_dir(data_dir: &Path) -> Result<()> {
 }
 
 /// Run a git command in the given directory and return stdout.
-fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
+pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -514,87 +518,114 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Initialize a kubo directory as a git repo.
+// ── Git worktree operations ─────────────────────────────────────
+
+/// Resolve the abots directory from config.json `bundleDir`, falling back to `{data_dir}/abots/`.
+pub fn resolve_abots_dir(data_dir: &Path) -> PathBuf {
+    let config_path = data_dir.join("config.json");
+    if let Ok(contents) = std::fs::read_to_string(&config_path) {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&contents) {
+            if let Some(dir) = config.get("bundleDir").and_then(|v| v.as_str()) {
+                let p = PathBuf::from(dir);
+                if p.is_absolute() {
+                    return p;
+                }
+            }
+        }
+    }
+    data_dir.join("abots")
+}
+
+/// Create a canonical `.abot` bundle in the abots directory.
+/// Returns the path to the created bundle (e.g. `{abots_dir}/{name}.abot/`).
+/// Skips if the bundle already exists.
+pub fn create_canonical_abot(abots_dir: &Path, name: &str) -> Result<PathBuf> {
+    let bundle_path = abots_dir.join(format!("{name}.abot"));
+    if bundle_path.exists() {
+        return Ok(bundle_path);
+    }
+
+    let home_dir = bundle_path.join("home");
+    std::fs::create_dir_all(&home_dir)
+        .with_context(|| format!("failed to create canonical abot: {}", bundle_path.display()))?;
+
+    git_init_abot(&bundle_path)?;
+
+    tracing::info!("created canonical abot at {}", bundle_path.display());
+    Ok(bundle_path)
+}
+
+/// Add an abot as a git worktree in a kubo directory.
+/// Creates a `kubo/<kubo_name>` branch in the canonical abot repo, then
+/// runs `git worktree add` to place it at `{kubo_path}/{abot_name}`.
+pub fn worktree_add_abot(
+    canonical_path: &Path,
+    kubo_path: &Path,
+    abot_name: &str,
+    kubo_name: &str,
+) -> Result<()> {
+    let worktree_path = kubo_path.join(abot_name);
+    if worktree_path.exists() {
+        // Already set up — check if it's a valid worktree
+        let git_file = worktree_path.join(".git");
+        if git_file.exists() && !git_file.is_dir() {
+            return Ok(());
+        }
+        // Directory exists but isn't a worktree — remove it so we can create one
+        std::fs::remove_dir_all(&worktree_path)?;
+    }
+
+    if !canonical_path.join(".git").exists() {
+        anyhow::bail!(
+            "canonical abot is not a git repo: {}",
+            canonical_path.display()
+        );
+    }
+
+    let branch = format!("kubo/{kubo_name}");
+    let worktree_str = worktree_path.to_string_lossy().to_string();
+
+    // Create the branch if it doesn't exist (based on current HEAD)
+    let branches = run_git(canonical_path, &["branch", "--list", &branch])?;
+    if branches.trim().is_empty() {
+        run_git(canonical_path, &["branch", &branch])?;
+    }
+
+    // Create the worktree
+    run_git(canonical_path, &["worktree", "add", &worktree_str, &branch])?;
+
+    tracing::info!(
+        "added worktree for '{}' at {} on branch '{}'",
+        abot_name,
+        worktree_path.display(),
+        branch,
+    );
+    Ok(())
+}
+
+/// Remove an abot's worktree from a kubo directory.
 #[allow(dead_code)]
-pub fn git_init_kubo(kubo_path: &Path) -> Result<()> {
-    if kubo_path.join(".git").exists() {
+pub fn worktree_remove_abot(
+    canonical_path: &Path,
+    kubo_path: &Path,
+    abot_name: &str,
+) -> Result<()> {
+    let worktree_path = kubo_path.join(abot_name);
+    if !worktree_path.exists() {
         return Ok(());
     }
 
-    let gitignore = "# Kubo .gitignore\n";
-    let gitignore_path = kubo_path.join(".gitignore");
-    if !gitignore_path.exists() {
-        std::fs::write(&gitignore_path, gitignore)?;
-    }
-
-    run_git(kubo_path, &["init"])?;
-    run_git(kubo_path, &["add", "-A"])?;
-    let status = run_git(kubo_path, &["status", "--porcelain"])?;
-    if !status.trim().is_empty() {
-        run_git(kubo_path, &["commit", "-m", "Initial kubo"])?;
-    }
-
-    Ok(())
-}
-
-/// Add an abot as a git subtree in a kubo repo.
-/// `abot_repo` — path to the canonical abot git repo.
-/// `prefix` — the subdirectory name in the kubo (usually the abot base name).
-#[allow(dead_code)]
-pub fn subtree_add_abot(kubo_path: &Path, abot_repo: &Path, prefix: &str) -> Result<()> {
-    if !kubo_path.join(".git").exists() {
-        git_init_kubo(kubo_path)?;
-    }
-    if !abot_repo.join(".git").exists() {
-        anyhow::bail!("abot repo is not a git repo: {}", abot_repo.display());
-    }
-
-    let abot_repo_str = abot_repo.to_string_lossy();
+    let worktree_str = worktree_path.to_string_lossy().to_string();
     run_git(
-        kubo_path,
-        &[
-            "subtree",
-            "add",
-            &format!("--prefix={prefix}"),
-            &abot_repo_str,
-            "main",
-        ],
+        canonical_path,
+        &["worktree", "remove", &worktree_str, "--force"],
     )?;
 
-    Ok(())
-}
-
-/// Push changes from a kubo subtree back to the canonical abot repo.
-#[allow(dead_code)]
-pub fn subtree_push_abot(kubo_path: &Path, abot_repo: &Path, prefix: &str) -> Result<()> {
-    let abot_repo_str = abot_repo.to_string_lossy();
-    run_git(
-        kubo_path,
-        &[
-            "subtree",
-            "push",
-            &format!("--prefix={prefix}"),
-            &abot_repo_str,
-            "main",
-        ],
-    )?;
-    Ok(())
-}
-
-/// Pull updates from the canonical abot repo into a kubo subtree.
-#[allow(dead_code)]
-pub fn subtree_pull_abot(kubo_path: &Path, abot_repo: &Path, prefix: &str) -> Result<()> {
-    let abot_repo_str = abot_repo.to_string_lossy();
-    run_git(
-        kubo_path,
-        &[
-            "subtree",
-            "pull",
-            &format!("--prefix={prefix}"),
-            &abot_repo_str,
-            "main",
-        ],
-    )?;
+    tracing::info!(
+        "removed worktree for '{}' from {}",
+        abot_name,
+        kubo_path.display(),
+    );
     Ok(())
 }
 

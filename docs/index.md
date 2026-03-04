@@ -14,16 +14,16 @@ abot start
 
 ---
 
-| | | |
-|:---:|:---:|:---:|
-| **Spatial** | **Sandboxed** | **Passwordless** |
-| Canvas UI with facets | Docker containers per session | WebAuthn passkey auth |
+| | | | |
+|:---:|:---:|:---:|:---:|
+| **Spatial** | **Sandboxed** | **Shared Runtimes** | **Passwordless** |
+| Canvas UI with facets | Docker-sandboxed sessions | Kubos: multi-abot containers | WebAuthn passkey auth |
 
 ## How It Works
 
 1. **Start abot** — a single binary launches a daemon (PTY owner) and an HTTP/WebSocket server
 2. **Open in browser** — a Flutter Web (WASM) canvas renders your workspace
-3. **Create sessions** — each session gets its own Docker container with a persistent home directory
+3. **Create sessions** — each session runs inside a kubo container with a persistent, git-backed home directory
 4. **Arrange facets** — drag, resize, and focus translucent panels on a spatial canvas
 
 ## Why abot
@@ -31,7 +31,7 @@ abot start
 Traditional terminal multiplexers (tmux, screen) give you session persistence but no spatial awareness. IDE integrated terminals give you spatial layout but no isolation. abot combines both:
 
 - **Spatial canvas** — arrange terminals in 2D space, not tabs or panes
-- **Container isolation** — each session is sandboxed in its own Docker container
+- **Container isolation** — sessions run in Docker-sandboxed kubo containers
 - **Touch-first** — designed for tablets and touch screens, works great with mouse and keyboard
 - **Single binary** — daemon + server + embedded Flutter client, nothing else to install
 - **Passwordless** — WebAuthn passkeys, no passwords ever
@@ -65,7 +65,7 @@ The daemon owns all sessions. The server is stateless — restart it freely, you
 |------|-------------------|
 | [Getting Started](getting-started.md) | Install, first launch, register a passkey |
 | [Features](features.md) | Everything abot can do |
-| [Concepts](concepts.md) | Sessions, facets, bundles, and the sandbox model |
+| [Concepts](concepts.md) | Sessions, facets, bundles, kubos, and git-backed abots |
 | [Architecture](architecture.md) | Daemon/server split, Docker backend, Flutter client |
 | [CLI Reference](cli-reference.md) | All commands and flags |
 | [Configuration](configuration.md) | Config files, env vars, data directory |

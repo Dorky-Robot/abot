@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Docker** — abot runs each session in a Docker container (falls back to local PTY if Docker is unavailable)
+- **Docker** — abot runs each session in a Docker container
 - **macOS or Linux** — the binary uses Unix sockets, PTY, and `setsid`
 
 ## Installation
@@ -55,14 +55,16 @@ Visit **http://localhost:6969** in your browser.
 
 On localhost, authentication is bypassed automatically — you'll go straight to the workspace. No passkey, no setup token, no login page.
 
-### 3. Create a Session
+### 3. Create an Abot
 
-Click the **+** button or use the search bar to create a new session. Each session spins up a Docker container with:
+Your first session is created automatically. To add more, click the **+** button on a kubo in the sidebar — you'll be prompted to name your abot. Each abot gets:
 
-- A persistent home directory (`~/.abot/bundles/{name}.abot/home/`)
+- A persistent home directory (`~/.abot/abots/{name}.abot/home/`), git-backed
 - TTY with xterm-256color and truecolor support
-- Memory limit (512 MB), CPU limit (50%), PID limit (256)
+- Runs inside a kubo container (2 GB memory, 100% CPU, 512 PIDs shared)
 - Non-root user (uid 1000)
+
+Think of an abot as a worker you employ into a kubo (workspace). The same abot can work in multiple kubos, each with its own context and credentials.
 
 ### 4. Arrange Your Workspace
 

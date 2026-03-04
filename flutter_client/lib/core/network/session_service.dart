@@ -59,10 +59,9 @@ class SessionServiceNotifier extends AsyncNotifier<List<SessionInfo>> {
     return [];
   }
 
-  /// Create a new session, optionally inside a kubo.
-  Future<SessionInfo> createSession(String name, {String? kubo}) async {
-    final body = <String, dynamic>{'name': name};
-    if (kubo != null) body['kubo'] = kubo;
+  /// Create a new session inside a kubo.
+  Future<SessionInfo> createSession(String name, {String kubo = 'default'}) async {
+    final body = <String, dynamic>{'name': name, 'kubo': kubo};
     final data =
         await _api.post('/sessions', body) as Map<String, dynamic>;
     final session = SessionInfo.fromJson(data);
