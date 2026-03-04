@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const BUNDLE_VERSION: u32 = 1;
+const BUNDLE_VERSION: u32 = 2;
+const LEGACY_BUNDLE_VERSION: u32 = 1;
 const SESSION_IMAGE: &str = "abot-session";
 
 /// Credential-related env var keys that get stored in credentials.json
@@ -125,13 +126,21 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
     let version = manifest
         .get("version")
         .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    if version != BUNDLE_VERSION as u64 {
+        .unwrap_or(0) as u32;
+    if version != BUNDLE_VERSION && version != LEGACY_BUNDLE_VERSION {
         anyhow::bail!(
-            "unsupported bundle version {} (expected {})",
+            "unsupported bundle version {} (expected {} or {})",
             version,
+            LEGACY_BUNDLE_VERSION,
             BUNDLE_VERSION
         );
+    }
+
+    // Auto-migrate v1 → v2 (init git repo)
+    if version == LEGACY_BUNDLE_VERSION {
+        if let Err(e) = git_init_abot(&bundle_dir) {
+            tracing::warn!("failed to auto-migrate abot to git: {}", e);
+        }
     }
 
     let name = manifest
@@ -229,12 +238,30 @@ pub fn load_scrollback(bundle_path: &Path) -> Option<String> {
 
 /// Ensure a bundle's `home/` directory exists, creating the full bundle structure.
 /// Returns the path to the `home/` directory.
+/// Uses `abots/` dir (v2), falling back to `bundles/` if it exists (v1 compat).
 pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
     validate_session_name(name)?;
-    let bundle_dir = data_dir.join("bundles").join(format!("{name}.abot"));
+
+    // Check v2 path first, then legacy v1 path
+    let v2_dir = data_dir.join("abots").join(format!("{name}.abot"));
+    let v1_dir = data_dir.join("bundles").join(format!("{name}.abot"));
+
+    let bundle_dir = if v1_dir.exists() && !v2_dir.exists() {
+        // Legacy location still in use
+        v1_dir
+    } else {
+        v2_dir
+    };
+
     let home_dir = bundle_dir.join("home");
     std::fs::create_dir_all(&home_dir)
         .with_context(|| format!("failed to create bundle home: {}", home_dir.display()))?;
+
+    // Init git if not already a repo
+    if !bundle_dir.join(".git").exists() {
+        let _ = git_init_abot(&bundle_dir);
+    }
+
     Ok(home_dir)
 }
 
@@ -325,6 +352,252 @@ async fn migrate_archive_to_home(archive_path: &Path, home_dir: &Path) -> Result
     Ok(())
 }
 
+// ── Git-based abot repo ──────────────────────────────────────────
+
+/// Default .gitignore for an abot repo.
+const ABOT_GITIGNORE: &str = "\
+credentials.json
+scrollback
+scrollback.tmp
+home/.cache/
+home/.local/share/
+home/.claude/
+home/.bash_history
+home/.zsh_history
+home/.node_repl_history
+home/.python_history
+";
+
+/// Initialize an abot directory as a git repo with .gitignore and initial commit.
+/// No-op if `.git/` already exists.
+pub fn git_init_abot(abot_path: &Path) -> Result<()> {
+    if abot_path.join(".git").exists() {
+        return Ok(());
+    }
+
+    // Write .gitignore
+    let gitignore_path = abot_path.join(".gitignore");
+    if !gitignore_path.exists() {
+        std::fs::write(&gitignore_path, ABOT_GITIGNORE)
+            .with_context(|| "failed to write .gitignore")?;
+    }
+
+    // Update manifest version to 2
+    let manifest_path = abot_path.join("manifest.json");
+    if manifest_path.exists() {
+        if let Ok(mut manifest) = read_json(&manifest_path) {
+            manifest["version"] = serde_json::Value::Number(BUNDLE_VERSION.into());
+            let _ = write_json(&manifest_path, &manifest);
+        }
+    }
+
+    // git init + initial commit
+    run_git(abot_path, &["init"])?;
+    run_git(abot_path, &["add", "-A"])?;
+    // Check if there's anything to commit
+    let status = run_git(abot_path, &["status", "--porcelain"])?;
+    if !status.trim().is_empty() {
+        run_git(abot_path, &["commit", "-m", "Initial abot snapshot"])?;
+    }
+
+    tracing::info!("initialized git repo at {}", abot_path.display());
+    Ok(())
+}
+
+/// Auto-commit changes in an abot git repo (used by autosave loop).
+/// Returns Ok(true) if a commit was made, Ok(false) if nothing to commit.
+pub fn auto_commit_abot(abot_path: &Path) -> Result<bool> {
+    if !abot_path.join(".git").exists() {
+        return Ok(false);
+    }
+
+    run_git(abot_path, &["add", "-A"])?;
+    let status = run_git(abot_path, &["status", "--porcelain"])?;
+    if status.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+    let msg = format!("autosave {}", now);
+    run_git(abot_path, &["commit", "-m", &msg])?;
+    Ok(true)
+}
+
+/// Migrate v1 `bundles/` directory to v2 `abots/` directory.
+/// Also creates a default kubo and adds all existing abots as subdirectories.
+pub fn migrate_data_dir(data_dir: &Path) -> Result<()> {
+    let bundles_dir = data_dir.join("bundles");
+    let abots_dir = data_dir.join("abots");
+    let kubos_dir = data_dir.join("kubos");
+
+    if !bundles_dir.exists() {
+        // Nothing to migrate — create dirs
+        let _ = std::fs::create_dir_all(&abots_dir);
+        let _ = std::fs::create_dir_all(&kubos_dir);
+        return Ok(());
+    }
+
+    // Already migrated?
+    if abots_dir.exists() {
+        return Ok(());
+    }
+
+    tracing::info!("migrating v1 bundles → v2 abots");
+
+    // Rename bundles/ → abots/
+    std::fs::rename(&bundles_dir, &abots_dir)
+        .with_context(|| "failed to rename bundles/ to abots/")?;
+
+    // Init git in each abot
+    if let Ok(entries) = std::fs::read_dir(&abots_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("abot"))
+            {
+                if let Err(e) = git_init_abot(&path) {
+                    tracing::warn!("failed to git-init migrated abot {}: {}", path.display(), e);
+                }
+            }
+        }
+    }
+
+    // Create default kubo with all abots as subdirectories
+    let _ = std::fs::create_dir_all(&kubos_dir);
+    let default_kubo_path = kubos_dir.join("default.kubo");
+    if !default_kubo_path.exists() {
+        super::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "default")?;
+
+        // Copy abot dirs into kubo as subdirectories (not subtrees yet — just dirs for now)
+        if let Ok(entries) = std::fs::read_dir(&abots_dir) {
+            let mut abot_names = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if let Some(base) = name.strip_suffix(".abot") {
+                            // Create abot home dir in kubo
+                            let kubo_abot_dir = default_kubo_path.join(base);
+                            let _ = std::fs::create_dir_all(kubo_abot_dir.join("home"));
+                            abot_names.push(base.to_string());
+                        }
+                    }
+                }
+            }
+
+            // Update kubo manifest with abot list
+            if let Ok(mut manifest) = super::kubo::Kubo::read_manifest(&default_kubo_path) {
+                manifest.abots = abot_names;
+                let _ = super::kubo::Kubo::write_manifest(&default_kubo_path, &manifest);
+            }
+        }
+    }
+
+    tracing::info!("migration complete: bundles → abots");
+    Ok(())
+}
+
+/// Run a git command in the given directory and return stdout.
+fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("failed to run git {:?}", args))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git {:?} failed: {}", args, stderr);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Initialize a kubo directory as a git repo.
+#[allow(dead_code)]
+pub fn git_init_kubo(kubo_path: &Path) -> Result<()> {
+    if kubo_path.join(".git").exists() {
+        return Ok(());
+    }
+
+    let gitignore = "# Kubo .gitignore\n";
+    let gitignore_path = kubo_path.join(".gitignore");
+    if !gitignore_path.exists() {
+        std::fs::write(&gitignore_path, gitignore)?;
+    }
+
+    run_git(kubo_path, &["init"])?;
+    run_git(kubo_path, &["add", "-A"])?;
+    let status = run_git(kubo_path, &["status", "--porcelain"])?;
+    if !status.trim().is_empty() {
+        run_git(kubo_path, &["commit", "-m", "Initial kubo"])?;
+    }
+
+    Ok(())
+}
+
+/// Add an abot as a git subtree in a kubo repo.
+/// `abot_repo` — path to the canonical abot git repo.
+/// `prefix` — the subdirectory name in the kubo (usually the abot base name).
+#[allow(dead_code)]
+pub fn subtree_add_abot(kubo_path: &Path, abot_repo: &Path, prefix: &str) -> Result<()> {
+    if !kubo_path.join(".git").exists() {
+        git_init_kubo(kubo_path)?;
+    }
+    if !abot_repo.join(".git").exists() {
+        anyhow::bail!("abot repo is not a git repo: {}", abot_repo.display());
+    }
+
+    let abot_repo_str = abot_repo.to_string_lossy();
+    run_git(
+        kubo_path,
+        &[
+            "subtree",
+            "add",
+            &format!("--prefix={prefix}"),
+            &abot_repo_str,
+            "main",
+        ],
+    )?;
+
+    Ok(())
+}
+
+/// Push changes from a kubo subtree back to the canonical abot repo.
+#[allow(dead_code)]
+pub fn subtree_push_abot(kubo_path: &Path, abot_repo: &Path, prefix: &str) -> Result<()> {
+    let abot_repo_str = abot_repo.to_string_lossy();
+    run_git(
+        kubo_path,
+        &[
+            "subtree",
+            "push",
+            &format!("--prefix={prefix}"),
+            &abot_repo_str,
+            "main",
+        ],
+    )?;
+    Ok(())
+}
+
+/// Pull updates from the canonical abot repo into a kubo subtree.
+#[allow(dead_code)]
+pub fn subtree_pull_abot(kubo_path: &Path, abot_repo: &Path, prefix: &str) -> Result<()> {
+    let abot_repo_str = abot_repo.to_string_lossy();
+    run_git(
+        kubo_path,
+        &[
+            "subtree",
+            "pull",
+            &format!("--prefix={prefix}"),
+            &abot_repo_str,
+            "main",
+        ],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -367,7 +640,7 @@ mod tests {
 
         // Verify manifest
         let manifest = read_json(&bundle_dir.join("manifest.json")).unwrap();
-        assert_eq!(manifest["version"], 1);
+        assert_eq!(manifest["version"], BUNDLE_VERSION);
         assert_eq!(manifest["name"], "test-session");
         assert!(manifest.get("updated_at").is_some());
 
@@ -534,7 +807,8 @@ mod tests {
         let home = ensure_bundle_home(&dir, "test-session").unwrap();
         assert!(home.exists());
         assert!(home.is_dir());
-        assert_eq!(home, dir.join("bundles/test-session.abot/home"));
+        // v2 uses abots/ dir
+        assert_eq!(home, dir.join("abots/test-session.abot/home"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

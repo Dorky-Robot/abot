@@ -27,6 +27,8 @@ pub async fn list_sessions(
 }
 
 /// POST /sessions — create a new session
+/// Body: { "name": "alice", "kubo": "default" }
+/// If `kubo` is provided, the session runs inside the named kubo container.
 pub async fn create_session(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
@@ -38,6 +40,11 @@ pub async fn create_session(
         .unwrap_or("default")
         .to_string();
 
+    let kubo = body
+        .get("kubo")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     let resp = app
         .daemon_client
         .rpc(DaemonRequest::CreateSession {
@@ -46,6 +53,7 @@ pub async fn create_session(
             cols: 120,
             rows: 40,
             env: HashMap::new(),
+            kubo,
         })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;

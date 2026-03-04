@@ -178,11 +178,10 @@ abot serves everything on a single port — HTTP pages, REST API, WebSocket upgr
 
 ## Docker Configuration
 
-When using the Docker backend, abot expects:
+abot requires Docker for all sessions:
 
 - **Docker socket** at `/var/run/docker.sock`
 - **Image**: `abot-session` (custom) or `alpine:3` (fallback, pulled automatically)
-- **Build with**: `cargo build --features docker`
 
 ### Container Defaults
 

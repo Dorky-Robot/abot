@@ -27,6 +27,10 @@ pub enum DaemonRequest {
         /// Optional per-session environment variables
         #[serde(default)]
         env: HashMap<String, String>,
+        /// Optional kubo name. If set, session runs inside the kubo container.
+        /// If not set, falls back to legacy 1-container-per-session.
+        #[serde(default)]
+        kubo: Option<String>,
     },
 
     /// RPC: attach a client to a session
@@ -145,6 +149,47 @@ pub enum DaemonRequest {
     /// RPC: health check
     #[serde(rename = "ping")]
     Ping { id: String },
+
+    // ── Kubo management ───────────────────────────────────────────
+    /// RPC: create a new kubo (shared runtime room)
+    #[serde(rename = "create-kubo")]
+    CreateKubo { id: String, name: String },
+
+    /// RPC: list all kubos
+    #[serde(rename = "list-kubos")]
+    ListKubos { id: String },
+
+    /// RPC: stop a kubo container
+    #[serde(rename = "stop-kubo")]
+    StopKubo { id: String, name: String },
+
+    /// RPC: add an abot to a kubo
+    #[serde(rename = "add-abot-to-kubo")]
+    AddAbotToKubo {
+        id: String,
+        kubo: String,
+        abot: String,
+    },
+
+    // ── Abot git operations ───────────────────────────────────────
+    /// RPC: clone an abot (create a variant)
+    #[serde(rename = "clone-abot")]
+    CloneAbot {
+        id: String,
+        /// Source abot name
+        source: String,
+        /// Target abot name
+        target: String,
+    },
+
+    /// RPC: run a git operation on an abot
+    #[serde(rename = "abot-git")]
+    AbotGit {
+        id: String,
+        abot: String,
+        /// Git subcommand: "status", "log", "diff"
+        op: String,
+    },
 }
 
 fn default_cols() -> u16 {
@@ -214,6 +259,37 @@ pub enum DaemonResponse {
         id: String,
         error: String,
     },
+    // ── Kubo responses ────────────────────────────────────────────
+    KuboCreated {
+        id: String,
+        name: String,
+        path: String,
+    },
+    KuboList {
+        id: String,
+        kubos: Vec<serde_json::Value>,
+    },
+    KuboStopped {
+        id: String,
+        name: String,
+    },
+    AbotAddedToKubo {
+        id: String,
+        kubo: String,
+        abot: String,
+    },
+    AbotCloned {
+        id: String,
+        source: String,
+        target: String,
+        path: String,
+    },
+    AbotGitResult {
+        id: String,
+        abot: String,
+        op: String,
+        output: String,
+    },
 }
 
 /// Broadcast events from daemon (no id, sent to all connected servers)
@@ -262,7 +338,8 @@ pub async fn handle_request(
             cols,
             rows,
             env,
-        } => handle_create_session(state, id, name, cols, rows, env).await,
+            kubo,
+        } => handle_create_session(state, id, name, cols, rows, env, kubo).await,
 
         DaemonRequest::Attach {
             id,
@@ -298,15 +375,22 @@ pub async fn handle_request(
         }
 
         DaemonRequest::DeleteSession { id, name } => {
-            let bundle_path = {
+            let (bundle_path, kubo_name) = {
                 let mut sessions = state.sessions.lock().await;
                 if let Some(mut session) = sessions.remove(&name) {
                     let bp = session.bundle_path.clone();
+                    // Only decrement kubo count if the session was still running
+                    // (if already exited, the output relay already called session_closed)
+                    let kn = if session.is_alive() {
+                        session.kubo.clone()
+                    } else {
+                        None
+                    };
                     session.backend.kill();
                     let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                         session: name.clone(),
                     });
-                    bp
+                    (bp, kn)
                 } else {
                     return Some(DaemonResponse::Error {
                         id,
@@ -314,6 +398,12 @@ pub async fn handle_request(
                     });
                 }
             };
+            if let Some(kn) = kubo_name {
+                let mut kubos = state.kubos.lock().await;
+                if let Some(kubo) = kubos.get_mut(&kn) {
+                    kubo.session_closed();
+                }
+            }
             // Remove bundle directory outside the lock to avoid blocking
             if let Some(bp) = bundle_path {
                 let _ = std::fs::remove_dir_all(&bp);
@@ -532,6 +622,7 @@ pub async fn handle_request(
                                 backend,
                                 bundle.env.clone(),
                                 Some(bundle_path.clone()),
+                                None,
                             );
                             let session_name = session.name.clone();
 
@@ -541,19 +632,37 @@ pub async fn handle_request(
 
                             let mut sessions = state.sessions.lock().await;
                             // Kill existing session with same name to prevent resource leaks
-                            if let Some(mut old) = sessions.remove(&name) {
+                            let old_kubo_name = if let Some(mut old) = sessions.remove(&name) {
+                                // Only decrement kubo count if the session was still running
+                                let kn = if old.is_alive() {
+                                    old.kubo.clone()
+                                } else {
+                                    None
+                                };
                                 old.backend.kill();
                                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                                     session: name.clone(),
                                 });
-                            }
+                                kn
+                            } else {
+                                None
+                            };
                             sessions.insert(name.clone(), session);
 
                             let rx = sessions
                                 .get_mut(&name)
                                 .and_then(|s| s.backend.take_reader());
                             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
+                            let gen = sessions.get(&name).map(|s| s.generation).unwrap_or(0);
                             drop(sessions);
+
+                            // Decrement session count for the old session's kubo (if overwriting)
+                            if let Some(kn) = old_kubo_name {
+                                let mut kubos = state.kubos.lock().await;
+                                if let Some(kubo) = kubos.get_mut(&kn) {
+                                    kubo.session_closed();
+                                }
+                            }
 
                             // Restore saved scrollback into the ring buffer
                             if let Some(scrollback) = super::bundle::load_scrollback(&bundle_path) {
@@ -581,6 +690,7 @@ pub async fn handle_request(
                                     shared_name,
                                     reader_name,
                                     &mut rx,
+                                    gen,
                                 );
                             }
 
@@ -761,7 +871,17 @@ pub async fn handle_request(
                 if let Some(ref bp) = s.bundle_path {
                     super::bundle::save_scrollback(bp, &s.get_buffer());
                 }
+                // Only decrement kubo count if the session was still running
+                // (if already exited, the output relay already called session_closed)
+                let kubo_name = if s.is_alive() { s.kubo.clone() } else { None };
                 s.backend.kill();
+                drop(sessions);
+                if let Some(kn) = kubo_name {
+                    let mut kubos = state.kubos.lock().await;
+                    if let Some(kubo) = kubos.get_mut(&kn) {
+                        kubo.session_closed();
+                    }
+                }
                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                     session: session.clone(),
                 });
@@ -775,16 +895,235 @@ pub async fn handle_request(
         }
 
         DaemonRequest::Ping { id } => Some(DaemonResponse::Pong { id }),
+
+        // ── Kubo management ───────────────────────────────────────────
+        DaemonRequest::CreateKubo { id, name } => {
+            let kubos_dir = state.data_dir.join("kubos");
+            match super::kubo::Kubo::ensure_kubo_dir(&kubos_dir, &name) {
+                Ok(kubo_path) => match super::kubo::new_kubo(name.clone(), kubo_path.clone()) {
+                    Ok(new_kubo) => {
+                        let mut kubos = state.kubos.lock().await;
+                        kubos.insert(name.clone(), new_kubo);
+                        Some(DaemonResponse::KuboCreated {
+                            id,
+                            name,
+                            path: kubo_path.to_string_lossy().to_string(),
+                        })
+                    }
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to create kubo: {}", e),
+                    }),
+                },
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to create kubo dir: {}", e),
+                }),
+            }
+        }
+
+        DaemonRequest::ListKubos { id } => {
+            let kubos = state.kubos.lock().await;
+            let list: Vec<serde_json::Value> = kubos.values().map(|k| k.to_json()).collect();
+            Some(DaemonResponse::KuboList { id, kubos: list })
+        }
+
+        DaemonRequest::StopKubo { id, name } => {
+            let mut kubos = state.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(&name) {
+                match kubo.stop().await {
+                    Ok(()) => Some(DaemonResponse::KuboStopped { id, name }),
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to stop kubo: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("kubo '{}' not found", name),
+                })
+            }
+        }
+
+        DaemonRequest::CloneAbot { id, source, target } => {
+            if let Err(e) = super::kubo::validate_name(&source) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid source name: {}", e),
+                });
+            }
+            if let Err(e) = super::kubo::validate_name(&target) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid target name: {}", e),
+                });
+            }
+            let abots_dir = state.data_dir.join("abots");
+            let mut source_path = abots_dir.join(format!("{}.abot", source));
+            let target_path = abots_dir.join(format!("{}.abot", target));
+
+            if !source_path.exists() {
+                // Try legacy bundles/ path
+                let legacy_source = state
+                    .data_dir
+                    .join("bundles")
+                    .join(format!("{}.abot", source));
+                if !legacy_source.exists() {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("source abot '{}' not found", source),
+                    });
+                }
+                source_path = legacy_source;
+            }
+
+            if target_path.exists() {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("target abot '{}' already exists", target),
+                });
+            }
+
+            // Clone git repo
+            let source_str = source_path.to_string_lossy().to_string();
+            let target_str = target_path.to_string_lossy().to_string();
+            match std::process::Command::new("git")
+                .args(["clone", &source_str, &target_str])
+                .output()
+            {
+                Ok(output) if output.status.success() => {
+                    // Update manifest name in clone
+                    let manifest_path = target_path.join("manifest.json");
+                    if let Ok(mut manifest) = super::bundle::read_json(&manifest_path) {
+                        manifest["name"] = serde_json::Value::String(target.clone());
+                        let _ = super::bundle::write_json(&manifest_path, &manifest);
+                    }
+                    Some(DaemonResponse::AbotCloned {
+                        id,
+                        source,
+                        target,
+                        path: target_str,
+                    })
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    Some(DaemonResponse::Error {
+                        id,
+                        error: format!("git clone failed: {}", stderr),
+                    })
+                }
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to run git clone: {}", e),
+                }),
+            }
+        }
+
+        DaemonRequest::AbotGit { id, abot, op } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid abot name: {}", e),
+                });
+            }
+            let abots_dir = state.data_dir.join("abots");
+            let mut abot_path = abots_dir.join(format!("{}.abot", abot));
+
+            if !abot_path.exists() {
+                // Try legacy
+                let legacy = state
+                    .data_dir
+                    .join("bundles")
+                    .join(format!("{}.abot", abot));
+                if !legacy.exists() {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("abot '{}' not found", abot),
+                    });
+                }
+                abot_path = legacy;
+            }
+
+            let args: Vec<&str> = match op.as_str() {
+                "status" => vec!["status", "--short"],
+                "log" => vec!["log", "--oneline", "-20"],
+                "diff" => vec!["diff"],
+                _ => {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("unsupported git op: {}", op),
+                    })
+                }
+            };
+
+            match std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&abot_path)
+                .output()
+            {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    Some(DaemonResponse::AbotGitResult {
+                        id,
+                        abot,
+                        op,
+                        output: stdout,
+                    })
+                }
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("git failed: {}", e),
+                }),
+            }
+        }
+
+        DaemonRequest::AddAbotToKubo { id, kubo, abot } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid abot name: {}", e),
+                });
+            }
+            let mut kubos = state.kubos.lock().await;
+            if let Some(k) = kubos.get_mut(&kubo) {
+                match k.ensure_abot_home(&abot) {
+                    Ok(_abot_dir) => {
+                        // Update manifest
+                        if let Ok(mut manifest) = super::kubo::Kubo::read_manifest(&k.path) {
+                            if !manifest.abots.contains(&abot) {
+                                manifest.abots.push(abot.clone());
+                                manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                                let _ = super::kubo::Kubo::write_manifest(&k.path, &manifest);
+                            }
+                        }
+                        Some(DaemonResponse::AbotAddedToKubo { id, kubo, abot })
+                    }
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to add abot to kubo: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("kubo '{}' not found", kubo),
+                })
+            }
+        }
     }
 }
 
 /// Spawn a task that relays output from a session's reader channel to the broadcast.
+/// `generation` is the session's generation at spawn time — used to detect stale relays
+/// when a session name is reused (overwritten).
 fn spawn_output_relay(
     output_tx: tokio::sync::broadcast::Sender<OutputEvent>,
     state_ref: Arc<DaemonState>,
     shared_name: Option<std::sync::Arc<std::sync::Mutex<String>>>,
     reader_name: String,
     rx: &mut tokio::sync::mpsc::Receiver<String>,
+    generation: u64,
 ) {
     let mut rx = {
         // We need to take ownership — swap with a dummy channel
@@ -798,16 +1137,26 @@ fn spawn_output_relay(
                 .map(|sn| sn.lock().unwrap().clone())
                 .unwrap_or_else(|| reader_name.clone());
 
-            {
+            let is_current = {
                 let mut sessions = state_ref.sessions.lock().await;
                 if let Some(s) = sessions.get_mut(&current_name) {
-                    s.buffer.push(data.clone());
+                    if s.generation == generation {
+                        s.buffer.push(data.clone());
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
                 }
+            };
+            // Only broadcast if this relay belongs to the current session generation
+            if is_current {
+                let _ = output_tx.send(OutputEvent::Output {
+                    session: current_name,
+                    data,
+                });
             }
-            let _ = output_tx.send(OutputEvent::Output {
-                session: current_name,
-                data,
-            });
         }
 
         let current_name = shared_name
@@ -815,16 +1164,30 @@ fn spawn_output_relay(
             .map(|sn| sn.lock().unwrap().clone())
             .unwrap_or_else(|| reader_name.clone());
 
-        let code = {
+        // Only mark exited and call session_closed if the session still belongs to this
+        // generation. If the session was overwritten (new session with same name), the
+        // generation will differ and we must not touch the new session's state.
+        let (code, kubo_name) = {
             let mut sessions = state_ref.sessions.lock().await;
             if let Some(s) = sessions.get_mut(&current_name) {
-                let code = s.backend.try_exit_code().unwrap_or(0);
-                s.mark_exited(code);
-                Some(code)
+                if s.generation == generation {
+                    let code = s.backend.try_exit_code().unwrap_or(0);
+                    s.mark_exited(code);
+                    (Some(code), s.kubo.clone())
+                } else {
+                    // Stale relay — session was overwritten, skip cleanup
+                    (None, None)
+                }
             } else {
-                None
+                (None, None)
             }
         };
+        if let Some(kn) = kubo_name {
+            let mut kubos = state_ref.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(&kn) {
+                kubo.session_closed();
+            }
+        }
         if let Some(code) = code {
             let _ = output_tx.send(OutputEvent::Exit {
                 session: current_name,
@@ -835,6 +1198,8 @@ fn spawn_output_relay(
 }
 
 /// Create a PTY session and spawn its output reader task.
+/// If `kubo` is Some, the session runs inside the named kubo container via `docker exec`.
+/// Otherwise, falls back to legacy 1-container-per-session via `DockerBackend`.
 async fn handle_create_session(
     state: &Arc<DaemonState>,
     id: String,
@@ -842,33 +1207,80 @@ async fn handle_create_session(
     cols: u16,
     rows: u16,
     env: HashMap<String, String>,
+    kubo: Option<String>,
 ) -> Option<DaemonResponse> {
-    // Auto-create bundle home directory
-    let home_bind = match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
-        Ok(path) => path,
-        Err(e) => {
+    // Determine which backend to use
+    let kubo_for_session = kubo.clone();
+    let (backend_result, bundle_path) = if let Some(kubo_name) = kubo {
+        // Kubo path: ensure default kubo exists if "default" requested
+        if kubo_name == "default" {
+            if let Err(e) = state.ensure_default_kubo().await {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to ensure default kubo: {}", e),
+                });
+            }
+        }
+
+        // Validate names for path safety
+        if let Err(e) = super::kubo::validate_name(&kubo_name) {
             return Some(DaemonResponse::Error {
                 id,
-                error: format!("failed to create bundle home: {}", e),
-            })
+                error: format!("invalid kubo name: {}", e),
+            });
         }
+        if let Err(e) = super::kubo::validate_name(&name) {
+            return Some(DaemonResponse::Error {
+                id,
+                error: format!("invalid session name: {}", e),
+            });
+        }
+
+        // The abot dir inside the kubo
+        let kubos_dir = state.data_dir.join("kubos");
+        let kubo_path = kubos_dir.join(format!("{}.kubo", kubo_name));
+        let abot_dir = kubo_path.join(&name);
+        let _ = std::fs::create_dir_all(abot_dir.join("home"));
+
+        let backend = state
+            .create_kubo_backend(&kubo_name, &name, cols, rows, &env)
+            .await;
+
+        (backend, Some(abot_dir))
+    } else {
+        // Legacy path: 1 container per session
+        let home_bind = match super::bundle::ensure_bundle_home(&state.data_dir, &name) {
+            Ok(path) => path,
+            Err(e) => {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to create bundle home: {}", e),
+                })
+            }
+        };
+
+        let bundle_path = home_bind.parent().map(|p| p.to_path_buf());
+        let backend = state
+            .create_backend_with_env(&name, cols, rows, &env, &home_bind)
+            .await;
+
+        (backend, bundle_path)
     };
 
-    let backend = state
-        .create_backend_with_env(&name, cols, rows, &env, &home_bind)
-        .await;
-
-    match backend {
+    match backend_result {
         Ok(backend) => {
-            // Compute bundle path from home_bind (parent of home/ is the .abot dir)
-            let bundle_path = home_bind.parent().map(|p| p.to_path_buf());
-
             // Write initial manifest
             if let Some(ref bp) = bundle_path {
                 let _ = super::bundle::save_bundle(bp, &name, &env).await;
             }
 
-            let session = Session::new(name.clone(), backend, env, bundle_path.clone());
+            let session = Session::new(
+                name.clone(),
+                backend,
+                env,
+                bundle_path.clone(),
+                kubo_for_session,
+            );
             let session_name = session.name.clone();
 
             let output_tx = state.output_tx.clone();
@@ -876,13 +1288,35 @@ async fn handle_create_session(
             let state_ref = state.clone();
 
             let mut sessions = state.sessions.lock().await;
+            // Kill old session if it exists to avoid orphaning backends
+            let old_kubo_name = if let Some(mut old) = sessions.remove(&name) {
+                // Only decrement kubo count if the session was still running
+                let kn = if old.is_alive() {
+                    old.kubo.clone()
+                } else {
+                    None
+                };
+                old.backend.kill();
+                kn
+            } else {
+                None
+            };
             sessions.insert(name.clone(), session);
 
             let rx = sessions
                 .get_mut(&name)
                 .and_then(|s| s.backend.take_reader());
             let shared_name = sessions.get(&name).map(|s| s.shared_name.clone());
+            let gen = sessions.get(&name).map(|s| s.generation).unwrap_or(0);
             drop(sessions);
+
+            // Decrement session count for the old session's kubo (if overwriting)
+            if let Some(kn) = old_kubo_name {
+                let mut kubos = state.kubos.lock().await;
+                if let Some(kubo) = kubos.get_mut(&kn) {
+                    kubo.session_closed();
+                }
+            }
 
             // Restore saved scrollback from a previous session (e.g. after close + restart)
             if let Some(ref bp) = bundle_path {
@@ -895,7 +1329,7 @@ async fn handle_create_session(
             }
 
             if let Some(mut rx) = rx {
-                spawn_output_relay(output_tx, state_ref, shared_name, reader_name, &mut rx);
+                spawn_output_relay(output_tx, state_ref, shared_name, reader_name, &mut rx, gen);
             }
 
             Some(DaemonResponse::SessionCreated {

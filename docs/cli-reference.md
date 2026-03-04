@@ -173,7 +173,7 @@ abot token create "iPhone"
 abot token list
 
 # Update abot binary and restart (sessions survive)
-cargo build --release --features docker
+cargo build --release
 abot update
 ```
 

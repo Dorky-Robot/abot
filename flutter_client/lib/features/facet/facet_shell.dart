@@ -4,6 +4,7 @@ import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
@@ -49,6 +50,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   /// Whether the sidebar is collapsed to a thin sliver.
   bool _sidebarCollapsed = false;
+
+  /// Active sidebar tab — controls whether terminal previews render.
+  SidebarTab _sidebarTab = SidebarTab.abots;
 
   /// Whether the settings panel overlay is visible.
   bool _showSettings = false;
@@ -132,6 +136,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
           wsService.attachSession(facet.sessionName);
         }
         ref.read(sessionServiceProvider.notifier).refresh();
+        ref.read(kuboServiceProvider.notifier).refresh();
       }
     });
   }
@@ -224,8 +229,75 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   // --- Facet lifecycle ---
 
-  Future<void> _createNewFacet() async {
-    await ref.read(facetManagerProvider.notifier).createNewSession();
+  Future<void> _createNewFacet({String? kubo}) async {
+    // Default to "default" kubo so all sessions are kubo-aware
+    final effectiveKubo = kubo ?? 'default';
+    await ref.read(facetManagerProvider.notifier).createNewSession(kubo: effectiveKubo);
+    if (!mounted) return;
+    // Refresh kubo list (active session count may have changed)
+    ref.read(kuboServiceProvider.notifier).refresh();
+  }
+
+  /// Show a dialog to create a new kubo, then optionally create a session in it.
+  Future<void> _createNewKubo() async {
+    final name = await _showNewKuboDialog();
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      await ref.read(kuboServiceProvider.notifier).createKubo(name);
+      if (!mounted) return;
+      // Create a session inside the new kubo
+      await _createNewFacet(kubo: name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to create kubo: $e')),
+      );
+    }
+  }
+
+  Future<String?> _showNewKuboDialog() {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        final p = ctx.palette;
+        return AlertDialog(
+          backgroundColor: p.base,
+          title: Text('New Kubo',
+              style: TextStyle(
+                  color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            style: TextStyle(
+                color: p.text, fontFamily: AbotFonts.mono, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: 'kubo name',
+              hintStyle: TextStyle(color: p.overlay0, fontFamily: AbotFonts.mono),
+              enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: p.surface1)),
+              focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: p.mauve)),
+            ),
+            onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Cancel',
+                  style:
+                      TextStyle(color: p.subtext0, fontFamily: AbotFonts.mono)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: Text('Create',
+                  style:
+                      TextStyle(color: p.mauve, fontFamily: AbotFonts.mono)),
+            ),
+          ],
+        );
+      },
+    ).whenComplete(() => controller.dispose());
   }
 
   void _minimizeFacet(String facetId) {
@@ -412,7 +484,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Compute and apply CSS transforms for all non-focused terminals so they
   /// appear at their sidebar card positions. Called after each layout.
   void _updateSidebarTransforms() {
-    if (_sidebarCollapsed) {
+    if (_sidebarCollapsed || _sidebarTab == SidebarTab.kubos) {
       _hideOffstageTerminals();
       return;
     }
@@ -571,6 +643,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final facetState = ref.watch(facetManagerProvider);
     final sessionsAsync = ref.watch(sessionServiceProvider);
     final wsState = ref.watch(wsServiceProvider);
+    final kubosAsync = ref.watch(kuboServiceProvider);
 
     return Scaffold(
       backgroundColor: context.palette.base,
@@ -595,7 +668,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   control: defaultTargetPlatform != TargetPlatform.macOS,
                   meta: defaultTargetPlatform == TargetPlatform.macOS): () {
                 final state = ref.read(facetManagerProvider);
-                if (state.focusedId != null && state.count > 1) {
+                if (state.focusedId != null) {
                   final facet = state.facets[state.focusedId!];
                   if (facet != null) {
                     _minimizeFacet(facet.id);
@@ -617,7 +690,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
             },
             child: Focus(
               autofocus: true,
-              child: _buildFacetLayout(facetState, sessionsAsync, wsState),
+              child: _buildFacetLayout(facetState, sessionsAsync, wsState, kubosAsync),
             ),
           ),
           if (_showSettings)
@@ -647,19 +720,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   Widget _buildFacetLayout(
       FacetManagerState state, AsyncValue<List<SessionInfo>> sessionsAsync,
-      WsState wsState) {
-    if (state.facets.isEmpty) {
-      return const Center(
-        child: Text(
-          'Connecting...',
-          style: TextStyle(
-            fontFamily: AbotFonts.mono,
-            fontSize: 14,
-          ),
-        ),
-      );
-    }
-
+      WsState wsState, AsyncValue<List<KuboInfo>> kubosAsync) {
     final allFacets = state.order
         .map((id) => state.facets[id])
         .whereType<FacetData>()
@@ -677,6 +738,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final openSessionNames = state.facets.values
         .map((f) => f.sessionName)
         .toSet();
+    final kubos = kubosAsync.when(
+      data: (list) => list,
+      loading: () => <KuboInfo>[],
+      error: (_, _) => <KuboInfo>[],
+    );
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -706,14 +772,26 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onSessionSettings: (name) =>
                   setState(() => _sessionSettingsName = name),
               onNewSession: _createNewFacet,
+              onNewSessionInKubo: (kubo) => _createNewFacet(kubo: kubo),
+              onNewKubo: _createNewKubo,
               onOpenBundle: _openBundle,
+              onKuboSettings: (name) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Kubo settings: $name')),
+                );
+              },
               connectionState: wsState.connectionState,
               sessionInfoMap: sessionInfoMap,
+              kubos: kubos,
               collapsed: _sidebarCollapsed,
               onToggleCollapse: _toggleSidebar,
               onSettingsTap: () =>
                   setState(() => _showSettings = !_showSettings),
               onScroll: _updateSidebarTransforms,
+              onTabChanged: (tab) {
+                setState(() => _sidebarTab = tab);
+                _updateSidebarTransforms();
+              },
             ),
             Expanded(child: _buildFocusedArea(state, sessionInfoMap)),
           ],
@@ -784,12 +862,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
             onSettings: () => setState(() =>
                 _sessionSettingsName =
                     state.facets[focusedId]!.sessionName),
-            onMinimize: state.count > 1
-                ? () => _minimizeFacet(focusedId)
-                : null,
-            onClose: state.count > 1
-                ? () => _closeFacet(focusedId)
-                : null,
+            onMinimize: () => _minimizeFacet(focusedId),
+            onClose: () => _closeFacet(focusedId),
           ),
         ),
       ],

@@ -9,12 +9,14 @@ class SessionInfo {
   final SessionStatus status;
   final String? bundlePath;
   final bool dirty;
+  final String? kubo;
 
   const SessionInfo({
     required this.name,
     required this.status,
     this.bundlePath,
     this.dirty = false,
+    this.kubo,
   });
 
   factory SessionInfo.fromJson(Map<String, dynamic> json) => SessionInfo(
@@ -24,6 +26,7 @@ class SessionInfo {
             : SessionStatus.exited,
         bundlePath: json['bundlePath'] as String?,
         dirty: json['dirty'] as bool? ?? false,
+        kubo: json['kubo'] as String?,
       );
 
   bool get isRunning => status == SessionStatus.running;
@@ -56,10 +59,12 @@ class SessionServiceNotifier extends AsyncNotifier<List<SessionInfo>> {
     return [];
   }
 
-  /// Create a new session.
-  Future<SessionInfo> createSession(String name) async {
+  /// Create a new session, optionally inside a kubo.
+  Future<SessionInfo> createSession(String name, {String? kubo}) async {
+    final body = <String, dynamic>{'name': name};
+    if (kubo != null) body['kubo'] = kubo;
     final data =
-        await _api.post('/sessions', {'name': name}) as Map<String, dynamic>;
+        await _api.post('/sessions', body) as Map<String, dynamic>;
     final session = SessionInfo.fromJson(data);
     // Refresh the list
     state = AsyncData(await listSessions());

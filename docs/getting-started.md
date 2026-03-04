@@ -24,14 +24,14 @@
     cd flutter_client && flutter build web --wasm
     cd ..
 
-    # Build the Rust binary (with Docker backend)
-    cargo build --release --features docker
+    # Build the Rust binary
+    cargo build --release
 
     # The binary is at target/release/abot
     ```
 
     !!! note
-        Without `--features docker`, abot falls back to local PTY sessions (no container isolation).
+        abot requires Docker to run sessions. Make sure Docker Desktop or the Docker daemon is running.
 
 ## Quick Start
 

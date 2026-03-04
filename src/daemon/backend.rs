@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-/// Abstract interface for session backends (local PTY, Docker container, etc.)
+/// Abstract interface for session backends.
 ///
 /// Each backend manages a single interactive process with stdin/stdout and TTY support.
 /// The daemon creates sessions via a backend, then manages I/O and lifecycle uniformly.
@@ -28,6 +28,5 @@ pub trait SessionBackend: Send {
     fn try_exit_code(&mut self) -> Option<u32>;
 
     /// Inject environment variables into a running session.
-    /// Default implementation is a no-op (local PTY sessions inherit from parent).
     fn inject_env(&self, _env: &std::collections::HashMap<String, String>) {}
 }

@@ -168,14 +168,11 @@ client/              Vanilla JS, 34 ES modules, zero build step, zero framework
 
 ## Self-provisioning
 
-The binary works out of the box and progressively enables capabilities:
+All sessions run in Docker containers for isolation:
 
 ```
-Tier 0: Just the binary
+Docker required
   → Web server + client + passkey auth
-  → Sessions run as host PTY processes
-
-Tier 1: Docker available (--features docker)
   → Sessions run in isolated containers
   → Resource limits, capability dropping, uid isolation
 ```
@@ -193,20 +190,14 @@ Tier 1: Docker available (--features docker)
 cargo run -- start       # Start daemon + server
 cargo run -- serve       # Server only (daemon must be running)
 cargo test               # Run tests
-```
-
-With Docker session backend:
-
-```bash
-cargo run --features docker -- start
-docker build -t abot-session -f Dockerfile.session .
+docker build -t abot-session -f Dockerfile.session .  # Build session image
 ```
 
 ## Status
 
 > **Under active development.** APIs, protocols, and the client UI may change without notice.
 
-The Rust backend is functional with auth, multi-session management, WebRTC, Docker isolation, and rolling updates. The vanilla JS client is feature-complete. See [BRAINSTORM.md](BRAINSTORM.md) for the full vision.
+The Rust backend is functional with auth, multi-session management, WebRTC, Docker isolation, and rolling updates. The Flutter Web client is the primary UI. See [BRAINSTORM.md](BRAINSTORM.md) for the full vision.
 
 ## License
 

@@ -31,6 +31,7 @@ src/stream/     WebSocket handler, client tracking, message protocol
 
 ## Key Patterns
 
+- **Zero-dependency install** — the binary runs on the host with no prerequisites. Docker is only needed at session creation, not at startup. A setup wizard guides non-technical users through provisioning.
 - Passkey auth (WebAuthn) — no passwords
 - Session persistence across restarts (daemon survives server restarts)
 - Rolling updates with client reconnection
