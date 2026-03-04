@@ -84,11 +84,16 @@ impl DaemonState {
 
         // Ensure abot home dir exists in the kubo
         kubo.ensure_abot_home(abot_name)?;
-        kubo.session_opened();
         drop(kubos);
 
         let backend =
             kubo_exec::KuboExecBackend::spawn(&container_id, abot_name, cols, rows, env).await?;
+
+        // Increment active sessions only after spawn succeeds
+        let mut kubos = self.kubos.lock().await;
+        if let Some(kubo) = kubos.get_mut(kubo_name) {
+            kubo.session_opened();
+        }
 
         Ok(Box::new(backend))
     }

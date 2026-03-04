@@ -233,6 +233,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     // Default to "default" kubo so all sessions are kubo-aware
     final effectiveKubo = kubo ?? 'default';
     await ref.read(facetManagerProvider.notifier).createNewSession(kubo: effectiveKubo);
+    if (!mounted) return;
     // Refresh kubo list (active session count may have changed)
     ref.read(kuboServiceProvider.notifier).refresh();
   }
@@ -296,7 +297,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
           ],
         );
       },
-    );
+    ).whenComplete(() => controller.dispose());
   }
 
   void _minimizeFacet(String facetId) {

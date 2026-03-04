@@ -375,15 +375,16 @@ pub async fn handle_request(
         }
 
         DaemonRequest::DeleteSession { id, name } => {
-            let bundle_path = {
+            let (bundle_path, kubo_name) = {
                 let mut sessions = state.sessions.lock().await;
                 if let Some(mut session) = sessions.remove(&name) {
                     let bp = session.bundle_path.clone();
+                    let kn = session.kubo.clone();
                     session.backend.kill();
                     let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                         session: name.clone(),
                     });
-                    bp
+                    (bp, kn)
                 } else {
                     return Some(DaemonResponse::Error {
                         id,
@@ -391,6 +392,12 @@ pub async fn handle_request(
                     });
                 }
             };
+            if let Some(kn) = kubo_name {
+                let mut kubos = state.kubos.lock().await;
+                if let Some(kubo) = kubos.get_mut(&kn) {
+                    kubo.session_closed();
+                }
+            }
             // Remove bundle directory outside the lock to avoid blocking
             if let Some(bp) = bundle_path {
                 let _ = std::fs::remove_dir_all(&bp);
@@ -839,7 +846,15 @@ pub async fn handle_request(
                 if let Some(ref bp) = s.bundle_path {
                     super::bundle::save_scrollback(bp, &s.get_buffer());
                 }
+                let kubo_name = s.kubo.clone();
                 s.backend.kill();
+                drop(sessions);
+                if let Some(kn) = kubo_name {
+                    let mut kubos = state.kubos.lock().await;
+                    if let Some(kubo) = kubos.get_mut(&kn) {
+                        kubo.session_closed();
+                    }
+                }
                 let _ = state.output_tx.send(OutputEvent::SessionRemoved {
                     session: session.clone(),
                 });
@@ -905,6 +920,18 @@ pub async fn handle_request(
         }
 
         DaemonRequest::CloneAbot { id, source, target } => {
+            if let Err(e) = super::kubo::validate_name(&source) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid source name: {}", e),
+                });
+            }
+            if let Err(e) = super::kubo::validate_name(&target) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid target name: {}", e),
+                });
+            }
             let abots_dir = state.data_dir.join("abots");
             let source_path = abots_dir.join(format!("{}.abot", source));
             let target_path = abots_dir.join(format!("{}.abot", target));
@@ -966,6 +993,12 @@ pub async fn handle_request(
         }
 
         DaemonRequest::AbotGit { id, abot, op } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid abot name: {}", e),
+                });
+            }
             let abots_dir = state.data_dir.join("abots");
             let abot_path = abots_dir.join(format!("{}.abot", abot));
 
@@ -1017,6 +1050,12 @@ pub async fn handle_request(
         }
 
         DaemonRequest::AddAbotToKubo { id, kubo, abot } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid abot name: {}", e),
+                });
+            }
             let mut kubos = state.kubos.lock().await;
             if let Some(k) = kubos.get_mut(&kubo) {
                 match k.ensure_abot_home(&abot) {
@@ -1083,16 +1122,22 @@ fn spawn_output_relay(
             .map(|sn| sn.lock().unwrap().clone())
             .unwrap_or_else(|| reader_name.clone());
 
-        let code = {
+        let (code, kubo_name) = {
             let mut sessions = state_ref.sessions.lock().await;
             if let Some(s) = sessions.get_mut(&current_name) {
                 let code = s.backend.try_exit_code().unwrap_or(0);
                 s.mark_exited(code);
-                Some(code)
+                (Some(code), s.kubo.clone())
             } else {
-                None
+                (None, None)
             }
         };
+        if let Some(kn) = kubo_name {
+            let mut kubos = state_ref.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(&kn) {
+                kubo.session_closed();
+            }
+        }
         if let Some(code) = code {
             let _ = output_tx.send(OutputEvent::Exit {
                 session: current_name,
@@ -1125,6 +1170,20 @@ async fn handle_create_session(
                     error: format!("failed to ensure default kubo: {}", e),
                 });
             }
+        }
+
+        // Validate names for path safety
+        if let Err(e) = super::kubo::validate_name(&kubo_name) {
+            return Some(DaemonResponse::Error {
+                id,
+                error: format!("invalid kubo name: {}", e),
+            });
+        }
+        if let Err(e) = super::kubo::validate_name(&name) {
+            return Some(DaemonResponse::Error {
+                id,
+                error: format!("invalid session name: {}", e),
+            });
         }
 
         // The abot dir inside the kubo
@@ -1179,6 +1238,10 @@ async fn handle_create_session(
             let state_ref = state.clone();
 
             let mut sessions = state.sessions.lock().await;
+            // Kill old session if it exists to avoid orphaning backends
+            if let Some(mut old) = sessions.remove(&name) {
+                old.backend.kill();
+            }
             sessions.insert(name.clone(), session);
 
             let rx = sessions

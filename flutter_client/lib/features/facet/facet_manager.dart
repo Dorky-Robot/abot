@@ -155,12 +155,13 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
       order: newOrder,
       focusedId: id,
     );
+    _persistOrder();
+    _persistFocused();
     return facet;
   }
 
   /// Remove a facet by ID.
   void remove(String facetId) {
-
     final newFacets = Map<String, FacetData>.from(state.facets);
     newFacets.remove(facetId);
 

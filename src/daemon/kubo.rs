@@ -10,9 +10,7 @@ use bollard::image::{BuildImageOptions, CreateImageOptions};
 use bollard::models::{HostConfig, Mount, MountTypeEnum};
 use bollard::Docker;
 use futures_util::TryStreamExt;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tokio::sync::Mutex;
 
 const DEFAULT_KUBO_IMAGE: &str = "abot-kubo";
 const FALLBACK_IMAGE: &str = "alpine:3";
@@ -43,9 +41,24 @@ pub struct KuboManifest {
     pub abots: Vec<String>,
 }
 
+/// Validate that a kubo or abot name is safe for filesystem paths.
+pub fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("name cannot be empty");
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        anyhow::bail!("name contains invalid characters: {}", name);
+    }
+    if name == "." || name == ".." || name.starts_with("../") || name.contains("/../") {
+        anyhow::bail!("name contains path traversal: {}", name);
+    }
+    Ok(())
+}
+
 impl Kubo {
     /// Ensure the kubo directory exists with a manifest and git repo.
     pub fn ensure_kubo_dir(kubos_dir: &Path, name: &str) -> Result<PathBuf> {
+        validate_name(name)?;
         let kubo_path = kubos_dir.join(format!("{name}.kubo"));
         std::fs::create_dir_all(&kubo_path)
             .with_context(|| format!("failed to create kubo dir: {}", kubo_path.display()))?;
@@ -174,7 +187,7 @@ impl Kubo {
         tracing::info!(
             "started kubo container '{}' (id: {})",
             container_name,
-            &container.id[..12]
+            container.id.get(..12).unwrap_or(&container.id)
         );
         self.container_id = Some(container.id);
         Ok(())
@@ -228,7 +241,6 @@ impl Kubo {
     }
 
     /// Record that a session was closed in this kubo.
-    #[allow(dead_code)]
     pub fn session_closed(&mut self) {
         self.active_sessions = self.active_sessions.saturating_sub(1);
         if self.active_sessions == 0 {
@@ -308,6 +320,7 @@ impl Kubo {
     /// Ensure an abot's home directory exists inside this kubo,
     /// and initialize it as a git repo if it isn't one already.
     pub fn ensure_abot_home(&self, abot_name: &str) -> Result<PathBuf> {
+        validate_name(abot_name)?;
         let abot_dir = self.path.join(abot_name);
         let home_dir = abot_dir.join("home");
         std::fs::create_dir_all(&home_dir).with_context(|| {
@@ -370,29 +383,6 @@ pub fn list_kubo_dirs(kubos_dir: &Path) -> Vec<(String, PathBuf)> {
 /// Check if a Docker image exists locally.
 async fn image_exists(docker: &Docker, image: &str) -> bool {
     docker.inspect_image(image).await.is_ok()
-}
-
-/// Idle check loop — stops kubos that have been idle for IDLE_TIMEOUT_SECS.
-#[allow(dead_code)]
-pub async fn idle_check_loop(kubos: std::sync::Arc<Mutex<HashMap<String, Kubo>>>) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-    interval.tick().await; // skip immediate tick
-    loop {
-        interval.tick().await;
-        let mut kubos = kubos.lock().await;
-        let names: Vec<String> = kubos
-            .values()
-            .filter(|k| k.should_idle_stop())
-            .map(|k| k.name.clone())
-            .collect();
-        for name in names {
-            if let Some(kubo) = kubos.get_mut(&name) {
-                if let Err(e) = kubo.stop().await {
-                    tracing::error!("failed to idle-stop kubo '{}': {}", name, e);
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

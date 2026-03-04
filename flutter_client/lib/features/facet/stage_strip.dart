@@ -94,7 +94,9 @@ class _StageStripState extends State<StageStrip> {
       try {
         final list = (jsonDecode(collapsed) as List).cast<String>();
         _collapsedKubos.addAll(list);
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[StageStrip] Failed to restore collapsed kubos: $e');
+      }
     }
   }
 
