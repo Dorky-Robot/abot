@@ -424,6 +424,12 @@ pub async fn handle_request(
             old_name,
             new_name,
         } => {
+            if let Err(e) = super::kubo::validate_name(&new_name) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid session name: {}", e),
+                });
+            }
             let mut sessions = state.sessions.lock().await;
             if sessions.contains_key(&new_name) {
                 return Some(DaemonResponse::Error {
@@ -1119,7 +1125,9 @@ pub async fn handle_request(
 
             // Resolve canonical abots dir and create the canonical abot
             let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
-            let _ = std::fs::create_dir_all(&abots_dir);
+            if let Err(e) = std::fs::create_dir_all(&abots_dir) {
+                tracing::warn!("failed to create abots dir: {}", e);
+            }
             let canonical_path = match super::bundle::create_canonical_abot(&abots_dir, &abot) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1336,7 +1344,9 @@ async fn handle_create_session(
     let kubos_dir = state.data_dir.join("kubos");
     let kubo_path = kubos_dir.join(format!("{}.kubo", &kubo));
     let abot_dir = kubo_path.join(&name);
-    let _ = std::fs::create_dir_all(abot_dir.join("home"));
+    if let Err(e) = std::fs::create_dir_all(abot_dir.join("home")) {
+        tracing::warn!("failed to pre-create abot home dir: {}", e);
+    }
 
     let backend_result = state
         .create_kubo_backend(&kubo, &name, cols, rows, &env)
@@ -1345,9 +1355,11 @@ async fn handle_create_session(
 
     match backend_result {
         Ok(backend) => {
-            // Write initial manifest
+            // Write initial manifest (best-effort; autosave will retry)
             if let Some(ref bp) = bundle_path {
-                let _ = super::bundle::save_bundle(bp, &name, &env).await;
+                if let Err(e) = super::bundle::save_bundle(bp, &name, &env).await {
+                    tracing::warn!("failed to write initial manifest for '{}': {}", name, e);
+                }
             }
 
             let session = Session::new(name.clone(), backend, env, bundle_path.clone(), Some(kubo));
