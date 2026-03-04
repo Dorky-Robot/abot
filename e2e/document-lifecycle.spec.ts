@@ -33,6 +33,7 @@ test.describe('Document lifecycle — save/open/close API', () => {
 
   test.beforeEach(async ({ page }) => {
     // Create a fresh session for each test.
+    // Sessions now get a canonical abot + worktree automatically.
     testSession = `doc-test-${Date.now()}`;
     const resp = await page.request.post('/sessions', {
       data: { name: testSession },
@@ -41,15 +42,17 @@ test.describe('Document lifecycle — save/open/close API', () => {
   });
 
   test.afterEach(async ({ page }) => {
-    // Clean up the test session if it still exists.
     try {
       await page.request.delete(`/sessions/${encodeURIComponent(testSession)}`);
     } catch {}
   });
 
-  test('new session has no bundlePath and is not dirty', async ({ page }) => {
+  test('new session has bundlePath (worktree in kubo) and is not dirty', async ({ page }) => {
     const session = await getSession(page, testSession);
-    expect(session.bundlePath).toBeNull();
+    // Sessions now always have a bundlePath — the worktree inside the kubo
+    expect(session.bundlePath).toBeTruthy();
+    expect(session.bundlePath).toContain('default.kubo');
+    expect(session.kubo).toBe('default');
     expect(session.dirty).toBe(false);
   });
 
@@ -74,11 +77,10 @@ test.describe('Document lifecycle — save/open/close API', () => {
 
     // Verify manifest content.
     const manifest = JSON.parse(fs.readFileSync(path.join(bundlePath, 'manifest.json'), 'utf-8'));
-    expect(manifest.version).toBe(1);
+    expect(manifest.version).toBe(2);
     expect(manifest.name).toBe(testSession);
     expect(manifest.updated_at).toBeDefined();
 
-    // Clean up.
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -98,17 +100,9 @@ test.describe('Document lifecycle — save/open/close API', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test('POST save works after save-as sets the path', async ({ page }) => {
-    const dir = tempBundleDir('save');
-    const bundlePath = path.join(dir, `${testSession}.abot`);
-
-    // First save-as to establish the path.
-    await page.request.post(
-      `/sessions/${encodeURIComponent(testSession)}/save-as`,
-      { data: { path: bundlePath } },
-    );
-
-    // Now regular save should work.
+  test('POST save works on session with worktree bundlePath', async ({ page }) => {
+    // Sessions now have a bundlePath from creation (the worktree).
+    // Regular save should work immediately.
     const resp = await page.request.post(
       `/sessions/${encodeURIComponent(testSession)}/save`,
     );
@@ -116,19 +110,7 @@ test.describe('Document lifecycle — save/open/close API', () => {
 
     const body = await resp.json();
     expect(body.session).toBe(testSession);
-    expect(body.path).toBe(bundlePath);
-
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
-
-  test('POST save fails for session without bundle path', async ({ page }) => {
-    const resp = await page.request.post(
-      `/sessions/${encodeURIComponent(testSession)}/save`,
-    );
-    // Should return 400 because no bundle path is set.
-    expect(resp.status()).toBe(400);
-    const body = await resp.json();
-    expect(body.error).toContain('no bundle path');
+    expect(body.path).toBeTruthy();
   });
 
   test('POST close removes the session', async ({ page }) => {
@@ -143,16 +125,11 @@ test.describe('Document lifecycle — save/open/close API', () => {
   });
 
   test('POST close with save:true saves before closing', async ({ page }) => {
-    const dir = tempBundleDir('close-save');
-    const bundlePath = path.join(dir, `${testSession}.abot`);
+    // Close with save — the worktree bundlePath should persist.
+    const session = await getSession(page, testSession);
+    const bundlePath = session.bundlePath;
+    expect(bundlePath).toBeTruthy();
 
-    // Establish a bundle path first.
-    await page.request.post(
-      `/sessions/${encodeURIComponent(testSession)}/save-as`,
-      { data: { path: bundlePath } },
-    );
-
-    // Close with save.
     const resp = await page.request.post(
       `/sessions/${encodeURIComponent(testSession)}/close`,
       { data: { save: true } },
@@ -165,21 +142,19 @@ test.describe('Document lifecycle — save/open/close API', () => {
 
     // But the bundle should still exist on disk.
     expect(fs.existsSync(path.join(bundlePath, 'manifest.json'))).toBeTruthy();
-
-    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   test('POST open restores session from bundle', async ({ page }) => {
     const dir = tempBundleDir('open');
     const bundlePath = path.join(dir, `${testSession}.abot`);
 
-    // Save the session.
+    // Save the session to a custom path.
     await page.request.post(
       `/sessions/${encodeURIComponent(testSession)}/save-as`,
       { data: { path: bundlePath } },
     );
 
-    // Close the session (not delete — close preserves the bundle on disk).
+    // Close the session.
     await page.request.post(`/sessions/${encodeURIComponent(testSession)}/close`, {
       data: { save: false },
     });
@@ -196,15 +171,15 @@ test.describe('Document lifecycle — save/open/close API', () => {
 
     const body = await resp.json();
     expect(body.name).toBe(testSession);
-    expect(body.path).toBe(bundlePath);
 
     // Session should be back.
     sessions = await sessionNames(page);
     expect(sessions).toContain(testSession);
 
-    // Verify it tracks the bundle path.
+    // The reopened session should point to the worktree (not the original bundle)
     const session = await getSession(page, testSession);
-    expect(session.bundlePath).toBe(bundlePath);
+    expect(session.bundlePath).toBeTruthy();
+    expect(session.bundlePath).toContain('default.kubo');
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
@@ -231,10 +206,10 @@ test.describe('Document lifecycle — save/open/close API', () => {
     );
     const createdAt = manifest1.created_at;
 
-    // Wait a moment so timestamps differ.
+    // Wait so timestamps differ.
     await page.waitForTimeout(100);
 
-    // Save again (regular save this time).
+    // Save again (regular save).
     await page.request.post(
       `/sessions/${encodeURIComponent(testSession)}/save`,
     );

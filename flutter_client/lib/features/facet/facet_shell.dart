@@ -60,10 +60,21 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Session name for per-session settings overlay (null = hidden).
   String? _sessionSettingsName;
 
+  /// Active kubo shown in main area landing page.
+  String _activeKubo = 'default';
+
+  static const _activeKuboKey = 'abot_active_kubo';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // Restore active kubo from localStorage.
+    final stored = web.window.localStorage.getItem(_activeKuboKey);
+    if (stored != null && stored.isNotEmpty) {
+      _activeKubo = stored;
+    }
 
     // When a terminal finishes initializing, re-apply sidebar transforms.
     TerminalRegistry.instance.onRegistered = _onTerminalReady;
@@ -85,43 +96,23 @@ class _FacetShellState extends ConsumerState<FacetShell>
     wsService.onMessage = _handleServerMessage;
 
     // Fetch existing sessions from the server and restore facets for them.
-    // On first launch 'main' won't exist yet, so we create it as fallback.
+    // If no sessions exist, the empty kubo onboarding page is shown.
     try {
       final sessions = await ref
           .read(sessionServiceProvider.notifier)
           .listSessions();
       if (!mounted) return;
-      final running = sessions.where((s) => s.isRunning).toList();
 
-      if (running.isNotEmpty) {
-        // Create facets for all running sessions. Focus 'main' if it exists,
-        // otherwise focus the first one.
-        final mainFirst = <SessionInfo>[
-          ...running.where((s) => s.name == 'main'),
-          ...running.where((s) => s.name != 'main'),
-        ];
-        for (final s in mainFirst) {
+      if (sessions.isNotEmpty) {
+        for (final s in sessions) {
           facetManager.create(s.name);
-          // Bump session counter past existing session-N names
-          final match = RegExp(r'^session-(\d+)$').firstMatch(s.name);
-          if (match != null) {
-            facetManager.bumpSessionCounter(int.parse(match.group(1)!) + 1);
-          }
         }
-        // Restore persisted sidebar order, then focus 'main'.
         facetManager.loadPersistedOrder();
-        final mainFacet = ref.read(facetManagerProvider).getBySession('main');
-        if (mainFacet != null) {
-          facetManager.focus(mainFacet.id);
-        }
-      } else {
-        // No sessions on server — create 'main'
-        facetManager.create('main');
       }
+      // If no sessions, we show the empty kubo onboarding page.
     } catch (e) {
       debugPrint('[FacetShell] Failed to fetch sessions: $e');
-      // Server unreachable — create 'main' optimistically
-      facetManager.create('main');
+      // Server unreachable — empty state, onboarding page shown.
     }
 
     if (!mounted) return;
@@ -229,22 +220,14 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   // --- Facet lifecycle ---
 
-  Future<void> _createNewFacet({String kubo = 'default'}) async {
-    await ref.read(facetManagerProvider.notifier).createNewSession(kubo: kubo);
-    if (!mounted) return;
-    // Refresh kubo list (active session count may have changed)
-    ref.read(kuboServiceProvider.notifier).refresh();
-  }
-
-  /// Show a dialog to create a new kubo, then optionally create a session in it.
+  /// Show a dialog to create a new kubo (empty — user adds abots later).
   Future<void> _createNewKubo() async {
     final name = await _showNewKuboDialog();
     if (name == null || name.isEmpty || !mounted) return;
     try {
       await ref.read(kuboServiceProvider.notifier).createKubo(name);
       if (!mounted) return;
-      // Create a session inside the new kubo
-      await _createNewFacet(kubo: name);
+      ref.read(kuboServiceProvider.notifier).refresh();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -677,12 +660,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
               // Ctrl+Tab — cycle focus (alias)
               const SingleActivator(LogicalKeyboardKey.tab,
                   control: true): _cycleFocus,
-              // Ctrl+N — new session
-              SingleActivator(LogicalKeyboardKey.keyN,
-                  control: defaultTargetPlatform != TargetPlatform.macOS,
-                  meta: defaultTargetPlatform == TargetPlatform.macOS): () {
-                _createNewFacet();
-              },
               // Ctrl+W — minimize current facet (detach, keep session alive)
               SingleActivator(LogicalKeyboardKey.keyW,
                   control: defaultTargetPlatform != TargetPlatform.macOS,
@@ -791,7 +768,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onDeleteSession: _onDeleteSession,
               onSessionSettings: (name) =>
                   setState(() => _sessionSettingsName = name),
-              onNewSession: _createNewFacet,
+              onNewSession: () => _addAbotToKubo('default'),
               onNewSessionInKubo: (kubo) => _addAbotToKubo(kubo),
               onNewKubo: _createNewKubo,
               onOpenBundle: _openBundle,
@@ -812,11 +789,171 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 setState(() => _sidebarTab = tab);
                 _updateSidebarTransforms();
               },
+              activeKubo: _activeKubo,
+              onActiveKuboChanged: (kubo) {
+                setState(() => _activeKubo = kubo);
+                web.window.localStorage.setItem(_activeKuboKey, kubo);
+                // Unfocus if the focused facet doesn't belong to the new kubo.
+                final focusedId = ref.read(facetManagerProvider).focusedId;
+                if (focusedId != null) {
+                  final focusedSession = ref.read(facetManagerProvider).facets[focusedId]?.sessionName;
+                  final focusedKubo = sessionInfoMap[focusedSession]?.kubo ?? 'default';
+                  if (focusedKubo != kubo) {
+                    ref.read(facetManagerProvider.notifier).unfocus();
+                  }
+                }
+              },
             ),
             Expanded(child: _buildFocusedArea(state, sessionInfoMap)),
           ],
         );
       },
+    );
+  }
+
+  /// Kubo landing page — shows card grid or empty onboarding for the active kubo.
+  Widget _buildKuboLandingPage(String kubo, Map<String, SessionInfo> sessionInfoMap) {
+    final kuboSessions = sessionInfoMap.values
+        .where((s) => (s.kubo ?? 'default') == kubo)
+        .toList();
+    if (kuboSessions.isEmpty) {
+      return _buildEmptyKuboOnboarding(kubo);
+    }
+    return _buildAbotCardGrid(kubo, kuboSessions);
+  }
+
+  /// Card grid of abots in a kubo — click a card to open its terminal.
+  Widget _buildAbotCardGrid(String kubo, List<SessionInfo> sessions) {
+    final p = context.palette;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(AbotSpacing.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              kubo,
+              style: TextStyle(
+                color: p.text,
+                fontFamily: AbotFonts.mono,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: AbotSpacing.md),
+            Wrap(
+              spacing: AbotSpacing.md,
+              runSpacing: AbotSpacing.md,
+              children: [
+                for (final session in sessions)
+                  _AbotCard(
+                    name: session.name,
+                    isRunning: session.isRunning,
+                    isDirty: session.dirty,
+                    onTap: () => _onOpenSession(session.name),
+                  ),
+              ],
+            ),
+            const SizedBox(height: AbotSpacing.lg),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FilledButton.icon(
+                  onPressed: () => _addAbotToKubo(kubo),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: Text(
+                    'Add abot',
+                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: p.mauve,
+                    foregroundColor: p.base,
+                  ),
+                ),
+                const SizedBox(width: AbotSpacing.sm),
+                OutlinedButton.icon(
+                  onPressed: _openBundle,
+                  icon: const Icon(Icons.folder_open, size: 16),
+                  label: Text(
+                    'Open .abot bundle',
+                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: p.subtext0,
+                    side: BorderSide(color: p.surface1),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Empty kubo onboarding — shown when no abots are in the active kubo.
+  Widget _buildEmptyKuboOnboarding(String kubo) {
+    final p = context.palette;
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 360),
+        padding: const EdgeInsets.all(AbotSpacing.lg),
+        decoration: BoxDecoration(
+          color: p.surface0,
+          borderRadius: BorderRadius.circular(AbotRadius.md),
+          border: Border.all(color: p.surface1),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'No abots in $kubo',
+              style: TextStyle(
+                color: p.text,
+                fontFamily: AbotFonts.mono,
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: AbotSpacing.sm),
+            Text(
+              'Add an abot to get started. Each abot is a git-backed workspace with its own terminal.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: p.subtext0,
+                fontFamily: AbotFonts.mono,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: AbotSpacing.md),
+            FilledButton.icon(
+              onPressed: () => _addAbotToKubo(kubo),
+              icon: const Icon(Icons.add, size: 16),
+              label: Text(
+                'Add abot',
+                style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: p.mauve,
+                foregroundColor: p.base,
+              ),
+            ),
+            const SizedBox(height: AbotSpacing.sm),
+            OutlinedButton.icon(
+              onPressed: _openBundle,
+              icon: const Icon(Icons.folder_open, size: 16),
+              label: Text(
+                'Open .abot bundle',
+                style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: p.subtext0,
+                side: BorderSide(color: p.surface1),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -826,7 +963,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// card positions (GPU-accelerated).
   Widget _buildFocusedArea(FacetManagerState state, Map<String, SessionInfo> sessionInfoMap) {
     final focusedId = state.focusedId;
-    if (focusedId == null) return const SizedBox.shrink();
+    if (focusedId == null) {
+      return _buildKuboLandingPage(_activeKubo, sessionInfoMap);
+    }
 
     for (final id in state.order) {
       _ensureFacetKey(id);
@@ -887,6 +1026,101 @@ class _FacetShellState extends ConsumerState<FacetShell>
           ),
         ),
       ],
+    );
+  }
+}
+
+/// A card representing an abot in the kubo landing page grid.
+class _AbotCard extends StatefulWidget {
+  final String name;
+  final bool isRunning;
+  final bool isDirty;
+  final VoidCallback onTap;
+
+  const _AbotCard({
+    required this.name,
+    required this.isRunning,
+    this.isDirty = false,
+    required this.onTap,
+  });
+
+  @override
+  State<_AbotCard> createState() => _AbotCardState();
+}
+
+class _AbotCardState extends State<_AbotCard> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          width: 180,
+          padding: const EdgeInsets.all(AbotSpacing.md),
+          decoration: BoxDecoration(
+            color: p.surface0,
+            border: Border.all(
+              color: _hovered ? p.mauve : p.surface1,
+            ),
+            borderRadius: BorderRadius.circular(AbotRadius.md),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: widget.isRunning ? p.green : p.overlay0,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: AbotSpacing.sm),
+                  Expanded(
+                    child: Text(
+                      widget.name,
+                      style: TextStyle(
+                        color: p.text,
+                        fontFamily: AbotFonts.mono,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (widget.isDirty)
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: p.yellow,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: AbotSpacing.xs),
+              Text(
+                widget.isRunning ? 'running' : 'stopped',
+                style: TextStyle(
+                  color: p.subtext0,
+                  fontFamily: AbotFonts.mono,
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

@@ -5,19 +5,16 @@ track where the codebase hasn't caught up yet.
 
 ## Blocking
 
-- [ ] **Unify session creation through the worktree model.**
-      `CreateSession` (Ctrl+N, auto-create on attach, REST `POST /sessions`)
-      creates a standalone dir inside the kubo — no canonical abot, no
-      worktree, no `kubo/<name>` branch. Only `AddAbotToKubo` follows the
-      proper flow. All session creation should go through the worktree model:
-      every session IS an abot with a canonical repo and a worktree in its kubo.
+- [x] **Unify session creation through the worktree model.**
+      All session creation paths now go through `ensure_abot_in_kubo` which
+      creates a canonical abot + worktree + kubo manifest entry. WS auto-create
+      removed. Ctrl+N removed. First launch shows empty kubo onboarding.
 
 ## Confusing (code contradicts docs)
 
-- [ ] **Stop using `"main"` as the first session name.**
-      `facet_shell.dart` creates a session named `"main"` on first launch,
-      directly contradicting the documented rule that session names must not
-      collide with git's default branch.
+- [x] **Stop using `"main"` as the first session name.**
+      Removed `"main"` fallback from `facet_shell.dart`. First launch shows
+      empty kubo onboarding page instead of auto-creating a session.
 
 - [ ] **Read kubo-level credentials.**
       Docs describe `credentials.json` at the kubo level as the standard, but
@@ -30,11 +27,9 @@ track where the codebase hasn't caught up yet.
       empty kubo dirs. Migration should set up worktrees linking kubo dirs back
       to canonical repos.
 
-- [ ] **Fix `OpenBundle` split state.**
-      `OpenBundle` handler sets `bundle_path` to the original bundle location
-      but the session filesystem lives inside the kubo dir. Autosave writes
-      metadata to the original, not the kubo copy. Should create a worktree in
-      the kubo and point `bundle_path` at it.
+- [x] **Fix `OpenBundle` split state.**
+      `OpenBundle` now creates a worktree in the default kubo and points
+      `bundle_path` at the worktree. Autosave writes to the correct location.
 
 - [ ] **Remove vestigial `image` field from bundle manifest.**
       `save_bundle` writes `image: "abot-session"` to manifest.json but it's
@@ -64,7 +59,7 @@ track where the codebase hasn't caught up yet.
 
 ## Future (documented as not-this-PR)
 
-- [ ] Empty kubo onboarding landing page on main stage
+- [x] Empty kubo onboarding landing page on main stage
 - [ ] Abot visual identity (avatar, color, icon) across kubos
 - [ ] Update indicator with human-language messaging
 - [ ] AI-assisted merge conflict resolution

@@ -623,9 +623,10 @@ pub async fn handle_request(
             match super::bundle::open_bundle(&path).await {
                 Ok(bundle) => {
                     let name = bundle.name.clone();
-                    let bundle_path = bundle.path.clone();
+                    let canonical_path = bundle.path.clone();
+                    let kubo_name = "default";
 
-                    // Ensure default kubo exists and create abot home dir inside it
+                    // Ensure default kubo exists
                     if let Err(e) = state.ensure_default_kubo().await {
                         return Some(DaemonResponse::Error {
                             id,
@@ -633,8 +634,66 @@ pub async fn handle_request(
                         });
                     }
 
+                    // Create worktree in the default kubo so the session
+                    // filesystem lives inside the kubo directory
+                    let kubo_path = {
+                        let kubos = state.kubos.lock().await;
+                        match kubos.get(kubo_name) {
+                            Some(k) => k.path.clone(),
+                            None => {
+                                return Some(DaemonResponse::Error {
+                                    id,
+                                    error: "kubo 'default' not found".to_string(),
+                                })
+                            }
+                        }
+                    };
+
+                    if let Err(e) = super::bundle::worktree_add_abot(
+                        &canonical_path,
+                        &kubo_path,
+                        &name,
+                        kubo_name,
+                    ) {
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!("failed to add worktree for opened bundle: {}", e),
+                        });
+                    }
+
+                    // Update kubo manifest
+                    match super::kubo::Kubo::read_manifest(&kubo_path) {
+                        Ok(mut manifest) => {
+                            if !manifest.abots.contains(&name) {
+                                manifest.abots.push(name.clone());
+                                manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                                if let Err(e) =
+                                    super::kubo::Kubo::write_manifest(&kubo_path, &manifest)
+                                {
+                                    tracing::warn!(
+                                        "failed to write kubo manifest for '{}': {}",
+                                        kubo_name,
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to read kubo manifest for '{}': {}",
+                                kubo_name,
+                                e
+                            );
+                        }
+                    }
+
+                    // Point bundle_path at the worktree (inside the kubo), not
+                    // the canonical abot. This is where the session filesystem
+                    // lives and where autosave will write.
+                    let worktree_path = kubo_path.join(&name);
+
                     let result = state
-                        .create_kubo_backend("default", &name, cols, rows, &bundle.env)
+                        .create_kubo_backend(kubo_name, &name, cols, rows, &bundle.env)
                         .await;
 
                     match result {
@@ -643,8 +702,8 @@ pub async fn handle_request(
                                 name.clone(),
                                 backend,
                                 bundle.env.clone(),
-                                Some(bundle_path.clone()),
-                                Some("default".to_string()),
+                                Some(worktree_path.clone()),
+                                Some(kubo_name.to_string()),
                             );
                             let session_name = session.name.clone();
 
@@ -655,7 +714,6 @@ pub async fn handle_request(
                             let mut sessions = state.sessions.lock().await;
                             // Kill existing session with same name to prevent resource leaks
                             let old_kubo_name = if let Some(mut old) = sessions.remove(&name) {
-                                // Only decrement kubo count if the session was still running
                                 let kn = if old.is_alive() {
                                     old.kubo.clone()
                                 } else {
@@ -678,7 +736,6 @@ pub async fn handle_request(
                             let gen = sessions.get(&name).map(|s| s.generation).unwrap_or(0);
                             drop(sessions);
 
-                            // Decrement session count for the old session's kubo (if overwriting)
                             if let Some(kn) = old_kubo_name {
                                 let mut kubos = state.kubos.lock().await;
                                 if let Some(kubo) = kubos.get_mut(&kn) {
@@ -687,7 +744,8 @@ pub async fn handle_request(
                             }
 
                             // Restore saved scrollback into the ring buffer
-                            if let Some(scrollback) = super::bundle::load_scrollback(&bundle_path) {
+                            if let Some(scrollback) = super::bundle::load_scrollback(&worktree_path)
+                            {
                                 let mut sessions = state.sessions.lock().await;
                                 if let Some(s) = sessions.get_mut(&name) {
                                     s.buffer.pre_populate(scrollback);
@@ -719,7 +777,7 @@ pub async fn handle_request(
                             Some(DaemonResponse::Opened {
                                 id,
                                 name: session_name,
-                                path: bundle_path.to_string_lossy().to_string(),
+                                path: worktree_path.to_string_lossy().to_string(),
                             })
                         }
                         Err(e) => Some(DaemonResponse::Error {
@@ -1109,76 +1167,13 @@ pub async fn handle_request(
             rows,
             env,
         } => {
-            // Validate names
-            if let Err(e) = super::kubo::validate_name(&abot) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: format!("invalid abot name: {}", e),
-                });
-            }
-            if let Err(e) = super::kubo::validate_name(&kubo) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: format!("invalid kubo name: {}", e),
-                });
+            // Ensure canonical abot + worktree + kubo manifest
+            if let Err(error) = ensure_abot_in_kubo(state, &abot, &kubo).await {
+                return Some(DaemonResponse::Error { id, error });
             }
 
-            // Resolve canonical abots dir and create the canonical abot
-            let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
-            if let Err(e) = std::fs::create_dir_all(&abots_dir) {
-                tracing::warn!("failed to create abots dir: {}", e);
-            }
-            let canonical_path = match super::bundle::create_canonical_abot(&abots_dir, &abot) {
-                Ok(p) => p,
-                Err(e) => {
-                    return Some(DaemonResponse::Error {
-                        id,
-                        error: format!("failed to create canonical abot: {}", e),
-                    })
-                }
-            };
-
-            // Get kubo path
-            let kubo_path = {
-                let kubos = state.kubos.lock().await;
-                match kubos.get(&kubo) {
-                    Some(k) => k.path.clone(),
-                    None => {
-                        return Some(DaemonResponse::Error {
-                            id,
-                            error: format!("kubo '{}' not found", kubo),
-                        })
-                    }
-                }
-            };
-
-            // Create worktree in the kubo
-            if let Err(e) =
-                super::bundle::worktree_add_abot(&canonical_path, &kubo_path, &abot, &kubo)
-            {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to add worktree: {}", e),
-                });
-            }
-
-            // Update kubo manifest
-            match super::kubo::Kubo::read_manifest(&kubo_path) {
-                Ok(mut manifest) => {
-                    if !manifest.abots.contains(&abot) {
-                        manifest.abots.push(abot.clone());
-                        manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
-                        if let Err(e) = super::kubo::Kubo::write_manifest(&kubo_path, &manifest) {
-                            tracing::warn!("failed to write kubo manifest for '{}': {}", kubo, e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("failed to read kubo manifest for '{}': {}", kubo, e);
-                }
-            }
-
-            // Optionally create a session
+            // Optionally create a session (handle_create_session also calls
+            // ensure_abot_in_kubo but it no-ops since everything already exists)
             if create_session {
                 match handle_create_session(
                     state,
@@ -1305,8 +1300,73 @@ fn spawn_output_relay(
     });
 }
 
+/// Ensure a canonical abot exists and has a worktree in the given kubo.
+/// Returns the worktree path (the abot's dir inside the kubo).
+/// Both `handle_create_session` and `AddAbotToKubo` delegate to this.
+async fn ensure_abot_in_kubo(
+    state: &Arc<DaemonState>,
+    name: &str,
+    kubo: &str,
+) -> Result<PathBuf, String> {
+    // Validate names
+    if let Err(e) = super::kubo::validate_name(name) {
+        return Err(format!("invalid abot name: {}", e));
+    }
+    if let Err(e) = super::kubo::validate_name(kubo) {
+        return Err(format!("invalid kubo name: {}", e));
+    }
+
+    // Ensure default kubo exists if "default" requested
+    if kubo == "default" {
+        if let Err(e) = state.ensure_default_kubo().await {
+            return Err(format!("failed to ensure default kubo: {}", e));
+        }
+    }
+
+    // Resolve canonical abots dir and create the canonical abot
+    let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
+    if let Err(e) = std::fs::create_dir_all(&abots_dir) {
+        tracing::warn!("failed to create abots dir: {}", e);
+    }
+    let canonical_path = super::bundle::create_canonical_abot(&abots_dir, name)
+        .map_err(|e| format!("failed to create canonical abot: {}", e))?;
+
+    // Get kubo path
+    let kubo_path = {
+        let kubos = state.kubos.lock().await;
+        match kubos.get(kubo) {
+            Some(k) => k.path.clone(),
+            None => return Err(format!("kubo '{}' not found", kubo)),
+        }
+    };
+
+    // Create worktree in the kubo (skips if already set up)
+    super::bundle::worktree_add_abot(&canonical_path, &kubo_path, name, kubo)
+        .map_err(|e| format!("failed to add worktree: {}", e))?;
+
+    // Update kubo manifest (add abot to list if not present)
+    match super::kubo::Kubo::read_manifest(&kubo_path) {
+        Ok(mut manifest) => {
+            if !manifest.abots.contains(&name.to_string()) {
+                manifest.abots.push(name.to_string());
+                manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                if let Err(e) = super::kubo::Kubo::write_manifest(&kubo_path, &manifest) {
+                    tracing::warn!("failed to write kubo manifest for '{}': {}", kubo, e);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to read kubo manifest for '{}': {}", kubo, e);
+        }
+    }
+
+    let worktree_path = kubo_path.join(name);
+    Ok(worktree_path)
+}
+
 /// Create a PTY session and spawn its output reader task.
 /// The session runs inside the named kubo container via `docker exec`.
+/// Also ensures a canonical abot + worktree exist for the session.
 async fn handle_create_session(
     state: &Arc<DaemonState>,
     id: String,
@@ -1316,37 +1376,11 @@ async fn handle_create_session(
     env: HashMap<String, String>,
     kubo: String,
 ) -> Option<DaemonResponse> {
-    // Ensure default kubo exists if "default" requested
-    if kubo == "default" {
-        if let Err(e) = state.ensure_default_kubo().await {
-            return Some(DaemonResponse::Error {
-                id,
-                error: format!("failed to ensure default kubo: {}", e),
-            });
-        }
-    }
-
-    // Validate names for path safety
-    if let Err(e) = super::kubo::validate_name(&kubo) {
-        return Some(DaemonResponse::Error {
-            id,
-            error: format!("invalid kubo name: {}", e),
-        });
-    }
-    if let Err(e) = super::kubo::validate_name(&name) {
-        return Some(DaemonResponse::Error {
-            id,
-            error: format!("invalid session name: {}", e),
-        });
-    }
-
-    // The abot dir inside the kubo
-    let kubos_dir = state.data_dir.join("kubos");
-    let kubo_path = kubos_dir.join(format!("{}.kubo", &kubo));
-    let abot_dir = kubo_path.join(&name);
-    if let Err(e) = std::fs::create_dir_all(abot_dir.join("home")) {
-        tracing::warn!("failed to pre-create abot home dir: {}", e);
-    }
+    // Ensure canonical abot + worktree + kubo manifest
+    let abot_dir = match ensure_abot_in_kubo(state, &name, &kubo).await {
+        Ok(path) => path,
+        Err(error) => return Some(DaemonResponse::Error { id, error }),
+    };
 
     let backend_result = state
         .create_kubo_backend(&kubo, &name, cols, rows, &env)

@@ -278,7 +278,8 @@ async fn handle_client_message(
     Ok(())
 }
 
-/// Auto-create session if needed, then attach the client to it.
+/// Attach the client to an existing session. Returns an error if the session
+/// doesn't exist — sessions must be created explicitly via AddAbotToKubo.
 async fn handle_attach(
     app: &Arc<AppState>,
     client_id: &str,
@@ -286,35 +287,6 @@ async fn handle_attach(
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<()> {
-    let list_resp = app
-        .daemon_client
-        .rpc(DaemonRequest::ListSessions { id: String::new() })
-        .await?;
-
-    let sessions = list_resp
-        .get("sessions")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    if !sessions.contains(&session.as_str()) {
-        let _ = app
-            .daemon_client
-            .rpc(DaemonRequest::CreateSession {
-                id: String::new(),
-                name: session.clone(),
-                cols,
-                rows,
-                env: std::collections::HashMap::new(),
-                kubo: "default".to_string(),
-            })
-            .await;
-    }
-
     let resp = app
         .daemon_client
         .rpc(DaemonRequest::Attach {
