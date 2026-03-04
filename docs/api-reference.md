@@ -212,11 +212,21 @@ List all sessions.
     "name": "main",
     "alive": true,
     "exitCode": null,
-    "bundlePath": "/home/user/.abot/bundles/main.abot",
-    "dirty": false
+    "bundlePath": "/home/user/.abot/abots/main.abot",
+    "dirty": false,
+    "kubo": null
   }
 ]
 ```
+
+| Field | Description |
+|-------|-------------|
+| `name` | Session name |
+| `alive` | Whether the session process is running |
+| `exitCode` | Exit code if exited, `null` if running |
+| `bundlePath` | Path to the `.abot` bundle directory |
+| `dirty` | Whether the session has unsaved changes |
+| `kubo` | Kubo name the session runs inside |
 
 #### `POST /sessions`
 
@@ -226,6 +236,12 @@ Create a new session.
 
 ```json
 {"name": "my-project"}
+```
+
+Optionally specify a kubo:
+
+```json
+{"name": "my-project", "kubo": "default"}
 ```
 
 **Response:**
@@ -243,8 +259,9 @@ Get session details.
   "name": "main",
   "alive": true,
   "exitCode": null,
-  "bundlePath": "/home/user/.abot/bundles/main.abot",
-  "dirty": false
+  "bundlePath": "/home/user/.abot/abots/main.abot",
+  "dirty": false,
+  "kubo": null
 }
 ```
 
@@ -292,10 +309,10 @@ Open an existing `.abot` bundle and create a session from it.
 
 #### `POST /sessions/{name}/save`
 
-Save session metadata to its existing bundle path.
+Save session metadata to its existing bundle path. Also auto-commits the abot's git repo.
 
 ```json
-{"session": "main", "path": "/home/user/.abot/bundles/main.abot"}
+{"session": "main", "path": "/home/user/.abot/abots/main.abot"}
 ```
 
 #### `POST /sessions/{name}/save-as`
@@ -384,7 +401,7 @@ Get instance configuration.
 ```json
 {
   "instanceName": "abot",
-  "bundleDir": "~/.abot/bundles"
+  "bundleDir": "~/.abot/abots"
 }
 ```
 
@@ -397,7 +414,7 @@ Get instance configuration.
 #### `PUT /api/config/bundle-dir`
 
 ```json
-{"bundleDir": "/path/to/bundles"}
+{"bundleDir": "/path/to/abots"}
 ```
 
 ### File Browser
@@ -651,7 +668,7 @@ The server and daemon communicate over a **Unix domain socket** (`~/.abot/daemon
 - **Fire-and-forget** messages have no `"id"` → no response
 - **Broadcast events** from daemon have no `"id"` → pushed to all server connections
 
-### RPC Requests
+### Session RPC Requests
 
 #### list-sessions
 
@@ -662,7 +679,7 @@ The server and daemon communicate over a **Unix domain socket** (`~/.abot/daemon
 Response:
 
 ```json
-{"id": "req-1", "sessions": [{"name": "main", "alive": true, ...}]}
+{"id": "req-1", "sessions": [{"name": "main", "alive": true, "kubo": null, ...}]}
 ```
 
 #### create-session
@@ -671,9 +688,18 @@ Response:
 {
   "type": "create-session", "id": "req-2",
   "name": "my-project", "cols": 120, "rows": 40,
-  "env": {"EDITOR": "vim"}
+  "env": {"EDITOR": "vim"},
+  "kubo": "default"
 }
 ```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `name` | Yes | | Session name |
+| `cols` | No | `120` | Terminal columns |
+| `rows` | No | `40` | Terminal rows |
+| `env` | No | `{}` | Per-session environment variables |
+| `kubo` | Yes | | Kubo name — session runs inside this kubo container via `docker exec` |
 
 #### get-session
 
@@ -760,6 +786,120 @@ Response:
 
 ```json
 {"id": "req-12"}
+```
+
+### Kubo RPC Requests
+
+#### list-kubos
+
+List all kubos with their status.
+
+```json
+{"type": "list-kubos", "id": "req-20"}
+```
+
+Response:
+
+```json
+{
+  "id": "req-20",
+  "kubos": [
+    {
+      "name": "default",
+      "path": "/home/user/.abot/kubos/default.kubo",
+      "running": true,
+      "activeSessions": 2
+    }
+  ]
+}
+```
+
+#### create-kubo
+
+Create a new kubo (shared runtime room).
+
+```json
+{"type": "create-kubo", "id": "req-21", "name": "ml"}
+```
+
+Response:
+
+```json
+{"id": "req-21", "name": "ml", "path": "/home/user/.abot/kubos/ml.kubo"}
+```
+
+#### stop-kubo
+
+Stop a kubo container (does not delete the kubo directory).
+
+```json
+{"type": "stop-kubo", "id": "req-22", "name": "default"}
+```
+
+Response:
+
+```json
+{"id": "req-22", "name": "default"}
+```
+
+#### add-abot-to-kubo
+
+Employ an abot into a kubo. Creates a canonical abot repo if it doesn't exist, creates a `kubo/<kubo-name>` branch, and adds it as a git worktree inside the kubo directory.
+
+```json
+{"type": "add-abot-to-kubo", "id": "req-23", "kubo": "default", "abot": "alice"}
+```
+
+Response:
+
+```json
+{"id": "req-23", "kubo": "default", "abot": "alice"}
+```
+
+### Abot Git RPC Requests
+
+#### clone-abot
+
+Clone an abot bundle (creates a copy with a new name).
+
+```json
+{"type": "clone-abot", "id": "req-30", "source": "main", "target": "main-backup"}
+```
+
+Response:
+
+```json
+{
+  "id": "req-30",
+  "source": "main",
+  "target": "main-backup",
+  "path": "/home/user/.abot/abots/main-backup.abot"
+}
+```
+
+#### abot-git
+
+Run a git operation on an abot's repository.
+
+```json
+{"type": "abot-git", "id": "req-31", "abot": "main", "op": "status"}
+```
+
+| `op` value | Git command | Description |
+|------------|-------------|-------------|
+| `status` | `git status --porcelain` | Show working tree status |
+| `log` | `git log --oneline -20` | Show recent commit history |
+| `diff` | `git diff` | Show uncommitted changes |
+
+Response:
+
+```json
+{
+  "id": "req-31",
+  "abot": "main",
+  "op": "status",
+  "output": "M  home/project/src/main.rs\n"
+}
 ```
 
 ### Fire-and-Forget Messages

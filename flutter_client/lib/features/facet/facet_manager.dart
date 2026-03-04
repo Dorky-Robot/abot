@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import '../../core/network/api_client.dart';
+import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import 'facet.dart';
@@ -89,8 +90,7 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
   }
 
   /// Create a new session on the server, add a facet, and attach via WS.
-  /// If [kubo] is provided, the session runs inside that kubo.
-  Future<FacetData> createNewSession({String? kubo}) async {
+  Future<FacetData> createNewSession({String kubo = 'default'}) async {
     final sessionName = 'session-$_nextSessionId';
     _nextSessionId++;
 
@@ -99,6 +99,22 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     } on ApiException catch (e) {
       if (e.statusCode != 409) rethrow;
     }
+
+    final facet = create(sessionName);
+    ref.read(wsServiceProvider.notifier).attachSession(sessionName);
+    return facet;
+  }
+
+  /// Create a named abot in a kubo: canonical abot + worktree + session + facet.
+  Future<FacetData> createAbotInKubo(String abotName, {String kubo = 'default'}) async {
+    final result = await ref.read(kuboServiceProvider.notifier).addAbotToKubo(
+      kubo,
+      abotName,
+      createSession: true,
+    );
+
+    // The session name is the abot name (returned by the daemon)
+    final sessionName = result['session'] as String? ?? abotName;
 
     final facet = create(sessionName);
     ref.read(wsServiceProvider.notifier).attachSession(sessionName);

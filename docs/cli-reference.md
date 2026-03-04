@@ -42,7 +42,7 @@ If the daemon is already running, it is reused — only the server starts.
 
 ### daemon
 
-Run the daemon directly. The daemon is the PTY session owner — it manages Docker containers (or local PTY processes) and communicates with the server over a Unix socket.
+Run the daemon directly. The daemon is the PTY session owner — it manages kubo containers and communicates with the server over a Unix socket.
 
 ```bash
 abot daemon
@@ -54,10 +54,13 @@ abot daemon --data-dir /tmp/abot
 
 **What it does:**
 
-- Detects backend: Docker (if `/var/run/docker.sock` exists) or local PTY
+- Detects Docker backend (requires `/var/run/docker.sock`)
+- Migrates v1 data dir (`bundles/` → `abots/`) if needed
+- Loads existing kubos from `~/.abot/kubos/`
 - Listens on `~/.abot/daemon.sock` (mode `0600`)
 - Writes `~/.abot/daemon.pid`
-- Starts autosave loop (every 5 minutes for dirty sessions)
+- Starts autosave loop (every 5 min for dirty sessions — metadata + git auto-commit)
+- Starts kubo idle-check loop (every 60s — stops idle kubo containers)
 - Handles NDJSON IPC requests from the server
 
 ### serve

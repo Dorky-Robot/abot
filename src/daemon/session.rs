@@ -33,7 +33,7 @@ pub struct Session {
     pub bundle_path: Option<PathBuf>,
     /// Whether the session has unsaved changes since last save.
     pub dirty: bool,
-    /// Kubo this session belongs to (None = legacy standalone session).
+    /// Kubo this session belongs to.
     pub kubo: Option<String>,
     /// Monotonic generation — incremented on each session creation so stale
     /// output relays can detect they belong to an overwritten session.

@@ -21,13 +21,30 @@ The directory is created automatically with `0700` permissions (owner-only acces
   daemon.pid           ← Daemon PID file
   daemon.log           ← Daemon stdout/stderr log
   server.pid           ← Server PID file (for rolling updates)
-  bundles/             ← Session bundles
+  abots/               ← Canonical abot repos (v2, git-backed)
     main.abot/
-      manifest.json    ← Name, version, timestamps, image
-      credentials.json ← API keys
+      .git/            ← Auto-initialized git repo, owns all history
+      .gitignore       ← Excludes credentials, scrollback, caches
+      manifest.json    ← Name, version 2, timestamps, image
+      credentials.json ← API keys (standalone use; excluded from git)
       config.json      ← Shell, resource limits, env vars
-      home/            ← Bind-mounted as /home/dev in Docker container
+      scrollback       ← Terminal scrollback (persisted across close/reopen)
+      home/            ← Bind-mounted into kubo container
+  kubos/               ← Shared runtime rooms (NOT git repos)
+    default.kubo/
+      manifest.json    ← Name, version, abots list
+      credentials.json ← Kubo-level API keys (injected into container)
+      Dockerfile       ← Optional custom image
+      alice/           ← Git worktree of alice.abot on branch kubo/default
+        .git           ← File (not dir), points to alice.abot/.git
+        home/          ← Bind-mounted as /home/abots/alice/home
+      bob/             ← Git worktree of bob.abot on branch kubo/default
+        .git
+        home/
 ```
+
+!!! note "Migration from v1"
+    If you have an existing `~/.abot/bundles/` directory from a v1 install, the daemon auto-migrates it to `~/.abot/abots/` on startup. Each abot is initialized as a git repo, and a default kubo is created.
 
 ## config.toml
 
@@ -50,14 +67,14 @@ Instance configuration managed via the REST API.
 ```json
 {
   "instanceName": "my-abot",
-  "bundleDir": "~/.abot/bundles"
+  "bundleDir": "~/.abot/abots"
 }
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `instanceName` | `"abot"` | Display name for this instance |
-| `bundleDir` | `~/.abot/bundles` | Where session bundles are stored |
+| `bundleDir` | `~/.abot/abots` | Where session bundles are stored |
 
 **Endpoints:**
 
@@ -97,17 +114,17 @@ Session metadata. Managed automatically by save/open operations.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "name": "my-project",
-  "created_at": "2025-06-15T10:30:00Z",
-  "updated_at": "2025-06-15T14:22:00Z",
+  "created_at": "2026-03-01T10:30:00Z",
+  "updated_at": "2026-03-01T14:22:00Z",
   "image": "abot-session"
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `version` | Format version (always `1`) |
+| `version` | Format version (`2` for git-backed bundles; v1 auto-migrated on open) |
 | `name` | Session name |
 | `created_at` | Original creation time (preserved across saves) |
 | `updated_at` | Last save time |
@@ -120,7 +137,7 @@ Session runtime configuration.
 ```json
 {
   "shell": "/bin/bash",
-  "memory_mb": 512,
+  "memory_mb": 2048,
   "cpu_percent": 50,
   "env": {
     "EDITOR": "vim",
@@ -132,7 +149,7 @@ Session runtime configuration.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `shell` | `/bin/bash` | Shell to spawn in the container |
-| `memory_mb` | `512` | Container memory limit in MB |
+| `memory_mb` | `2048` | Container memory limit in MB |
 | `cpu_percent` | `50` | CPU limit as percentage of one core |
 | `env` | `{}` | Custom environment variables |
 
@@ -153,7 +170,55 @@ Sensitive credentials injected into the container environment.
 | `claude_token` | `CLAUDE_CODE_OAUTH_TOKEN` |
 
 !!! warning
-    `credentials.json` contains sensitive data. The `~/.abot/` directory is created with `0700` permissions. Never commit bundle directories to version control.
+    `credentials.json` contains sensitive data and is excluded from git via `.gitignore`. The `~/.abot/` directory is created with `0700` permissions. The `credentials.json` file itself has `0600` permissions.
+
+!!! info "Kubo vs abot credentials"
+    When an abot is employed in a kubo, **credentials come from the kubo** (`kubo-name.kubo/credentials.json`), not from the abot's own `credentials.json`. This ensures credentials never travel when abots are shared between users or kubos. Standalone abots (not in any kubo) use their own `credentials.json`.
+
+## Kubo Configuration
+
+Each kubo has a manifest, optional Dockerfile, and kubo-level credentials. A kubo is **not** a git repo — it's infrastructure. Abots inside it are git worktrees from their canonical repos.
+
+### Kubo Credentials
+
+```json
+{
+  "api_key": "sk-ant-...",
+  "claude_token": "oauth-..."
+}
+```
+
+Stored at `~/.abot/kubos/{name}.kubo/credentials.json`. These credentials are injected into the container environment for all abots in the kubo, replacing any per-abot credentials.
+
+### Kubo Manifest
+
+```json
+{
+  "version": 1,
+  "name": "default",
+  "created_at": "2026-03-01T10:00:00Z",
+  "updated_at": "2026-03-01T10:00:00Z",
+  "abots": ["alice", "bob"]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `version` | Kubo manifest version (currently `1`) |
+| `name` | Kubo name |
+| `created_at` | Creation timestamp |
+| `updated_at` | Last modification timestamp |
+| `abots` | List of abot names currently in the kubo |
+
+### Custom Dockerfile
+
+Place a `Dockerfile` in the kubo directory to build a custom image:
+
+```
+~/.abot/kubos/ml.kubo/Dockerfile
+```
+
+When present, abot builds an image named `abot-kubo-{name}` (e.g., `abot-kubo-ml`) from it on container start.
 
 ## SQLite Database
 
@@ -183,13 +248,18 @@ abot requires Docker for all sessions:
 - **Docker socket** at `/var/run/docker.sock`
 - **Image**: `abot-session` (custom) or `alpine:3` (fallback, pulled automatically)
 
-### Container Defaults
+### Container Defaults (Kubo)
+
+All sessions run inside kubo containers.
 
 | Setting | Value | Configurable? |
 |---------|-------|--------------|
 | User | `1000:1000` | No |
-| Memory | 512 MB | Yes (per-bundle `config.json`) |
-| CPU | 50% of one core | Yes (per-bundle `config.json`) |
-| PIDs | 256 max | No |
+| Memory | 2 GB | No |
+| CPU | 100% of one core | No |
+| PIDs | 512 max | No |
 | Capabilities | All dropped | No |
 | Security | no-new-privileges | No |
+| Image | Custom Dockerfile per kubo | Yes |
+| Home mount | `→ /home/abots/` | No |
+| Idle timeout | 5 minutes | No |

@@ -50,6 +50,27 @@ class KuboServiceNotifier extends AsyncNotifier<List<KuboInfo>> {
     state = AsyncData(await listKubos());
   }
 
+  /// Add an abot to a kubo. When [createSession] is true, also creates a
+  /// terminal session and returns the response (including session name).
+  Future<Map<String, dynamic>> addAbotToKubo(
+    String kuboName,
+    String abotName, {
+    bool createSession = false,
+    int cols = 120,
+    int rows = 40,
+  }) async {
+    final body = <String, dynamic>{
+      'abot': abotName,
+      'createSession': createSession,
+      'cols': cols,
+      'rows': rows,
+    };
+    final data = await _api.post('/kubos/${Uri.encodeComponent(kuboName)}/abots', body);
+    // Refresh kubo list to pick up new abot count
+    state = AsyncData(await listKubos());
+    return data as Map<String, dynamic>;
+  }
+
   /// Refresh the kubo list.
   Future<void> refresh() async {
     state = AsyncData(await listKubos());

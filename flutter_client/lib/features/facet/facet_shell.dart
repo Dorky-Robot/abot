@@ -229,10 +229,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   // --- Facet lifecycle ---
 
-  Future<void> _createNewFacet({String? kubo}) async {
-    // Default to "default" kubo so all sessions are kubo-aware
-    final effectiveKubo = kubo ?? 'default';
-    await ref.read(facetManagerProvider.notifier).createNewSession(kubo: effectiveKubo);
+  Future<void> _createNewFacet({String kubo = 'default'}) async {
+    await ref.read(facetManagerProvider.notifier).createNewSession(kubo: kubo);
     if (!mounted) return;
     // Refresh kubo list (active session count may have changed)
     ref.read(kuboServiceProvider.notifier).refresh();
@@ -255,7 +253,29 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  Future<String?> _showNewKuboDialog() {
+  /// Show a dialog to name a new abot, then add it to a kubo and open a session.
+  Future<void> _addAbotToKubo(String kubo) async {
+    final name = await _showNewAbotDialog(kubo);
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      await ref.read(facetManagerProvider.notifier).createAbotInKubo(name, kubo: kubo);
+      if (!mounted) return;
+      ref.read(kuboServiceProvider.notifier).refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to add abot: $e')),
+      );
+    }
+  }
+
+  Future<String?> _showNewAbotDialog(String kuboName) =>
+      _showNameDialog(title: 'New Abot in $kuboName', hint: 'abot name');
+
+  Future<String?> _showNewKuboDialog() =>
+      _showNameDialog(title: 'New Kubo', hint: 'kubo name');
+
+  Future<String?> _showNameDialog({required String title, required String hint}) {
     final controller = TextEditingController();
     return showDialog<String>(
       context: context,
@@ -263,7 +283,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
         final p = ctx.palette;
         return AlertDialog(
           backgroundColor: p.base,
-          title: Text('New Kubo',
+          title: Text(title,
               style: TextStyle(
                   color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
           content: TextField(
@@ -272,7 +292,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
             style: TextStyle(
                 color: p.text, fontFamily: AbotFonts.mono, fontSize: 13),
             decoration: InputDecoration(
-              hintText: 'kubo name',
+              hintText: hint,
               hintStyle: TextStyle(color: p.overlay0, fontFamily: AbotFonts.mono),
               enabledBorder: UnderlineInputBorder(
                   borderSide: BorderSide(color: p.surface1)),
@@ -772,7 +792,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onSessionSettings: (name) =>
                   setState(() => _sessionSettingsName = name),
               onNewSession: _createNewFacet,
-              onNewSessionInKubo: (kubo) => _createNewFacet(kubo: kubo),
+              onNewSessionInKubo: (kubo) => _addAbotToKubo(kubo),
               onNewKubo: _createNewKubo,
               onOpenBundle: _openBundle,
               onKuboSettings: (name) {
