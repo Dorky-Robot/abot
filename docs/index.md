@@ -37,6 +37,16 @@ Traditional terminal multiplexers (tmux, screen) give you session persistence bu
 - **Passwordless** — WebAuthn passkeys, no passwords ever
 - **Session persistence** — the daemon survives server restarts; rolling updates don't drop sessions
 
+## Install Story
+
+abot is designed so that anyone can install it — not just developers.
+
+The server is a single compiled binary that runs directly on the host. No runtime, no dependencies, no configuration. It works on macOS, Linux, and Windows. Download it, run it, open a browser. You're in.
+
+Docker is only needed when you create your first session — that's where the sandboxed containers live. If Docker isn't installed yet, abot will walk you through setting it up with a guided setup wizard. No terminal commands, no editing config files. Just follow the steps.
+
+This separation is intentional. The server should always start. The UI should always load. The setup wizard handles the rest progressively, so you're never blocked by prerequisites you don't understand yet.
+
 ## Architecture at a Glance
 
 ```

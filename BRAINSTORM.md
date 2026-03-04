@@ -42,7 +42,7 @@ The core abstraction isn't "apps" or "windows." It's **sessions** — persistent
 A session is:
 - A running context (terminal, conversation, canvas, or something custom)
 - Persistent across disconnects and restarts
-- Isolated (optionally in Docker)
+- Isolated in Docker containers
 - Shareable across devices
 - Aware of who's in it (human, AI, or both)
 
@@ -109,14 +109,13 @@ Single binary. Embeds the client assets. Self-provisions.
 **Boot sequence:**
 ```
 $ abot
-  → Detect environment (Docker? GPU? Network?)
   → Initialize data directory (~/.abot/)
-  → Start server on first available port
+  → Start daemon + server
   → Open browser
   → Ready.
 ```
 
-No config needed. No install wizard. It just works.
+No config needed. The binary runs on the host with zero dependencies. Docker is only checked when a session is created — if it's missing, the UI guides you through setup.
 
 **Key crates:**
 - `axum` — HTTP + WebSocket
@@ -172,7 +171,7 @@ enum SessionState {
 - Base image includes common tools + AI tooling
 - Project directories bind-mounted
 - Container survives disconnects (session persistence)
-- Without Docker: sessions run as host PTY (degraded but functional)
+- Without Docker: session creation fails with a clear error; setup wizard guides installation
 
 ### Auth (From Katulong)
 
@@ -230,31 +229,33 @@ Claude Code is a primary use case:
 
 ## Self-Provisioning
 
-The binary works out of the box and progressively enables capabilities:
+The binary runs on the host with zero prerequisites. The server and UI always work. Docker is only needed when you create a session — and if it's missing, a setup wizard guides you through installing it.
+
+This is the key insight: **the server should never fail to start.** A normal person downloads the binary, runs it, opens a browser, and sees a working UI. No terminal commands, no config files, no "install these 5 things first." The wizard handles provisioning progressively.
 
 ```
-Tier 0: Just the binary
+Step 1: Run the binary
   → Web server + client + passkey auth
-  → Sessions run as host PTY processes
-  → Everything works, no isolation
+  → UI loads, setup wizard available
+  → Works on macOS, Linux, Windows
 
-Tier 1: Docker available
-  → Sessions run in containers
-  → Isolation between sessions
-  → Reproducible environments
+Step 2: Create first session (Docker needed)
+  → If Docker is missing, wizard walks you through setup
+  → If Docker is present, session launches in a container
+  → Each session is sandboxed with resource limits
 
-Tier 2: AI tooling available
+Step 3: AI tooling (optional)
   → Claude Code, other AI tools in containers
   → Rich rendering of AI agent output
   → Context bridging between sessions
 
-Tier 3: Network accessible
+Step 4: Network access (optional)
   → Remote access with full auth
   → Device pairing
   → Multi-device session sharing
 ```
 
-Each tier builds on the previous. The binary detects what's available and enables capabilities accordingly. No configuration required.
+Each step builds on the previous. The binary detects what's available and the wizard handles what's missing. No configuration required.
 
 ---
 

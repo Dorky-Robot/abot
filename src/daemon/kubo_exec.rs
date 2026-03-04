@@ -60,7 +60,11 @@ impl KuboExecBackend {
             .create_exec(
                 container_id,
                 CreateExecOptions {
-                    cmd: Some(vec!["/bin/bash", "-l"]),
+                    cmd: Some(vec![
+                        "/bin/sh",
+                        "-lc",
+                        "exec bash -l 2>/dev/null || exec sh -l",
+                    ]),
                     tty: Some(true),
                     attach_stdin: Some(true),
                     attach_stdout: Some(true),

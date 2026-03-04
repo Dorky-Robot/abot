@@ -609,6 +609,7 @@ pub async fn handle_request(
                                 backend,
                                 bundle.env.clone(),
                                 Some(bundle_path.clone()),
+                                None,
                             );
                             let session_name = session.name.clone();
 
@@ -1114,6 +1115,7 @@ async fn handle_create_session(
     kubo: Option<String>,
 ) -> Option<DaemonResponse> {
     // Determine which backend to use
+    let kubo_for_session = kubo.clone();
     let (backend_result, bundle_path) = if let Some(kubo_name) = kubo {
         // Kubo path: ensure default kubo exists if "default" requested
         if kubo_name == "default" {
@@ -1163,7 +1165,13 @@ async fn handle_create_session(
                 let _ = super::bundle::save_bundle(bp, &name, &env).await;
             }
 
-            let session = Session::new(name.clone(), backend, env, bundle_path.clone());
+            let session = Session::new(
+                name.clone(),
+                backend,
+                env,
+                bundle_path.clone(),
+                kubo_for_session,
+            );
             let session_name = session.name.clone();
 
             let output_tx = state.output_tx.clone();

@@ -305,13 +305,18 @@ impl Kubo {
         Ok(())
     }
 
-    /// Ensure an abot's home directory exists inside this kubo.
+    /// Ensure an abot's home directory exists inside this kubo,
+    /// and initialize it as a git repo if it isn't one already.
     pub fn ensure_abot_home(&self, abot_name: &str) -> Result<PathBuf> {
         let abot_dir = self.path.join(abot_name);
         let home_dir = abot_dir.join("home");
         std::fs::create_dir_all(&home_dir).with_context(|| {
             format!("failed to create abot home in kubo: {}", home_dir.display())
         })?;
+        // Initialize git repo (idempotent — skips if .git already exists)
+        if let Err(e) = super::bundle::git_init_abot(&abot_dir) {
+            tracing::warn!("failed to git-init abot {}: {}", abot_name, e);
+        }
         Ok(abot_dir)
     }
 

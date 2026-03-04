@@ -89,12 +89,13 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
   }
 
   /// Create a new session on the server, add a facet, and attach via WS.
-  Future<FacetData> createNewSession() async {
+  /// If [kubo] is provided, the session runs inside that kubo.
+  Future<FacetData> createNewSession({String? kubo}) async {
     final sessionName = 'session-$_nextSessionId';
     _nextSessionId++;
 
     try {
-      await ref.read(sessionServiceProvider.notifier).createSession(sessionName);
+      await ref.read(sessionServiceProvider.notifier).createSession(sessionName, kubo: kubo);
     } on ApiException catch (e) {
       if (e.statusCode != 409) rethrow;
     }
@@ -157,9 +158,8 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     return facet;
   }
 
-  /// Remove a facet by ID (must have >1 facet).
+  /// Remove a facet by ID.
   void remove(String facetId) {
-    if (state.facets.length <= 1) return;
 
     final newFacets = Map<String, FacetData>.from(state.facets);
     newFacets.remove(facetId);
@@ -186,6 +186,7 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     if (!state.facets.containsKey(facetId)) return;
     if (facetId == state.focusedId) return;
     state = state.copyWith(focusedId: facetId);
+    _persistFocused();
   }
 
   /// Persist current facet order as session names to localStorage.
@@ -196,6 +197,18 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
         .toList();
     web.window.localStorage
         .setItem('abot_facet_order', jsonEncode(names));
+  }
+
+  /// Persist the focused session name to localStorage.
+  void _persistFocused() {
+    final name = state.focusedId != null
+        ? state.facets[state.focusedId]?.sessionName
+        : null;
+    if (name != null) {
+      web.window.localStorage.setItem('abot_focused_session', name);
+    } else {
+      web.window.localStorage.removeItem('abot_focused_session');
+    }
   }
 
   /// Restore persisted sidebar order after facets have been created.
@@ -234,5 +247,15 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
 
     state = state.copyWith(order: newOrder);
     _persistOrder();
+
+    // Restore focused session.
+    final focusedName =
+        web.window.localStorage.getItem('abot_focused_session');
+    if (focusedName != null) {
+      final focusedId = nameToId[focusedName];
+      if (focusedId != null) {
+        state = state.copyWith(focusedId: focusedId);
+      }
+    }
   }
 }

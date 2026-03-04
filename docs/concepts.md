@@ -2,7 +2,7 @@
 
 ## Sessions
 
-A **session** is the core abstraction in abot. Each session is a server-side resource — a PTY process running inside a Docker container (or a local PTY if Docker is unavailable). Only terminal I/O crosses the wire between client and server.
+A **session** is the core abstraction in abot. Each session is a server-side resource — a PTY process running inside a Docker container. Only terminal I/O crosses the wire between client and server.
 
 Sessions persist across server restarts because the **daemon** owns them independently. You can restart, update, or crash the server and every session keeps running.
 
@@ -180,7 +180,7 @@ If an attacker has localhost access to your machine, they already have full syst
 
 ## Docker Backend
 
-When Docker is available, each session runs in an isolated container:
+Every session runs in an isolated Docker container:
 
 | Setting | Value |
 |---------|-------|
@@ -192,4 +192,5 @@ When Docker is available, each session runs in an isolated container:
 | **Security** | All capabilities dropped, no-new-privileges |
 | **Home** | Bind-mounted from `~/.abot/bundles/{name}.abot/home/` |
 
-When Docker is unavailable, abot falls back to **local PTY** sessions using the `portable-pty` crate — same session management, but without container isolation.
+!!! note
+    The abot server itself runs directly on the host as a single binary — no Docker needed to start it. Docker is only required when you create a session. If Docker isn't running, session creation returns a clear error message.

@@ -29,6 +29,8 @@ pub struct Session {
     pub bundle_path: Option<PathBuf>,
     /// Whether the session has unsaved changes since last save.
     pub dirty: bool,
+    /// Kubo this session belongs to (None = legacy standalone session).
+    pub kubo: Option<String>,
 }
 
 impl Session {
@@ -37,6 +39,7 @@ impl Session {
         backend: Box<dyn SessionBackend>,
         env: HashMap<String, String>,
         bundle_path: Option<PathBuf>,
+        kubo: Option<String>,
     ) -> Self {
         let shared_name = Arc::new(Mutex::new(name.clone()));
         Self {
@@ -48,6 +51,7 @@ impl Session {
             env,
             bundle_path,
             dirty: false,
+            kubo,
         }
     }
 
@@ -88,6 +92,7 @@ impl Session {
             "envKeys": self.env.len(),
             "bundlePath": self.bundle_path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "dirty": self.dirty,
+            "kubo": self.kubo,
         })
     }
 }
@@ -124,6 +129,7 @@ mod tests {
             Box::new(StubBackend),
             HashMap::new(),
             None,
+            None,
         );
         let task_name = session.shared_name.clone();
 
@@ -140,7 +146,13 @@ mod tests {
 
     #[test]
     fn session_lifecycle() {
-        let mut session = Session::new("test".into(), Box::new(StubBackend), HashMap::new(), None);
+        let mut session = Session::new(
+            "test".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            None,
+        );
         assert!(session.is_alive());
         assert_eq!(session.status, SessionStatus::Running);
 
@@ -155,14 +167,26 @@ mod tests {
 
     #[test]
     fn write_to_exited_session_fails() {
-        let mut session = Session::new("test".into(), Box::new(StubBackend), HashMap::new(), None);
+        let mut session = Session::new(
+            "test".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            None,
+        );
         session.mark_exited(0);
         assert!(session.write(b"hello").is_err());
     }
 
     #[test]
     fn new_session_starts_clean() {
-        let session = Session::new("s".into(), Box::new(StubBackend), HashMap::new(), None);
+        let session = Session::new(
+            "s".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            None,
+        );
         assert!(!session.dirty);
         assert!(session.bundle_path.is_none());
     }
@@ -175,6 +199,7 @@ mod tests {
             Box::new(StubBackend),
             HashMap::new(),
             Some(path.clone()),
+            None,
         );
         assert_eq!(session.bundle_path, Some(path));
         assert!(!session.dirty);
@@ -188,6 +213,7 @@ mod tests {
             Box::new(StubBackend),
             HashMap::new(),
             Some(path),
+            None,
         );
         let json = session.to_json();
         assert_eq!(json["bundlePath"], "/home/user/project.abot");
@@ -200,7 +226,13 @@ mod tests {
 
     #[test]
     fn to_json_bundle_path_null_when_none() {
-        let session = Session::new("s".into(), Box::new(StubBackend), HashMap::new(), None);
+        let session = Session::new(
+            "s".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            None,
+        );
         let json = session.to_json();
         assert!(json["bundlePath"].is_null());
         assert_eq!(json["dirty"], false);
@@ -208,11 +240,59 @@ mod tests {
 
     #[test]
     fn dirty_flag_is_mutable() {
-        let mut session = Session::new("s".into(), Box::new(StubBackend), HashMap::new(), None);
+        let mut session = Session::new(
+            "s".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            None,
+        );
         assert!(!session.dirty);
         session.dirty = true;
         assert!(session.dirty);
         session.dirty = false;
         assert!(!session.dirty);
+    }
+
+    #[test]
+    fn to_json_kubo_null_when_none() {
+        let session = Session::new(
+            "s".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            None,
+        );
+        let json = session.to_json();
+        assert!(json["kubo"].is_null());
+    }
+
+    #[test]
+    fn to_json_kubo_present_when_set() {
+        let session = Session::new(
+            "s".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            Some("ml".into()),
+        );
+        let json = session.to_json();
+        assert_eq!(json["kubo"], "ml");
+    }
+
+    #[test]
+    fn new_session_with_kubo() {
+        let session = Session::new(
+            "abot1".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            Some(PathBuf::from("/kubos/default.kubo/abot1")),
+            Some("default".into()),
+        );
+        assert_eq!(session.kubo, Some("default".to_string()));
+        assert!(session.is_alive());
+        let json = session.to_json();
+        assert_eq!(json["kubo"], "default");
+        assert_eq!(json["name"], "abot1");
     }
 }
