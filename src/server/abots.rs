@@ -78,6 +78,27 @@ pub async fn remove_abot(
     }
 }
 
+/// Shared handler for variant lifecycle operations (dismiss/integrate/discard).
+async fn variant_op(
+    app: &AppState,
+    name: String,
+    kubo: String,
+    make_request: impl FnOnce(String, String, String) -> DaemonRequest,
+    response_key: &str,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let resp = app
+        .daemon_client
+        .rpc(make_request(String::new(), name.clone(), kubo.clone()))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
+        Err(AppError::BadRequest(error.to_string()))
+    } else {
+        Ok(Json(json!({ response_key: name, "kubo": kubo })))
+    }
+}
+
 /// POST /abots/{name}/dismiss — remove worktree but keep branch as past variant
 pub async fn dismiss_variant(
     _csrf: CsrfVerified,
@@ -85,21 +106,14 @@ pub async fn dismiss_variant(
     Path(name): Path<String>,
     Json(body): Json<KuboBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resp = app
-        .daemon_client
-        .rpc(DaemonRequest::DismissVariant {
-            id: String::new(),
-            abot: name.clone(),
-            kubo: body.kubo.clone(),
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        Ok(Json(json!({ "dismissed": name, "kubo": body.kubo })))
-    }
+    variant_op(
+        &app,
+        name,
+        body.kubo,
+        |id, abot, kubo| DaemonRequest::DismissVariant { id, abot, kubo },
+        "dismissed",
+    )
+    .await
 }
 
 /// POST /abots/{name}/integrate — merge a kubo variant into the default branch
@@ -109,21 +123,14 @@ pub async fn integrate_variant(
     Path(name): Path<String>,
     Json(body): Json<KuboBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resp = app
-        .daemon_client
-        .rpc(DaemonRequest::IntegrateVariant {
-            id: String::new(),
-            abot: name.clone(),
-            kubo: body.kubo.clone(),
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        Ok(Json(json!({ "integrated": name, "kubo": body.kubo })))
-    }
+    variant_op(
+        &app,
+        name,
+        body.kubo,
+        |id, abot, kubo| DaemonRequest::IntegrateVariant { id, abot, kubo },
+        "integrated",
+    )
+    .await
 }
 
 /// POST /abots/{name}/discard — delete a kubo variant branch
@@ -133,19 +140,12 @@ pub async fn discard_variant(
     Path(name): Path<String>,
     Json(body): Json<KuboBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resp = app
-        .daemon_client
-        .rpc(DaemonRequest::DiscardVariant {
-            id: String::new(),
-            abot: name.clone(),
-            kubo: body.kubo.clone(),
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        Ok(Json(json!({ "discarded": name, "kubo": body.kubo })))
-    }
+    variant_op(
+        &app,
+        name,
+        body.kubo,
+        |id, abot, kubo| DaemonRequest::DiscardVariant { id, abot, kubo },
+        "discarded",
+    )
+    .await
 }

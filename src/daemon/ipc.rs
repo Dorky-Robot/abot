@@ -1531,7 +1531,6 @@ async fn close_session_in_kubo(state: &Arc<DaemonState>, abot: &str, kubo: &str)
     }
 }
 
-/// Remove an abot from a kubo's manifest (shared helper for variant lifecycle).
 /// Build a map of abot name → kubo name for all active sessions.
 async fn build_session_kubos(
     state: &Arc<DaemonState>,
@@ -1710,9 +1709,6 @@ fn spawn_output_relay(
     });
 }
 
-/// Ensure a canonical abot exists and has a worktree in the given kubo.
-/// Returns the worktree path (the abot's dir inside the kubo).
-/// Both `handle_create_session` and `AddAbotToKubo` delegate to this.
 /// Add an abot (by canonical path) into a kubo: worktree + manifest update.
 /// Returns the worktree path inside the kubo directory.
 async fn add_abot_to_kubo(

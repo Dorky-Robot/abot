@@ -738,7 +738,14 @@ fn force_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()>
 pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
     commit_and_remove_worktree(canonical_path, kubo_branch)?;
 
-    // Merge the kubo branch into the current (default) branch
+    // Ensure we're on the default branch before merging
+    let default_branch = run_git(canonical_path, &["symbolic-ref", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "main".to_string());
+    run_git(canonical_path, &["checkout", &default_branch])
+        .with_context(|| format!("failed to checkout default branch '{}'", default_branch))?;
+
+    // Merge the kubo branch into the default branch
     let merge_output = run_git(canonical_path, &["merge", kubo_branch, "--no-edit"]);
     if merge_output.is_err() {
         let _ = run_git(canonical_path, &["merge", "--abort"]);
