@@ -682,47 +682,42 @@ pub fn worktree_remove_abot(
 
 // ── Variant lifecycle ────────────────────────────────────────────
 
+/// Find the filesystem path of a worktree checked out on `kubo_branch`, if any.
+fn find_worktree_path(canonical_path: &Path, kubo_branch: &str) -> Option<String> {
+    let output = run_git(canonical_path, &["worktree", "list", "--porcelain"]).ok()?;
+    let needle = format!("branch refs/heads/{}", kubo_branch);
+    for block in output.split("\n\n") {
+        if block.lines().any(|l| l == needle) {
+            return block
+                .lines()
+                .find(|l| l.starts_with("worktree "))
+                .and_then(|l| l.strip_prefix("worktree "))
+                .map(String::from);
+        }
+    }
+    None
+}
+
+/// Remove a worktree for the given branch (no-op if none exists).
+fn remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
+        let _ = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]);
+        let _ = run_git(canonical_path, &["worktree", "prune"]);
+    }
+    Ok(())
+}
+
 /// Integrate a kubo variant into the abot's default branch, then delete the branch.
 /// If a worktree exists for this branch, it is removed first.
 /// Returns Err if the merge has conflicts (merge is aborted in that case).
 pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    // Remove worktree if it exists
-    let worktrees_output =
-        run_git(canonical_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-    let has_worktree = worktrees_output.split("\n\n").any(|block| {
-        block
-            .lines()
-            .any(|l| l == format!("branch refs/heads/{}", kubo_branch))
-    });
-    if has_worktree {
-        // Find the worktree path
-        for block in worktrees_output.split("\n\n") {
-            let is_match = block
-                .lines()
-                .any(|l| l == format!("branch refs/heads/{}", kubo_branch));
-            if is_match {
-                if let Some(path_line) = block.lines().find(|l| l.starts_with("worktree ")) {
-                    let wt_path = path_line.strip_prefix("worktree ").unwrap_or("");
-                    let _ = run_git(canonical_path, &["worktree", "remove", wt_path, "--force"]);
-                }
-                break;
-            }
-        }
-        let _ = run_git(canonical_path, &["worktree", "prune"]);
-    }
+    remove_worktree(canonical_path, kubo_branch)?;
 
     // Merge the kubo branch into the current (default) branch
-    let merge_result = std::process::Command::new("git")
-        .args(["merge", kubo_branch, "--no-edit"])
-        .current_dir(canonical_path)
-        .output()
-        .with_context(|| format!("failed to run git merge {}", kubo_branch))?;
-
-    if !merge_result.status.success() {
-        // Abort the failed merge
+    let merge_output = run_git(canonical_path, &["merge", kubo_branch, "--no-edit"]);
+    if merge_output.is_err() {
         let _ = run_git(canonical_path, &["merge", "--abort"]);
-        let stderr = String::from_utf8_lossy(&merge_result.stderr);
-        anyhow::bail!("merge conflict integrating '{}': {}", kubo_branch, stderr);
+        anyhow::bail!("merge conflict integrating variant '{}'", kubo_branch);
     }
 
     // Delete the branch (it's now merged)
@@ -736,24 +731,9 @@ pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()>
     Ok(())
 }
 
-/// Dismiss a kubo variant — remove the worktree but keep the branch.
-/// The branch becomes "past work" that can later be integrated or discarded.
+/// Dismiss a kubo variant — remove the worktree but keep the branch as past work.
 pub fn dismiss_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    let worktrees_output =
-        run_git(canonical_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-    for block in worktrees_output.split("\n\n") {
-        let is_match = block
-            .lines()
-            .any(|l| l == format!("branch refs/heads/{}", kubo_branch));
-        if is_match {
-            if let Some(path_line) = block.lines().find(|l| l.starts_with("worktree ")) {
-                let wt_path = path_line.strip_prefix("worktree ").unwrap_or("");
-                run_git(canonical_path, &["worktree", "remove", wt_path, "--force"])?;
-            }
-            break;
-        }
-    }
-    let _ = run_git(canonical_path, &["worktree", "prune"]);
+    remove_worktree(canonical_path, kubo_branch)?;
 
     tracing::info!(
         "dismissed variant '{}' from {}",
@@ -763,24 +743,9 @@ pub fn dismiss_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Discard a kubo variant — delete the branch (and worktree if any).
+/// Discard a kubo variant — delete the branch and worktree if any.
 pub fn discard_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    // Remove worktree if it exists
-    let worktrees_output =
-        run_git(canonical_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-    for block in worktrees_output.split("\n\n") {
-        let is_match = block
-            .lines()
-            .any(|l| l == format!("branch refs/heads/{}", kubo_branch));
-        if is_match {
-            if let Some(path_line) = block.lines().find(|l| l.starts_with("worktree ")) {
-                let wt_path = path_line.strip_prefix("worktree ").unwrap_or("");
-                let _ = run_git(canonical_path, &["worktree", "remove", wt_path, "--force"]);
-            }
-            break;
-        }
-    }
-    let _ = run_git(canonical_path, &["worktree", "prune"]);
+    remove_worktree(canonical_path, kubo_branch)?;
 
     // Force-delete the branch
     run_git(canonical_path, &["branch", "-D", kubo_branch])?;

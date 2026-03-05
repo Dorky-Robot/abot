@@ -1492,9 +1492,12 @@ pub async fn handle_request(
 
         // ── Known abots registry ─────────────────────────────────────
         DaemonRequest::ListAbots { id } => {
-            let session_names: std::collections::HashSet<String> = {
+            let session_kubos: std::collections::HashMap<String, Option<String>> = {
                 let sessions = state.sessions.lock().await;
-                sessions.keys().cloned().collect()
+                sessions
+                    .iter()
+                    .map(|(name, s)| (name.clone(), s.kubo.clone()))
+                    .collect()
             };
             let abots = super::bundle::read_known_abots(&state.data_dir);
             let list: Vec<serde_json::Value> = abots
@@ -1508,7 +1511,7 @@ pub async fn handle_request(
                             if let Some(obj) = val.as_object_mut() {
                                 obj.insert("added_at".to_string(), serde_json::json!(a.added_at));
                             }
-                            inject_has_session(&mut val, &session_names);
+                            inject_has_session(&mut val, &session_kubos);
                             val
                         }
                         Err(_) => serde_json::json!({ "name": a.name, "added_at": a.added_at }),
@@ -1521,12 +1524,15 @@ pub async fn handle_request(
         DaemonRequest::GetAbotInfo { id, abot } => {
             match super::bundle::get_abot_detail(&state.data_dir, &abot) {
                 Ok(detail) => {
-                    let session_names: std::collections::HashSet<String> = {
+                    let session_kubos: std::collections::HashMap<String, Option<String>> = {
                         let sessions = state.sessions.lock().await;
-                        sessions.keys().cloned().collect()
+                        sessions
+                            .iter()
+                            .map(|(name, s)| (name.clone(), s.kubo.clone()))
+                            .collect()
                     };
                     let mut val = serde_json::to_value(&detail).unwrap_or_default();
-                    inject_has_session(&mut val, &session_names);
+                    inject_has_session(&mut val, &session_kubos);
                     Some(DaemonResponse::AbotInfo { id, abot: val })
                 }
                 Err(e) => Some(DaemonResponse::Error {
@@ -1542,97 +1548,94 @@ pub async fn handle_request(
         }
 
         DaemonRequest::DismissVariant { id, abot, kubo } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
+            if let Err(e) = super::kubo::validate_name(&kubo) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
             let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
             let canonical_path = abots_dir.join(format!("{abot}.abot"));
             let kubo_branch = format!("kubo/{kubo}");
 
-            // Close the session if one exists for this abot in this kubo
-            {
-                let mut sessions = state.sessions.lock().await;
-                if let Some(mut session) = sessions.remove(&abot) {
-                    if session.kubo.as_deref() == Some(&kubo) {
-                        let kn = if session.is_alive() {
-                            session.kubo.clone()
-                        } else {
-                            None
-                        };
-                        session.backend.kill();
-                        let _ = state.output_tx.send(OutputEvent::SessionRemoved {
-                            session: abot.clone(),
-                        });
-                        drop(sessions);
-                        if let Some(kn) = kn {
-                            let mut kubos = state.kubos.lock().await;
-                            if let Some(k) = kubos.get_mut(&kn) {
-                                k.session_closed();
-                            }
-                        }
-                    } else {
-                        sessions.insert(abot.clone(), session);
-                    }
-                }
-            }
+            close_session_in_kubo(state, &abot, &kubo).await;
 
             match super::bundle::dismiss_variant(&canonical_path, &kubo_branch) {
                 Ok(()) => {
-                    // Remove abot from kubo manifest
                     remove_abot_from_kubo_manifest(state, &kubo, &abot).await;
                     Some(DaemonResponse::VariantDismissed { id, abot, kubo })
                 }
                 Err(e) => Some(DaemonResponse::Error {
                     id,
-                    error: e.to_string(),
+                    error: format!("failed to dismiss variant: {}", e),
                 }),
             }
         }
 
         DaemonRequest::IntegrateVariant { id, abot, kubo } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
+            if let Err(e) = super::kubo::validate_name(&kubo) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
             let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
             let canonical_path = abots_dir.join(format!("{abot}.abot"));
             let kubo_branch = format!("kubo/{kubo}");
 
+            close_session_in_kubo(state, &abot, &kubo).await;
+
             match super::bundle::integrate_variant(&canonical_path, &kubo_branch) {
                 Ok(()) => {
-                    // Remove abot from kubo manifest since the branch is gone
                     remove_abot_from_kubo_manifest(state, &kubo, &abot).await;
                     Some(DaemonResponse::VariantIntegrated { id, abot, kubo })
                 }
                 Err(e) => Some(DaemonResponse::Error {
                     id,
-                    error: e.to_string(),
+                    error: format!("failed to integrate variant: {}", e),
                 }),
             }
         }
 
         DaemonRequest::DiscardVariant { id, abot, kubo } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
+            if let Err(e) = super::kubo::validate_name(&kubo) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
             let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
             let canonical_path = abots_dir.join(format!("{abot}.abot"));
             let kubo_branch = format!("kubo/{kubo}");
 
-            // Close the session if one exists for this abot
-            {
-                let mut sessions = state.sessions.lock().await;
-                if let Some(mut session) = sessions.remove(&abot) {
-                    if session.kubo.as_deref() == Some(&kubo) {
-                        session.backend.kill();
-                        let _ = state.output_tx.send(OutputEvent::SessionRemoved {
-                            session: abot.clone(),
-                        });
-                    } else {
-                        sessions.insert(abot.clone(), session);
-                    }
-                }
-            }
+            close_session_in_kubo(state, &abot, &kubo).await;
 
             match super::bundle::discard_variant(&canonical_path, &kubo_branch) {
                 Ok(()) => {
-                    // Remove abot from kubo manifest since the branch is gone
                     remove_abot_from_kubo_manifest(state, &kubo, &abot).await;
                     Some(DaemonResponse::VariantDiscarded { id, abot, kubo })
                 }
                 Err(e) => Some(DaemonResponse::Error {
                     id,
-                    error: e.to_string(),
+                    error: format!("failed to discard variant: {}", e),
                 }),
             }
         }
@@ -1640,43 +1643,56 @@ pub async fn handle_request(
 }
 
 /// Inject `has_session` into each kubo_branch entry in a serialized abot value.
+/// `session_kubos` maps abot name → the kubo the session is running in (if any).
 fn inject_has_session(
     val: &mut serde_json::Value,
-    session_names: &std::collections::HashSet<String>,
+    session_kubos: &std::collections::HashMap<String, Option<String>>,
 ) {
+    let abot_name = val
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let session_kubo = session_kubos.get(&abot_name).and_then(|k| k.as_deref());
+
     if let Some(branches) = val.get_mut("kubo_branches").and_then(|v| v.as_array_mut()) {
         for branch in branches {
             if let Some(obj) = branch.as_object_mut() {
-                // A session exists if the abot name matches a live session
-                // For now, check kubo_name against session names (sessions are named after the abot)
-                let kubo_name = obj.get("kubo_name").and_then(|v| v.as_str()).unwrap_or("");
-                // The abot name is the parent — we need to check if any session for this abot exists
-                // Sessions are keyed by abot name, and we check if the abot has a session in this kubo
-                // Since we don't have the abot name here, we use the parent-level name
-                let _kubo = kubo_name;
-                // has_session will be set based on whether the abot name (from parent) is in sessions
-                // This is handled at the parent level below
-                obj.insert("has_session".to_string(), serde_json::json!(false));
+                let kubo_name = obj
+                    .get("kubo_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let active = session_kubo == Some(kubo_name);
+                obj.insert("has_session".to_string(), serde_json::json!(active));
             }
         }
     }
-    // Check if the abot name is in sessions and mark the matching kubo branch
-    if let Some(abot_name) = val.get("name").and_then(|v| v.as_str()).map(String::from) {
-        if session_names.contains(&abot_name) {
-            // Mark the branch that has a worktree as having an active session
-            if let Some(branches) = val.get_mut("kubo_branches").and_then(|v| v.as_array_mut()) {
-                for branch in branches {
-                    if let Some(obj) = branch.as_object_mut() {
-                        let has_worktree = obj
-                            .get("has_worktree")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        if has_worktree {
-                            obj.insert("has_session".to_string(), serde_json::json!(true));
-                        }
-                    }
+}
+
+/// Close a session for an abot in a specific kubo, with proper kubo idle-timeout bookkeeping.
+async fn close_session_in_kubo(state: &Arc<DaemonState>, abot: &str, kubo: &str) {
+    let mut sessions = state.sessions.lock().await;
+    if let Some(mut session) = sessions.remove(abot) {
+        if session.kubo.as_deref() == Some(kubo) {
+            let kubo_name = if session.is_alive() {
+                session.kubo.clone()
+            } else {
+                None
+            };
+            session.backend.kill();
+            let _ = state.output_tx.send(OutputEvent::SessionRemoved {
+                session: abot.to_string(),
+            });
+            drop(sessions);
+            if let Some(kn) = kubo_name {
+                let mut kubos = state.kubos.lock().await;
+                if let Some(k) = kubos.get_mut(&kn) {
+                    k.session_closed();
                 }
             }
+        } else {
+            // Session is in a different kubo — put it back
+            sessions.insert(abot.to_string(), session);
         }
     }
 }
