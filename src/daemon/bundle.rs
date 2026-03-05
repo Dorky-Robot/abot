@@ -703,12 +703,17 @@ fn find_worktree_path(canonical_path: &Path, kubo_branch: &str) -> Option<String
 fn commit_and_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
     if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
         let wt = std::path::Path::new(&wt_path);
-        if let Ok(committed) = auto_commit_abot(wt) {
-            if committed {
-                tracing::info!("auto-committed changes in worktree '{}'", wt_path);
-            }
+        match auto_commit_abot(wt) {
+            Ok(true) => tracing::info!("auto-committed changes in worktree '{}'", wt_path),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(
+                "auto-commit failed in '{}': {} — proceeding with removal",
+                wt_path,
+                e
+            ),
         }
-        let _ = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]);
+        run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"])
+            .with_context(|| format!("failed to remove worktree '{}'", wt_path))?;
         let _ = run_git(canonical_path, &["worktree", "prune"]);
     }
     Ok(())

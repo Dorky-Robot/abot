@@ -361,7 +361,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  /// Remove an abot from a kubo (unemply).
+  /// Remove an abot from a kubo (unemploy).
   Future<void> _removeAbotFromKubo(String kuboName, String abotName) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -911,14 +911,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 onIntegrate: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).integrateVariant(name, kuboName);
+                  if (!mounted) return;
                 },
                 onDiscard: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).discardVariant(name, kuboName);
+                  if (!mounted) return;
                 },
                 onDismiss: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).dismissVariant(name, kuboName);
+                  if (!mounted) return;
                 },
               );
             }),
@@ -1096,6 +1099,35 @@ class _FacetShellState extends ConsumerState<FacetShell>
   }
 
   /// Card grid of abots from kubo manifest (no running sessions).
+  Widget _buildKuboActionButtons(String kubo) {
+    final p = context.palette;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FilledButton.icon(
+          onPressed: () => _addAbotToKubo(kubo),
+          icon: const Icon(Icons.add, size: 16),
+          label: Text('Add abot',
+            style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
+          style: FilledButton.styleFrom(
+            backgroundColor: p.mauve, foregroundColor: p.base,
+          ),
+        ),
+        const SizedBox(width: AbotSpacing.sm),
+        OutlinedButton.icon(
+          onPressed: _openBundle,
+          icon: const Icon(Icons.folder_open, size: 16),
+          label: Text('Open .abot bundle',
+            style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: p.subtext0,
+            side: BorderSide(color: p.surface1),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildManifestAbotCardGrid(String kubo, List<String> abotNames) {
     final p = context.palette;
     return Center(
@@ -1123,31 +1155,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               ],
             ),
             const SizedBox(height: AbotSpacing.lg),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FilledButton.icon(
-                  onPressed: () => _addAbotToKubo(kubo),
-                  icon: const Icon(Icons.add, size: 16),
-                  label: Text('Add abot',
-                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: p.mauve, foregroundColor: p.base,
-                  ),
-                ),
-                const SizedBox(width: AbotSpacing.sm),
-                OutlinedButton.icon(
-                  onPressed: _openBundle,
-                  icon: const Icon(Icons.folder_open, size: 16),
-                  label: Text('Open .abot bundle',
-                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: p.subtext0,
-                    side: BorderSide(color: p.surface1),
-                  ),
-                ),
-              ],
-            ),
+            _buildKuboActionButtons(kubo),
           ],
         ),
       ),
@@ -1163,15 +1171,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              kubo,
+            Text(kubo,
               style: TextStyle(
-                color: p.text,
-                fontFamily: AbotFonts.mono,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+                color: p.text, fontFamily: AbotFonts.mono,
+                fontSize: 16, fontWeight: FontWeight.w600,
+              )),
             const SizedBox(height: AbotSpacing.md),
             Wrap(
               spacing: AbotSpacing.md,
@@ -1187,36 +1191,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               ],
             ),
             const SizedBox(height: AbotSpacing.lg),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FilledButton.icon(
-                  onPressed: () => _addAbotToKubo(kubo),
-                  icon: const Icon(Icons.add, size: 16),
-                  label: Text(
-                    'Add abot',
-                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
-                  ),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: p.mauve,
-                    foregroundColor: p.base,
-                  ),
-                ),
-                const SizedBox(width: AbotSpacing.sm),
-                OutlinedButton.icon(
-                  onPressed: _openBundle,
-                  icon: const Icon(Icons.folder_open, size: 16),
-                  label: Text(
-                    'Open .abot bundle',
-                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: p.subtext0,
-                    side: BorderSide(color: p.surface1),
-                  ),
-                ),
-              ],
-            ),
+            _buildKuboActionButtons(kubo),
           ],
         ),
       ),
@@ -1238,51 +1213,21 @@ class _FacetShellState extends ConsumerState<FacetShell>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              'No abots in $kubo',
+            Text('No abots in $kubo',
               style: TextStyle(
-                color: p.text,
-                fontFamily: AbotFonts.mono,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+                color: p.text, fontFamily: AbotFonts.mono,
+                fontSize: 16, fontWeight: FontWeight.w600,
+              )),
             const SizedBox(height: AbotSpacing.sm),
             Text(
               'Add an abot to get started. Each abot is a git-backed workspace with its own terminal.',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: p.subtext0,
-                fontFamily: AbotFonts.mono,
-                fontSize: 12,
+                color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12,
               ),
             ),
             const SizedBox(height: AbotSpacing.md),
-            FilledButton.icon(
-              onPressed: () => _addAbotToKubo(kubo),
-              icon: const Icon(Icons.add, size: 16),
-              label: Text(
-                'Add abot',
-                style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
-              ),
-              style: FilledButton.styleFrom(
-                backgroundColor: p.mauve,
-                foregroundColor: p.base,
-              ),
-            ),
-            const SizedBox(height: AbotSpacing.sm),
-            OutlinedButton.icon(
-              onPressed: _openBundle,
-              icon: const Icon(Icons.folder_open, size: 16),
-              label: Text(
-                'Open .abot bundle',
-                style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13),
-              ),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: p.subtext0,
-                side: BorderSide(color: p.surface1),
-              ),
-            ),
+            _buildKuboActionButtons(kubo),
           ],
         ),
       ),

@@ -1496,6 +1496,12 @@ pub async fn handle_request(
         }
 
         DaemonRequest::GetAbotInfo { id, abot } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
             match super::bundle::get_abot_detail(&state.data_dir, &abot) {
                 Ok(detail) => {
                     let session_kubos: std::collections::HashMap<String, Option<String>> = {
@@ -1517,6 +1523,12 @@ pub async fn handle_request(
         }
 
         DaemonRequest::RemoveKnownAbot { id, abot } => {
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                });
+            }
             super::bundle::remove_known_abot(&state.data_dir, &abot);
             Some(DaemonResponse::KnownAbotRemoved { id, abot })
         }
@@ -1671,10 +1683,18 @@ async fn close_session_in_kubo(state: &Arc<DaemonState>, abot: &str, kubo: &str)
     }
 }
 
-/// Remove an abot from a kubo's manifest (shared helper for integrate/discard).
+/// Remove an abot from a kubo's manifest (shared helper for variant lifecycle).
 async fn remove_abot_from_kubo_manifest(state: &Arc<DaemonState>, kubo: &str, abot: &str) {
-    let kubos_dir = super::bundle::resolve_kubos_dir(&state.data_dir);
-    let kubo_path = kubos_dir.join(format!("{kubo}.kubo"));
+    let kubo_path = {
+        let kubos = state.kubos.lock().await;
+        match kubos.get(kubo) {
+            Some(k) => k.path.clone(),
+            None => {
+                // Fallback to conventional path if kubo not registered in daemon state
+                super::bundle::resolve_kubos_dir(&state.data_dir).join(format!("{kubo}.kubo"))
+            }
+        }
+    };
     if let Ok(mut manifest) = super::kubo::Kubo::read_manifest(&kubo_path) {
         manifest.abots.retain(|a| a != abot);
         manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
