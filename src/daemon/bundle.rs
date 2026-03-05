@@ -722,8 +722,12 @@ fn commit_and_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Resul
 /// Force-remove a worktree without committing (for discard).
 fn force_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
     if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
-        let _ = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]);
-        let _ = run_git(canonical_path, &["worktree", "prune"]);
+        if let Err(e) = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]) {
+            tracing::warn!("force worktree remove failed for '{}': {}", wt_path, e);
+        }
+        if let Err(e) = run_git(canonical_path, &["worktree", "prune"]) {
+            tracing::warn!("worktree prune failed: {}", e);
+        }
     }
     Ok(())
 }

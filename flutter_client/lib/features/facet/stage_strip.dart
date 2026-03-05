@@ -374,6 +374,7 @@ class _StageStripState extends State<StageStrip> {
       CatPalette p, String kuboName, _KuboGroup group, bool running) {
     final isCollapsed = _collapsedKubos.contains(kuboName);
     final isActive = widget.activeKubo == kuboName;
+    final manifestOnly = _manifestOnlyAbots(kuboName, group);
 
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
@@ -432,7 +433,7 @@ class _StageStripState extends State<StageStrip> {
                           : null,
                     ),
                   // Abots from manifest that have no sessions at all
-                  for (final abotName in _manifestOnlyAbots(kuboName, group))
+                  for (final abotName in manifestOnly)
                     _AbotRow(
                       name: abotName,
                       isRunning: false,
@@ -442,7 +443,7 @@ class _StageStripState extends State<StageStrip> {
                           ? () => widget.onRemoveAbot!(kuboName, abotName)
                           : null,
                     ),
-                  if (group.facets.isEmpty && group.unattachedSessions.isEmpty && _manifestOnlyAbots(kuboName, group).isEmpty)
+                  if (group.facets.isEmpty && group.unattachedSessions.isEmpty && manifestOnly.isEmpty)
                     Padding(
                       padding: const EdgeInsets.only(
                           top: AbotSpacing.xs, left: 24),

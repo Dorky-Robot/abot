@@ -721,71 +721,12 @@ pub async fn handle_request(
                     let canonical_path = bundle.path.clone();
                     let kubo_name = "default";
 
-                    // Ensure default kubo exists
-                    if let Err(e) = state.ensure_default_kubo().await {
-                        return Some(DaemonResponse::Error {
-                            id,
-                            error: format!("failed to ensure default kubo: {}", e),
-                        });
-                    }
-
-                    // Create worktree in the default kubo so the session
-                    // filesystem lives inside the kubo directory
-                    let kubo_path = {
-                        let kubos = state.kubos.lock().await;
-                        match kubos.get(kubo_name) {
-                            Some(k) => k.path.clone(),
-                            None => {
-                                return Some(DaemonResponse::Error {
-                                    id,
-                                    error: "kubo 'default' not found".to_string(),
-                                })
-                            }
-                        }
-                    };
-
-                    if let Err(e) = super::bundle::worktree_add_abot(
-                        &canonical_path,
-                        &kubo_path,
-                        &name,
-                        kubo_name,
-                    ) {
-                        return Some(DaemonResponse::Error {
-                            id,
-                            error: format!("failed to add worktree for opened bundle: {}", e),
-                        });
-                    }
-
-                    // Update kubo manifest
-                    match super::kubo::Kubo::read_manifest(&kubo_path) {
-                        Ok(mut manifest) => {
-                            if !manifest.abots.contains(&name) {
-                                manifest.abots.push(name.clone());
-                                manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
-                                if let Err(e) =
-                                    super::kubo::Kubo::write_manifest(&kubo_path, &manifest)
-                                {
-                                    tracing::warn!(
-                                        "failed to write kubo manifest for '{}': {}",
-                                        kubo_name,
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "failed to read kubo manifest for '{}': {}",
-                                kubo_name,
-                                e
-                            );
-                        }
-                    }
-
-                    // Point bundle_path at the worktree (inside the kubo), not
-                    // the canonical abot. This is where the session filesystem
-                    // lives and where autosave will write.
-                    let worktree_path = kubo_path.join(&name);
+                    // Add abot worktree to default kubo + update manifest
+                    let worktree_path =
+                        match add_abot_to_kubo(state, &canonical_path, &name, kubo_name).await {
+                            Ok(path) => path,
+                            Err(error) => return Some(DaemonResponse::Error { id, error }),
+                        };
 
                     let result = state
                         .create_kubo_backend(kubo_name, &name, cols, rows, &bundle.env)
@@ -1466,13 +1407,7 @@ pub async fn handle_request(
 
         // ── Known abots registry ─────────────────────────────────────
         DaemonRequest::ListAbots { id } => {
-            let session_kubos: std::collections::HashMap<String, Option<String>> = {
-                let sessions = state.sessions.lock().await;
-                sessions
-                    .iter()
-                    .map(|(name, s)| (name.clone(), s.kubo.clone()))
-                    .collect()
-            };
+            let session_kubos = build_session_kubos(state).await;
             let abots = super::bundle::read_known_abots(&state.data_dir);
             let list: Vec<serde_json::Value> = abots
                 .iter()
@@ -1504,13 +1439,7 @@ pub async fn handle_request(
             }
             match super::bundle::get_abot_detail(&state.data_dir, &abot) {
                 Ok(detail) => {
-                    let session_kubos: std::collections::HashMap<String, Option<String>> = {
-                        let sessions = state.sessions.lock().await;
-                        sessions
-                            .iter()
-                            .map(|(name, s)| (name.clone(), s.kubo.clone()))
-                            .collect()
-                    };
+                    let session_kubos = build_session_kubos(state).await;
                     let mut val = serde_json::to_value(&detail).unwrap_or_default();
                     inject_has_session(&mut val, &session_kubos);
                     Some(DaemonResponse::AbotInfo { id, abot: val })
@@ -1534,96 +1463,15 @@ pub async fn handle_request(
         }
 
         DaemonRequest::DismissVariant { id, abot, kubo } => {
-            if let Err(e) = super::kubo::validate_name(&abot) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: e.to_string(),
-                });
-            }
-            if let Err(e) = super::kubo::validate_name(&kubo) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: e.to_string(),
-                });
-            }
-            let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
-            let canonical_path = abots_dir.join(format!("{abot}.abot"));
-            let kubo_branch = format!("kubo/{kubo}");
-
-            close_session_in_kubo(state, &abot, &kubo).await;
-
-            match super::bundle::dismiss_variant(&canonical_path, &kubo_branch) {
-                Ok(()) => {
-                    remove_abot_from_kubo_manifest(state, &kubo, &abot).await;
-                    Some(DaemonResponse::VariantDismissed { id, abot, kubo })
-                }
-                Err(e) => Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to dismiss variant: {}", e),
-                }),
-            }
+            handle_variant_op(state, id, abot, kubo, VariantOp::Dismiss).await
         }
 
         DaemonRequest::IntegrateVariant { id, abot, kubo } => {
-            if let Err(e) = super::kubo::validate_name(&abot) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: e.to_string(),
-                });
-            }
-            if let Err(e) = super::kubo::validate_name(&kubo) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: e.to_string(),
-                });
-            }
-            let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
-            let canonical_path = abots_dir.join(format!("{abot}.abot"));
-            let kubo_branch = format!("kubo/{kubo}");
-
-            close_session_in_kubo(state, &abot, &kubo).await;
-
-            match super::bundle::integrate_variant(&canonical_path, &kubo_branch) {
-                Ok(()) => {
-                    remove_abot_from_kubo_manifest(state, &kubo, &abot).await;
-                    Some(DaemonResponse::VariantIntegrated { id, abot, kubo })
-                }
-                Err(e) => Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to integrate variant: {}", e),
-                }),
-            }
+            handle_variant_op(state, id, abot, kubo, VariantOp::Integrate).await
         }
 
         DaemonRequest::DiscardVariant { id, abot, kubo } => {
-            if let Err(e) = super::kubo::validate_name(&abot) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: e.to_string(),
-                });
-            }
-            if let Err(e) = super::kubo::validate_name(&kubo) {
-                return Some(DaemonResponse::Error {
-                    id,
-                    error: e.to_string(),
-                });
-            }
-            let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
-            let canonical_path = abots_dir.join(format!("{abot}.abot"));
-            let kubo_branch = format!("kubo/{kubo}");
-
-            close_session_in_kubo(state, &abot, &kubo).await;
-
-            match super::bundle::discard_variant(&canonical_path, &kubo_branch) {
-                Ok(()) => {
-                    remove_abot_from_kubo_manifest(state, &kubo, &abot).await;
-                    Some(DaemonResponse::VariantDiscarded { id, abot, kubo })
-                }
-                Err(e) => Some(DaemonResponse::Error {
-                    id,
-                    error: format!("failed to discard variant: {}", e),
-                }),
-            }
+            handle_variant_op(state, id, abot, kubo, VariantOp::Discard).await
         }
     }
 }
@@ -1684,6 +1532,81 @@ async fn close_session_in_kubo(state: &Arc<DaemonState>, abot: &str, kubo: &str)
 }
 
 /// Remove an abot from a kubo's manifest (shared helper for variant lifecycle).
+/// Build a map of abot name → kubo name for all active sessions.
+async fn build_session_kubos(
+    state: &Arc<DaemonState>,
+) -> std::collections::HashMap<String, Option<String>> {
+    let sessions = state.sessions.lock().await;
+    sessions
+        .iter()
+        .map(|(name, s)| (name.clone(), s.kubo.clone()))
+        .collect()
+}
+
+/// Which variant lifecycle operation to perform.
+#[derive(Clone, Copy)]
+enum VariantOp {
+    Dismiss,
+    Integrate,
+    Discard,
+}
+
+/// Shared handler for dismiss/integrate/discard variant operations.
+/// Validates names, closes the session, runs the bundle op, and cleans up manifest.
+async fn handle_variant_op(
+    state: &Arc<DaemonState>,
+    id: String,
+    abot: String,
+    kubo: String,
+    op: VariantOp,
+) -> Option<DaemonResponse> {
+    if let Err(e) = super::kubo::validate_name(&abot) {
+        return Some(DaemonResponse::Error {
+            id,
+            error: e.to_string(),
+        });
+    }
+    if let Err(e) = super::kubo::validate_name(&kubo) {
+        return Some(DaemonResponse::Error {
+            id,
+            error: e.to_string(),
+        });
+    }
+    let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
+    let canonical_path = abots_dir.join(format!("{abot}.abot"));
+    let kubo_branch = format!("kubo/{kubo}");
+
+    close_session_in_kubo(state, &abot, &kubo).await;
+
+    let result = match op {
+        VariantOp::Dismiss => super::bundle::dismiss_variant(&canonical_path, &kubo_branch),
+        VariantOp::Integrate => super::bundle::integrate_variant(&canonical_path, &kubo_branch),
+        VariantOp::Discard => super::bundle::discard_variant(&canonical_path, &kubo_branch),
+    };
+
+    match result {
+        Ok(()) => {
+            remove_abot_from_kubo_manifest(state, &kubo, &abot).await;
+            match op {
+                VariantOp::Dismiss => Some(DaemonResponse::VariantDismissed { id, abot, kubo }),
+                VariantOp::Integrate => Some(DaemonResponse::VariantIntegrated { id, abot, kubo }),
+                VariantOp::Discard => Some(DaemonResponse::VariantDiscarded { id, abot, kubo }),
+            }
+        }
+        Err(e) => {
+            let op_name = match op {
+                VariantOp::Dismiss => "dismiss",
+                VariantOp::Integrate => "integrate",
+                VariantOp::Discard => "discard",
+            };
+            Some(DaemonResponse::Error {
+                id,
+                error: format!("failed to {} variant: {}", op_name, e),
+            })
+        }
+    }
+}
+
 async fn remove_abot_from_kubo_manifest(state: &Arc<DaemonState>, kubo: &str, abot: &str) {
     let kubo_path = {
         let kubos = state.kubos.lock().await;
@@ -1790,33 +1713,20 @@ fn spawn_output_relay(
 /// Ensure a canonical abot exists and has a worktree in the given kubo.
 /// Returns the worktree path (the abot's dir inside the kubo).
 /// Both `handle_create_session` and `AddAbotToKubo` delegate to this.
-async fn ensure_abot_in_kubo(
+/// Add an abot (by canonical path) into a kubo: worktree + manifest update.
+/// Returns the worktree path inside the kubo directory.
+async fn add_abot_to_kubo(
     state: &Arc<DaemonState>,
+    canonical_path: &std::path::Path,
     name: &str,
     kubo: &str,
 ) -> Result<PathBuf, String> {
-    // Validate names
-    if let Err(e) = super::kubo::validate_name(name) {
-        return Err(format!("invalid abot name: {}", e));
-    }
-    if let Err(e) = super::kubo::validate_name(kubo) {
-        return Err(format!("invalid kubo name: {}", e));
-    }
-
     // Ensure default kubo exists if "default" requested
     if kubo == "default" {
         if let Err(e) = state.ensure_default_kubo().await {
             return Err(format!("failed to ensure default kubo: {}", e));
         }
     }
-
-    // Resolve canonical abots dir and create the canonical abot
-    let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
-    if let Err(e) = std::fs::create_dir_all(&abots_dir) {
-        tracing::warn!("failed to create abots dir: {}", e);
-    }
-    let canonical_path = super::bundle::create_canonical_abot(&abots_dir, name)
-        .map_err(|e| format!("failed to create canonical abot: {}", e))?;
 
     // Get kubo path
     let kubo_path = {
@@ -1828,7 +1738,7 @@ async fn ensure_abot_in_kubo(
     };
 
     // Create worktree in the kubo (skips if already set up)
-    super::bundle::worktree_add_abot(&canonical_path, &kubo_path, name, kubo)
+    super::bundle::worktree_add_abot(canonical_path, &kubo_path, name, kubo)
         .map_err(|e| format!("failed to add worktree: {}", e))?;
 
     // Update kubo manifest (add abot to list if not present)
@@ -1847,8 +1757,31 @@ async fn ensure_abot_in_kubo(
         }
     }
 
-    let worktree_path = kubo_path.join(name);
-    Ok(worktree_path)
+    Ok(kubo_path.join(name))
+}
+
+async fn ensure_abot_in_kubo(
+    state: &Arc<DaemonState>,
+    name: &str,
+    kubo: &str,
+) -> Result<PathBuf, String> {
+    // Validate names
+    if let Err(e) = super::kubo::validate_name(name) {
+        return Err(format!("invalid abot name: {}", e));
+    }
+    if let Err(e) = super::kubo::validate_name(kubo) {
+        return Err(format!("invalid kubo name: {}", e));
+    }
+
+    // Resolve canonical abots dir and create the canonical abot
+    let abots_dir = super::bundle::resolve_abots_dir(&state.data_dir);
+    if let Err(e) = std::fs::create_dir_all(&abots_dir) {
+        tracing::warn!("failed to create abots dir: {}", e);
+    }
+    let canonical_path = super::bundle::create_canonical_abot(&abots_dir, name)
+        .map_err(|e| format!("failed to create canonical abot: {}", e))?;
+
+    add_abot_to_kubo(state, &canonical_path, name, kubo).await
 }
 
 /// Create a PTY session and spawn its output reader task.
