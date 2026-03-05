@@ -378,10 +378,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
     );
     if (confirmed != true || !mounted) return;
     try {
-      // Minimize facet if open
+      // Minimize facet if open (sessionName is qualified: abot@kubo)
+      final qualified = '$abotName@$kuboName';
       final state = ref.read(facetManagerProvider);
       for (final facet in state.facets.values.toList()) {
-        if (facet.sessionName == abotName) {
+        if (facet.sessionName == qualified) {
           _minimizeFacet(facet.id);
         }
       }
@@ -589,15 +590,14 @@ class _FacetShellState extends ConsumerState<FacetShell>
       final path = data['path'] as String?;
       if (path == null || path.isEmpty || !mounted) return;
 
-      // Extract the abot name from the bundle path (e.g. /path/to/bob.abot → bob)
-      final bundleName = path.split('/').last.replaceAll('.abot', '');
-
-      // Use the kubo-aware addAbotToKubo flow instead of openBundle
-      // (which always targets default kubo).
-      await ref.read(facetManagerProvider.notifier).createAbotInKubo(
-        bundleName,
-        kubo: kubo,
-      );
+      // Open the bundle into the specified kubo via the REST endpoint.
+      final result = await ref
+          .read(sessionServiceProvider.notifier)
+          .openBundle(path, kubo: kubo);
+      final sessionName = result['name'] as String?;
+      if (sessionName != null && mounted) {
+        ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
+      }
       if (!mounted) return;
       ref.read(kuboServiceProvider.notifier).refresh();
       ref.read(abotServiceProvider.notifier).refresh();
@@ -1144,7 +1144,20 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   _AbotCard(
                     name: name,
                     isRunning: false,
-                    onTap: () => _onOpenSession(name),
+                    onTap: () async {
+                      // Create a session for this manifest-only abot, then open it.
+                      try {
+                        await ref.read(facetManagerProvider.notifier).createAbotInKubo(
+                          name,
+                          kubo: kubo,
+                        );
+                      } catch (e) {
+                        if (!mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Failed to create session: $e')),
+                        );
+                      }
+                    },
                   ),
               ],
             ),

@@ -740,9 +740,14 @@ fn force_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()>
 pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
     commit_and_remove_worktree(canonical_path, kubo_branch)?;
 
-    // Ensure we're on the default branch before merging
+    // Ensure we're on the default branch before merging.
+    // Try symbolic-ref first; if HEAD is detached, fall back to init.defaultBranch config.
     let default_branch = run_git(canonical_path, &["symbolic-ref", "--short", "HEAD"])
         .map(|s| s.trim().to_string())
+        .or_else(|_| {
+            run_git(canonical_path, &["config", "--get", "init.defaultBranch"])
+                .map(|s| s.trim().to_string())
+        })
         .unwrap_or_else(|_| "main".to_string());
     run_git(canonical_path, &["checkout", &default_branch])
         .with_context(|| format!("failed to checkout default branch '{}'", default_branch))?;
