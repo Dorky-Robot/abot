@@ -7,6 +7,7 @@
 //!   - home/           (bind-mounted as /home/dev in Docker container)
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -150,24 +151,8 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
         .to_string();
 
     // 2. Read credentials.json → session env
-    let mut env = HashMap::new();
     let creds_path = bundle_dir.join("credentials.json");
-    if creds_path.exists() {
-        let creds: serde_json::Value = read_json(&creds_path)?;
-        if let Some(obj) = creds.as_object() {
-            if let Some(val) = obj.get("api_key").and_then(|v| v.as_str()) {
-                if val.starts_with("sk-ant-api") {
-                    env.insert("ANTHROPIC_API_KEY".to_string(), val.to_string());
-                    env.insert("CLAUDE_API_KEY".to_string(), val.to_string());
-                } else {
-                    env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-                }
-            }
-            if let Some(val) = obj.get("claude_token").and_then(|v| v.as_str()) {
-                env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-            }
-        }
-    }
+    let mut env = read_credentials(&creds_path);
 
     // 3. Read config.json → merge custom env
     let config_path = bundle_dir.join("config.json");
@@ -201,9 +186,39 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
     })
 }
 
+/// Read a `credentials.json` file and return env vars for container injection.
+///
+/// Maps `api_key` → `ANTHROPIC_API_KEY` + `CLAUDE_API_KEY` (if `sk-ant-api` prefix)
+///       or `CLAUDE_CODE_OAUTH_TOKEN` (otherwise).
+/// Maps `claude_token` → `CLAUDE_CODE_OAUTH_TOKEN`.
+/// Returns an empty map if the file is missing or invalid.
+pub fn read_credentials(path: &Path) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    let creds = match read_json(path) {
+        Ok(v) => v,
+        Err(_) => return env,
+    };
+    if let Some(obj) = creds.as_object() {
+        if let Some(val) = obj.get("api_key").and_then(|v| v.as_str()) {
+            if val.starts_with("sk-ant-api") {
+                env.insert("ANTHROPIC_API_KEY".to_string(), val.to_string());
+                env.insert("CLAUDE_API_KEY".to_string(), val.to_string());
+            } else {
+                env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
+            }
+        }
+        if let Some(val) = obj.get("claude_token").and_then(|v| v.as_str()) {
+            env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
+        }
+    }
+    env
+}
+
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, json)?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &json)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -417,7 +432,7 @@ pub fn auto_commit_abot(abot_path: &Path) -> Result<bool> {
 pub fn migrate_data_dir(data_dir: &Path) -> Result<()> {
     let bundles_dir = data_dir.join("bundles");
     let abots_dir = resolve_abots_dir(data_dir);
-    let kubos_dir = data_dir.join("kubos");
+    let kubos_dir = resolve_kubos_dir(data_dir);
 
     if !bundles_dir.exists() {
         // Nothing to migrate — create dirs
@@ -505,20 +520,37 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
 
 // ── Git worktree operations ─────────────────────────────────────
 
+/// Read the data-dir config.json, returning {} on any failure.
+fn read_data_config(data_dir: &Path) -> serde_json::Value {
+    let config_path = data_dir.join("config.json");
+    std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({}))
+}
+
 /// Resolve the abots directory from config.json `bundleDir`, falling back to `{data_dir}/abots/`.
 pub fn resolve_abots_dir(data_dir: &Path) -> PathBuf {
-    let config_path = data_dir.join("config.json");
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&contents) {
-            if let Some(dir) = config.get("bundleDir").and_then(|v| v.as_str()) {
-                let p = PathBuf::from(dir);
-                if p.is_absolute() {
-                    return p;
-                }
-            }
+    let config = read_data_config(data_dir);
+    if let Some(dir) = config.get("bundleDir").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            return p;
         }
     }
     data_dir.join("abots")
+}
+
+/// Resolve the kubos directory from config.json `kubosDir`, falling back to `{data_dir}/kubos/`.
+pub fn resolve_kubos_dir(data_dir: &Path) -> PathBuf {
+    let config = read_data_config(data_dir);
+    if let Some(dir) = config.get("kubosDir").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            return p;
+        }
+    }
+    data_dir.join("kubos")
 }
 
 /// Create a canonical `.abot` bundle in the abots directory.
@@ -567,16 +599,27 @@ pub fn worktree_add_abot(
 
     let worktree_path = kubo_path.join(abot_name);
     if worktree_path.exists() {
-        // Already set up — check if it's a valid worktree
         let git_file = worktree_path.join(".git");
         if git_file.exists() && !git_file.is_dir() {
-            return Ok(());
+            // .git file exists — verify the gitdir target is still valid
+            if let Ok(content) = std::fs::read_to_string(&git_file) {
+                let gitdir = content.trim().strip_prefix("gitdir: ").unwrap_or("");
+                if !gitdir.is_empty() && std::path::Path::new(gitdir).exists() {
+                    return Ok(()); // Valid worktree, reuse it
+                }
+            }
+            // Stale .git file — remove and recreate
+            tracing::warn!(
+                "removing stale worktree at {} (gitdir target missing)",
+                worktree_path.display()
+            );
+        } else {
+            // Directory exists but isn't a worktree
+            tracing::warn!(
+                "removing non-worktree directory at {} to set up worktree",
+                worktree_path.display()
+            );
         }
-        // Directory exists but isn't a worktree — remove it so we can create one
-        tracing::warn!(
-            "removing non-worktree directory at {} to set up worktree",
-            worktree_path.display()
-        );
         std::fs::remove_dir_all(&worktree_path)?;
     }
 
@@ -609,7 +652,7 @@ pub fn worktree_add_abot(
 }
 
 /// Remove an abot's worktree from a kubo directory.
-/// Reserved for future "remove abot from kubo" endpoint (see TODO.md).
+/// Currently unused — remove-abot keeps worktrees for resume semantics.
 #[allow(dead_code)]
 pub fn worktree_remove_abot(
     canonical_path: &Path,
@@ -628,12 +671,321 @@ pub fn worktree_remove_abot(
         &["worktree", "remove", &worktree_str, "--force"],
     )?;
 
+    // Prune stale worktree metadata so the branch can be re-used
+    let _ = run_git(canonical_path, &["worktree", "prune"]);
+
     tracing::info!(
         "removed worktree for '{}' from {}",
         abot_name,
         kubo_path.display(),
     );
     Ok(())
+}
+
+// ── Variant lifecycle ────────────────────────────────────────────
+
+/// Find the filesystem path of a worktree checked out on `kubo_branch`, if any.
+fn find_worktree_path(canonical_path: &Path, kubo_branch: &str) -> Option<String> {
+    let output = run_git(canonical_path, &["worktree", "list", "--porcelain"]).ok()?;
+    let needle = format!("branch refs/heads/{}", kubo_branch);
+    for block in output.split("\n\n") {
+        if block.lines().any(|l| l == needle) {
+            return block
+                .lines()
+                .find(|l| l.starts_with("worktree "))
+                .and_then(|l| l.strip_prefix("worktree "))
+                .map(String::from);
+        }
+    }
+    None
+}
+
+/// Auto-commit any outstanding changes in a worktree, then remove it.
+/// Ensures no work is lost when the worktree is cleaned up.
+fn commit_and_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
+        let wt = std::path::Path::new(&wt_path);
+        match auto_commit_abot(wt) {
+            Ok(true) => tracing::info!("auto-committed changes in worktree '{}'", wt_path),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(
+                "auto-commit failed in '{}': {} — proceeding with removal",
+                wt_path,
+                e
+            ),
+        }
+        run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"])
+            .with_context(|| format!("failed to remove worktree '{}'", wt_path))?;
+        let _ = run_git(canonical_path, &["worktree", "prune"]);
+    }
+    Ok(())
+}
+
+/// Force-remove a worktree without committing (for discard).
+fn force_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
+        if let Err(e) = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]) {
+            tracing::warn!("force worktree remove failed for '{}': {}", wt_path, e);
+        }
+        if let Err(e) = run_git(canonical_path, &["worktree", "prune"]) {
+            tracing::warn!("worktree prune failed: {}", e);
+        }
+    }
+    Ok(())
+}
+
+/// Integrate a kubo variant into the abot's default branch, then delete the branch.
+/// Commits any outstanding worktree changes before merging.
+/// Returns Err if the merge has conflicts (merge is aborted in that case).
+pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    commit_and_remove_worktree(canonical_path, kubo_branch)?;
+
+    // Ensure we're on the default branch before merging.
+    // Try symbolic-ref first; if HEAD is detached, fall back to init.defaultBranch config.
+    let default_branch = run_git(canonical_path, &["symbolic-ref", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .or_else(|_| {
+            run_git(canonical_path, &["config", "--get", "init.defaultBranch"])
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|_| "main".to_string());
+    run_git(canonical_path, &["checkout", &default_branch])
+        .with_context(|| format!("failed to checkout default branch '{}'", default_branch))?;
+
+    // Merge the kubo branch into the default branch
+    let merge_output = run_git(canonical_path, &["merge", kubo_branch, "--no-edit"]);
+    if merge_output.is_err() {
+        let _ = run_git(canonical_path, &["merge", "--abort"]);
+        anyhow::bail!("merge conflict integrating variant '{}'", kubo_branch);
+    }
+
+    // Delete the branch (it's now merged)
+    run_git(canonical_path, &["branch", "-d", kubo_branch])?;
+
+    tracing::info!(
+        "integrated variant '{}' into {}",
+        kubo_branch,
+        canonical_path.display()
+    );
+    Ok(())
+}
+
+/// Dismiss a kubo variant — commit outstanding changes, remove worktree, keep branch.
+pub fn dismiss_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    commit_and_remove_worktree(canonical_path, kubo_branch)?;
+
+    tracing::info!(
+        "dismissed variant '{}' from {}",
+        kubo_branch,
+        canonical_path.display()
+    );
+    Ok(())
+}
+
+/// Discard a kubo variant — delete the branch and worktree without saving.
+pub fn discard_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    force_remove_worktree(canonical_path, kubo_branch)?;
+
+    // Force-delete the branch
+    run_git(canonical_path, &["branch", "-D", kubo_branch])?;
+
+    tracing::info!(
+        "discarded variant '{}' from {}",
+        kubo_branch,
+        canonical_path.display()
+    );
+    Ok(())
+}
+
+// ── Known abots registry ────────────────────────────────────────
+
+/// A known abot entry in `abots.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownAbot {
+    pub name: String,
+    pub added_at: String,
+}
+
+/// Detail info for a single abot (git state + kubo employment).
+#[derive(Debug, Clone, Serialize)]
+pub struct AbotDetail {
+    pub name: String,
+    pub path: String,
+    pub created_at: Option<String>,
+    pub default_branch: String,
+    pub kubo_branches: Vec<KuboBranch>,
+    pub git_status: String,
+}
+
+/// A kubo branch in an abot's git repo.
+#[derive(Debug, Clone, Serialize)]
+pub struct KuboBranch {
+    pub kubo_name: String,
+    pub branch: String,
+    pub has_worktree: bool,
+}
+
+/// Read the known abots list from `{data_dir}/abots.json`.
+pub fn read_known_abots(data_dir: &Path) -> Vec<KnownAbot> {
+    let path = data_dir.join("abots.json");
+    match read_json(&path) {
+        Ok(val) => {
+            if let Some(arr) = val.get("abots").and_then(|v| v.as_array()) {
+                arr.iter()
+                    .filter_map(|v| serde_json::from_value::<KnownAbot>(v.clone()).ok())
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Write the known abots list to `{data_dir}/abots.json`.
+fn write_known_abots(data_dir: &Path, abots: &[KnownAbot]) -> Result<()> {
+    let val = serde_json::json!({ "abots": abots });
+    write_json(&data_dir.join("abots.json"), &val)
+}
+
+/// Add an abot to the known list (no-op if already present).
+pub fn add_known_abot(data_dir: &Path, name: &str) {
+    let mut abots = read_known_abots(data_dir);
+    if abots.iter().any(|a| a.name == name) {
+        return;
+    }
+    abots.push(KnownAbot {
+        name: name.to_string(),
+        added_at: chrono::Utc::now().to_rfc3339(),
+    });
+    let _ = write_known_abots(data_dir, &abots);
+}
+
+/// Remove an abot from the known list.
+pub fn remove_known_abot(data_dir: &Path, name: &str) {
+    let mut abots = read_known_abots(data_dir);
+    abots.retain(|a| a.name != name);
+    let _ = write_known_abots(data_dir, &abots);
+}
+
+/// Sync known abots with all kubo manifests (union). Called on startup.
+pub fn sync_known_abots(data_dir: &Path) {
+    let kubos_dir = resolve_kubos_dir(data_dir);
+    let mut known = read_known_abots(data_dir);
+    let known_names: std::collections::HashSet<String> =
+        known.iter().map(|a| a.name.clone()).collect();
+
+    if let Ok(entries) = std::fs::read_dir(&kubos_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("kubo"))
+            {
+                if let Ok(manifest) = super::kubo::Kubo::read_manifest(&path) {
+                    for abot_name in &manifest.abots {
+                        if !known_names.contains(abot_name) {
+                            known.push(KnownAbot {
+                                name: abot_name.clone(),
+                                added_at: chrono::Utc::now().to_rfc3339(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = write_known_abots(data_dir, &known);
+}
+
+/// Get detailed info for a single abot (git branches, worktrees, kubo employment).
+pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
+    let abots_dir = resolve_abots_dir(data_dir);
+    let abot_path = abots_dir.join(format!("{name}.abot"));
+
+    if !abot_path.exists() {
+        anyhow::bail!("abot '{}' not found", name);
+    }
+
+    // Read manifest for created_at
+    let created_at = read_json(&abot_path.join("manifest.json"))
+        .ok()
+        .and_then(|m| {
+            m.get("created_at")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+
+    // Git info
+    let default_branch = if abot_path.join(".git").exists() {
+        run_git(&abot_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .unwrap_or_else(|_| "main".to_string())
+            .trim()
+            .to_string()
+    } else {
+        "main".to_string()
+    };
+
+    let git_status = if abot_path.join(".git").exists() {
+        run_git(&abot_path, &["status", "--short"])
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
+
+    // Kubo branches
+    let kubo_branches = if abot_path.join(".git").exists() {
+        let branches_output =
+            run_git(&abot_path, &["branch", "--list", "kubo/*"]).unwrap_or_default();
+        let worktrees_output =
+            run_git(&abot_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+
+        // Parse worktree paths to know which branches have active worktrees
+        let worktree_branches: std::collections::HashSet<String> = worktrees_output
+            .split("\n\n")
+            .filter_map(|block| {
+                block.lines().find(|l| l.starts_with("branch ")).map(|l| {
+                    l.strip_prefix("branch refs/heads/")
+                        .unwrap_or("")
+                        .to_string()
+                })
+            })
+            .collect();
+
+        branches_output
+            .lines()
+            .map(|l| {
+                l.trim()
+                    .trim_start_matches("* ")
+                    .trim_start_matches("+ ")
+                    .to_string()
+            })
+            .filter(|b| b.starts_with("kubo/"))
+            .map(|branch| {
+                let kubo_name = branch.strip_prefix("kubo/").unwrap_or(&branch).to_string();
+                KuboBranch {
+                    kubo_name,
+                    has_worktree: worktree_branches.contains(&branch),
+                    branch,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    Ok(AbotDetail {
+        name: name.to_string(),
+        path: abot_path.to_string_lossy().to_string(),
+        created_at,
+        default_branch,
+        kubo_branches,
+        git_status,
+    })
 }
 
 #[cfg(test)]
@@ -993,6 +1345,252 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsupported bundle version"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_api_key() {
+        let dir = std::env::temp_dir().join("abot-creds-api-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        write_json(&path, &serde_json::json!({"api_key": "sk-ant-api-test123"})).unwrap();
+
+        let env = read_credentials(&path);
+        assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "sk-ant-api-test123");
+        assert_eq!(env.get("CLAUDE_API_KEY").unwrap(), "sk-ant-api-test123");
+        assert!(!env.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_non_api_key_becomes_oauth() {
+        let dir = std::env::temp_dir().join("abot-creds-oauth-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        write_json(&path, &serde_json::json!({"api_key": "some-other-token"})).unwrap();
+
+        let env = read_credentials(&path);
+        assert_eq!(
+            env.get("CLAUDE_CODE_OAUTH_TOKEN").unwrap(),
+            "some-other-token"
+        );
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_claude_token() {
+        let dir = std::env::temp_dir().join("abot-creds-token-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        write_json(&path, &serde_json::json!({"claude_token": "tok-abc"})).unwrap();
+
+        let env = read_credentials(&path);
+        assert_eq!(env.get("CLAUDE_CODE_OAUTH_TOKEN").unwrap(), "tok-abc");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_missing_file() {
+        let env = read_credentials(Path::new("/tmp/abot-does-not-exist/credentials.json"));
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn test_read_credentials_empty_json() {
+        let dir = std::env::temp_dir().join("abot-creds-empty-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        std::fs::write(&path, "{}").unwrap();
+
+        let env = read_credentials(&path);
+        assert!(env.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_known_abots_crud() {
+        let dir = std::env::temp_dir().join("abot-known-abots-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Initially empty
+        let abots = read_known_abots(&dir);
+        assert!(abots.is_empty());
+
+        // Add one
+        add_known_abot(&dir, "alice");
+        let abots = read_known_abots(&dir);
+        assert_eq!(abots.len(), 1);
+        assert_eq!(abots[0].name, "alice");
+
+        // Duplicate is a no-op
+        add_known_abot(&dir, "alice");
+        assert_eq!(read_known_abots(&dir).len(), 1);
+
+        // Add another
+        add_known_abot(&dir, "bob");
+        assert_eq!(read_known_abots(&dir).len(), 2);
+
+        // Remove
+        remove_known_abot(&dir, "alice");
+        let abots = read_known_abots(&dir);
+        assert_eq!(abots.len(), 1);
+        assert_eq!(abots[0].name, "bob");
+
+        // Remove non-existent is a no-op
+        remove_known_abot(&dir, "charlie");
+        assert_eq!(read_known_abots(&dir).len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_abot_detail_not_found() {
+        let dir = std::env::temp_dir().join("abot-detail-notfound-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let result = get_abot_detail(&dir, "nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_get_abot_detail_with_git() {
+        let dir = std::env::temp_dir().join("abot-detail-git-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create a canonical abot
+        let abots_dir = dir.join("abots");
+        let abot_path = create_canonical_abot(&abots_dir, "testbot").unwrap();
+        assert!(abot_path.join(".git").exists());
+
+        let detail = get_abot_detail(&dir, "testbot").unwrap();
+        assert_eq!(detail.name, "testbot");
+        assert!(detail.created_at.is_some());
+        assert!(!detail.default_branch.is_empty());
+        assert!(detail.kubo_branches.is_empty()); // no kubo branches yet
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_integrate_variant_commits_worktree_changes() {
+        let dir = std::env::temp_dir().join("abot-integrate-commit-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create canonical abot + kubo worktree
+        let abots_dir = dir.join("abots");
+        let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
+        let kubos_dir = dir.join("kubos");
+        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
+        let kubo_path = kubos_dir.join("lab.kubo");
+        worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
+
+        // Create a file in the worktree (simulating terminal work)
+        let wt_path = kubo_path.join("alice");
+        let test_file = wt_path.join("home").join("work.txt");
+        std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
+        std::fs::write(&test_file, "hello from lab").unwrap();
+
+        // Verify file is NOT on default branch yet
+        let default_file = abot_path.join("home").join("work.txt");
+        assert!(!default_file.exists());
+
+        // Integrate — should auto-commit worktree changes, merge into default
+        integrate_variant(&abot_path, "kubo/lab").unwrap();
+
+        // File should now be on the default branch
+        assert!(
+            default_file.exists(),
+            "work.txt should exist on default branch after integrate"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&default_file).unwrap(),
+            "hello from lab"
+        );
+
+        // Kubo branch should be deleted
+        let branches = run_git(&abot_path, &["branch", "--list", "kubo/lab"]).unwrap();
+        assert!(branches.trim().is_empty(), "kubo/lab branch should be gone");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_discard_variant_does_not_commit_changes() {
+        let dir = std::env::temp_dir().join("abot-discard-nocommit-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let abots_dir = dir.join("abots");
+        let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
+        let kubos_dir = dir.join("kubos");
+        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
+        let kubo_path = kubos_dir.join("lab.kubo");
+        worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
+
+        // Create a file in the worktree
+        let wt_path = kubo_path.join("alice");
+        let test_file = wt_path.join("home").join("secret.txt");
+        std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
+        std::fs::write(&test_file, "discard me").unwrap();
+
+        // Discard — should NOT commit changes
+        discard_variant(&abot_path, "kubo/lab").unwrap();
+
+        // File should NOT be on the default branch
+        let default_file = abot_path.join("home").join("secret.txt");
+        assert!(
+            !default_file.exists(),
+            "secret.txt should NOT exist after discard"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sync_known_abots_with_kubos() {
+        let dir = std::env::temp_dir().join("abot-sync-known-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create a kubo with some abots in its manifest
+        let kubos_dir = dir.join("kubos");
+        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "test-kubo").unwrap();
+        let kubo_path = kubos_dir.join("test-kubo.kubo");
+        let mut manifest = crate::daemon::kubo::Kubo::read_manifest(&kubo_path).unwrap();
+        manifest.abots = vec!["alice".to_string(), "bob".to_string()];
+        crate::daemon::kubo::Kubo::write_manifest(&kubo_path, &manifest).unwrap();
+
+        // Pre-add alice to known
+        add_known_abot(&dir, "alice");
+        assert_eq!(read_known_abots(&dir).len(), 1);
+
+        // Sync should add bob
+        sync_known_abots(&dir);
+        let known = read_known_abots(&dir);
+        assert_eq!(known.len(), 2);
+        assert!(known.iter().any(|a| a.name == "alice"));
+        assert!(known.iter().any(|a| a.name == "bob"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

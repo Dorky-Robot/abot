@@ -1,9 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
-import '../../core/network/api_client.dart';
 import '../../core/network/kubo_service.dart';
-import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import 'facet.dart';
 
@@ -78,43 +76,31 @@ final facetManagerProvider =
 class FacetManagerNotifier extends Notifier<FacetManagerState> {
   int _nextId = 0;
 
-  /// Monotonic counter for auto-generated session names (session-1, session-2, ...).
-  int _nextSessionId = 1;
-
   @override
   FacetManagerState build() => const FacetManagerState();
 
-  /// Bump the session counter past existing session-N names (called during init).
-  void bumpSessionCounter(int n) {
-    if (n > _nextSessionId) _nextSessionId = n;
-  }
-
-  /// Create a new session on the server, add a facet, and attach via WS.
-  Future<FacetData> createNewSession({String kubo = 'default'}) async {
-    final sessionName = 'session-$_nextSessionId';
-    _nextSessionId++;
-
-    try {
-      await ref.read(sessionServiceProvider.notifier).createSession(sessionName, kubo: kubo);
-    } on ApiException catch (e) {
-      if (e.statusCode != 409) rethrow;
-    }
-
-    final facet = create(sessionName);
-    ref.read(wsServiceProvider.notifier).attachSession(sessionName);
-    return facet;
-  }
-
   /// Create a named abot in a kubo: canonical abot + worktree + session + facet.
-  Future<FacetData> createAbotInKubo(String abotName, {String kubo = 'default'}) async {
+  /// Returns the facet if a new session was created, null if the abot was only
+  /// employed (worktree created) without a new session (e.g. abot already has
+  /// a session in another kubo).
+  Future<FacetData?> createAbotInKubo(String abotName, {required String kubo}) async {
     final result = await ref.read(kuboServiceProvider.notifier).addAbotToKubo(
       kubo,
       abotName,
       createSession: true,
     );
 
-    // The session name is the abot name (returned by the daemon)
-    final sessionName = result['session'] as String? ?? abotName;
+    // If no session was created (abot already has one in another kubo),
+    // just return null — the worktree and manifest were still set up.
+    final sessionName = result['session'] as String?;
+    if (sessionName == null) return null;
+
+    // Remove any existing facet for this session (backend killed the old one)
+    final existing = state.getBySession(sessionName);
+    if (existing != null) {
+      ref.read(wsServiceProvider.notifier).detachSession(sessionName);
+      remove(existing.id);
+    }
 
     final facet = create(sessionName);
     ref.read(wsServiceProvider.notifier).attachSession(sessionName);
@@ -204,6 +190,13 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
     if (!state.facets.containsKey(facetId)) return;
     if (facetId == state.focusedId) return;
     state = state.copyWith(focusedId: facetId);
+    _persistFocused();
+  }
+
+  /// Clear focus — no facet is focused, shows landing page.
+  void unfocus() {
+    if (state.focusedId == null) return;
+    state = state.copyWith(focusedId: null);
     _persistFocused();
   }
 

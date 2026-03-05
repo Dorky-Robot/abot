@@ -63,7 +63,7 @@ impl KuboExecBackend {
                     cmd: Some(vec![
                         "/bin/sh",
                         "-lc",
-                        "exec bash -l 2>/dev/null || exec sh -l",
+                        "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi",
                     ]),
                     tty: Some(true),
                     attach_stdin: Some(true),

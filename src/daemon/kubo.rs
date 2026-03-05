@@ -94,6 +94,17 @@ impl Kubo {
             std::fs::write(&manifest_path, json)?;
         }
 
+        // Create empty credentials.json with restricted permissions
+        let creds_path = kubo_path.join("credentials.json");
+        if !creds_path.exists() {
+            std::fs::write(&creds_path, "{}")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&creds_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+
         Ok(kubo_path)
     }
 
@@ -212,30 +223,52 @@ impl Kubo {
     }
 
     /// Stop the kubo container.
+    /// Tries by container ID first, then by container name (handles daemon restart).
     pub async fn stop(&mut self) -> Result<()> {
+        let force_remove = || {
+            Some(RemoveContainerOptions {
+                force: true,
+                ..Default::default()
+            })
+        };
+
         if let Some(ref id) = self.container_id {
-            let _ = self
-                .docker
-                .remove_container(
-                    id,
-                    Some(RemoveContainerOptions {
-                        force: true,
-                        ..Default::default()
-                    }),
-                )
-                .await;
+            let _ = self.docker.remove_container(id, force_remove()).await;
             tracing::info!("stopped kubo container '{}'", self.name);
             self.container_id = None;
+            return Ok(());
+        }
+
+        // Fallback: try by container name
+        let container_name = format!("abot-kubo-{}", self.name);
+        if self
+            .docker
+            .inspect_container(&container_name, None)
+            .await
+            .is_ok()
+        {
+            let _ = self
+                .docker
+                .remove_container(&container_name, force_remove())
+                .await;
+            tracing::info!("stopped kubo container '{}' (by name)", self.name);
         }
         Ok(())
     }
 
-    /// Check if the container is still running.
+    /// Check if the container is still running via Docker API.
+    /// Checks both by container ID (if known) and by container name (for daemon restarts).
     pub async fn is_running(&self) -> bool {
+        // First try by container ID (fast path)
         if let Some(ref id) = self.container_id {
             if let Ok(info) = self.docker.inspect_container(id, None).await {
                 return info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
             }
+        }
+        // Fallback: check by container name (handles daemon restart with live container)
+        let container_name = format!("abot-kubo-{}", self.name);
+        if let Ok(info) = self.docker.inspect_container(&container_name, None).await {
+            return info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
         }
         false
     }
@@ -362,12 +395,18 @@ impl Kubo {
     }
 
     /// Serialize to JSON for IPC responses.
-    pub fn to_json(&self) -> serde_json::Value {
+    /// Queries Docker for live container status instead of relying on in-memory flag.
+    pub async fn to_json(&self) -> serde_json::Value {
+        let abots = Self::read_manifest(&self.path)
+            .map(|m| m.abots)
+            .unwrap_or_default();
+        let running = self.is_running().await;
         serde_json::json!({
             "name": self.name,
             "path": self.path.to_string_lossy(),
-            "running": self.container_id.is_some(),
+            "running": running,
             "activeSessions": self.active_sessions,
+            "abots": abots,
         })
     }
 }
@@ -424,6 +463,19 @@ mod tests {
         let manifest = Kubo::read_manifest(&path).unwrap();
         assert_eq!(manifest.name, "test");
         assert_eq!(manifest.version, 1);
+
+        // credentials.json should be created with empty object
+        let creds_path = path.join("credentials.json");
+        assert!(creds_path.exists());
+        let contents = std::fs::read_to_string(&creds_path).unwrap();
+        assert_eq!(contents, "{}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&creds_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

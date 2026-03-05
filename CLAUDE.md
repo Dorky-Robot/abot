@@ -161,21 +161,21 @@ git add -A && git commit -m "autosave 2026-03-04 12:00:00 UTC"
 # ↑ commits to kubo/everyday_vet branch in alice.abot
 ```
 
-#### Update indicator (upstream changes)
+#### Variant lifecycle
 
-Check: `git log kubo/everyday_vet..HEAD --oneline` in the canonical abot
-(from the default branch). If there are commits, the default branch has
-diverged — show a UI indicator that an update is available.
+A variant is a `kubo/<name>` branch in an abot's git repo — one per kubo the
+abot has been employed in. Variants are either employed (worktree exists) or
+past work (branch exists, no worktree). The UI shows only variants that still
+need a decision.
 
-- **User clicks update** → merge default branch into `kubo/everyday_vet`
-- **Conflicts** → future: AI agent resolves merge conflicts
+| Action | What happens | Result |
+|--------|-------------|--------|
+| **Employ** | `git branch kubo/<name>` + `git worktree add` | Variant created, abot working in kubo |
+| **Dismiss** | Remove from kubo manifest (worktree kept, branch kept) | Variant becomes "past work" |
+| **Integrate** | Remove worktree if any, `git merge <branch>` into default, `git branch -d` | Variant absorbed into core abot, branch gone |
+| **Discard** | Remove worktree if any, `git branch -D` | Variant deleted, branch gone |
 
-#### Reintegration
-
-Merging a kubo branch back into the default branch in the canonical abot is a
-deliberate user action — like a worker bringing their experience home. This is
-standard `git merge`, not subtree surgery. Future: AI-assisted conflict
-resolution.
+After integrate or discard, the branch is gone — no sub-item in the UI.
 
 #### Implementation notes
 
@@ -240,11 +240,12 @@ one-person consultancy needs separate API keys per kubo. This is a feature, not
 friction. The UI should make credential setup per-kubo feel natural, not like a
 missing default.
 
-### Updates need a human story
+### Variant actions speak for themselves
 
-"Branch diverged" means nothing to a normie. The update indicator should
-communicate in human terms: what changed, where, and why they'd want it.
-Future iteration — the exact language needs design work.
+"Integrate" means bring the work home. "Discard" means throw it away. "Dismiss"
+means stop working but keep the history. These are the only actions on variants —
+no "merged" badges, no "catch up" buttons, no "N new" counts. The user sees what
+exists and decides what to do with it.
 
 ## Conventions
 

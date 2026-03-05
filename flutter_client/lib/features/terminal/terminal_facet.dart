@@ -460,6 +460,7 @@ class _TitleBar extends StatelessWidget {
           if (onSettings != null)
             InkWell(
               onTap: onSettings,
+              canRequestFocus: false,
               borderRadius: BorderRadius.circular(AbotRadius.sm),
               child: Padding(
                 padding: const EdgeInsets.all(4),
@@ -469,6 +470,7 @@ class _TitleBar extends StatelessWidget {
           if (onMinimize != null)
             InkWell(
               onTap: onMinimize,
+              canRequestFocus: false,
               borderRadius: BorderRadius.circular(AbotRadius.sm),
               child: Padding(
                 padding: const EdgeInsets.all(4),
@@ -478,6 +480,7 @@ class _TitleBar extends StatelessWidget {
           if (onClose != null)
             InkWell(
               onTap: onClose,
+              canRequestFocus: false,
               borderRadius: BorderRadius.circular(AbotRadius.sm),
               child: Padding(
                 padding: const EdgeInsets.all(4),

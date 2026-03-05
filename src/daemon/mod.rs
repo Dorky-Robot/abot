@@ -45,14 +45,18 @@ impl DaemonState {
     ) -> anyhow::Result<Box<dyn SessionBackend>> {
         let global_env = self.agent_env.lock().await;
         let mut merged = global_env.clone();
-        merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
         drop(global_env);
 
         let mut kubos = self.kubos.lock().await;
         let kubo = kubos
             .get_mut(kubo_name)
             .ok_or_else(|| anyhow::anyhow!("kubo '{}' not found", kubo_name))?;
+
+        // Merge: global < kubo credentials < session env (most specific wins)
+        let kubo_creds = bundle::read_credentials(&kubo.path.join("credentials.json"));
+        merged.extend(kubo_creds);
+        merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
         // Ensure container is running
         kubo.start().await?;
@@ -76,22 +80,6 @@ impl DaemonState {
         }
 
         Ok(Box::new(backend))
-    }
-
-    /// Get or create the default kubo, returning its name.
-    pub async fn ensure_default_kubo(&self) -> anyhow::Result<String> {
-        let kubos_dir = self.data_dir.join("kubos");
-        std::fs::create_dir_all(&kubos_dir)?;
-
-        let mut kubos = self.kubos.lock().await;
-        if kubos.contains_key("default") {
-            return Ok("default".to_string());
-        }
-
-        let kubo_path = kubo::Kubo::ensure_kubo_dir(&kubos_dir, "default")?;
-        let new_kubo = kubo::new_kubo("default".to_string(), kubo_path)?;
-        kubos.insert("default".to_string(), new_kubo);
-        Ok("default".to_string())
     }
 }
 
@@ -141,18 +129,25 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     }
 
     // Initialize kubos from existing kubo directories
-    let kubos_dir = data_dir.join("kubos");
+    let kubos_dir = bundle::resolve_kubos_dir(data_dir);
     let _ = std::fs::create_dir_all(&kubos_dir);
     let mut kubos_map = HashMap::new();
-    for (name, path) in kubo::list_kubo_dirs(&kubos_dir) {
-        match kubo::new_kubo(name.clone(), path) {
-            Ok(k) => {
-                tracing::info!("discovered kubo '{}'", name);
-                kubos_map.insert(name, k);
-            }
-            Err(e) => tracing::warn!("failed to load kubo '{}': {}", name, e),
+    for (name, _) in kubo::list_kubo_dirs(&kubos_dir) {
+        // Ensure manifest + credentials exist (repairs missing manifests)
+        match kubo::Kubo::ensure_kubo_dir(&kubos_dir, &name) {
+            Ok(path) => match kubo::new_kubo(name.clone(), path) {
+                Ok(k) => {
+                    tracing::info!("discovered kubo '{}'", name);
+                    kubos_map.insert(name, k);
+                }
+                Err(e) => tracing::warn!("failed to load kubo '{}': {}", name, e),
+            },
+            Err(e) => tracing::warn!("failed to ensure kubo '{}': {}", name, e),
         }
     }
+
+    // Sync known abots with kubo manifests
+    bundle::sync_known_abots(data_dir);
 
     let state = Arc::new(DaemonState {
         sessions: Mutex::new(HashMap::new()),
@@ -331,14 +326,24 @@ async fn handle_connection(state: Arc<DaemonState>, stream: tokio::net::UnixStre
 
         match serde_json::from_str::<DaemonRequest>(&line) {
             Ok(req) => {
-                let response = ipc::handle_request(&state, req).await;
-                if let Some(resp) = response {
-                    let json = serde_json::to_string(&resp)?;
-                    let mut w = writer.lock().await;
-                    w.write_all(json.as_bytes()).await?;
-                    w.write_all(b"\n").await?;
-                    w.flush().await?;
-                }
+                let state = state.clone();
+                let writer = writer.clone();
+                tokio::spawn(async move {
+                    let response = ipc::handle_request(&state, req).await;
+                    if let Some(resp) = response {
+                        match serde_json::to_string(&resp) {
+                            Ok(json) => {
+                                let mut w = writer.lock().await;
+                                let _ = w.write_all(json.as_bytes()).await;
+                                let _ = w.write_all(b"\n").await;
+                                let _ = w.flush().await;
+                            }
+                            Err(e) => {
+                                tracing::error!("failed to serialize daemon response: {}", e);
+                            }
+                        }
+                    }
+                });
             }
             Err(e) => {
                 tracing::warn!("invalid daemon request: {} — {}", e, line);
