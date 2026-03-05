@@ -1428,33 +1428,7 @@ pub async fn handle_request(
                 });
             }
 
-            // Close the session if one exists for this abot in this kubo
-            {
-                let mut sessions = state.sessions.lock().await;
-                if let Some(mut session) = sessions.remove(&abot) {
-                    if session.kubo.as_deref() == Some(&kubo) {
-                        let kn = if session.is_alive() {
-                            session.kubo.clone()
-                        } else {
-                            None
-                        };
-                        session.backend.kill();
-                        let _ = state.output_tx.send(OutputEvent::SessionRemoved {
-                            session: abot.clone(),
-                        });
-                        drop(sessions);
-                        if let Some(kn) = kn {
-                            let mut kubos = state.kubos.lock().await;
-                            if let Some(k) = kubos.get_mut(&kn) {
-                                k.session_closed();
-                            }
-                        }
-                    } else {
-                        // Session exists but belongs to a different kubo — put it back
-                        sessions.insert(abot.clone(), session);
-                    }
-                }
-            }
+            close_session_in_kubo(state, &abot, &kubo).await;
 
             // Get kubo path and resolve canonical abot path
             let kubo_path = {
