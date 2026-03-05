@@ -14,14 +14,17 @@ pub struct KuboBody {
     pub kubo: String,
 }
 
-/// GET /abots — list known abots (lightweight)
+/// GET /abots — list known abots (runs git commands per abot, may be slow)
 pub async fn list_abots(
     _auth: Authenticated,
     State(app): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let resp = app
         .daemon_client
-        .rpc(DaemonRequest::ListAbots { id: String::new() })
+        .rpc_with_timeout(
+            DaemonRequest::ListAbots { id: String::new() },
+            std::time::Duration::from_secs(30),
+        )
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
 

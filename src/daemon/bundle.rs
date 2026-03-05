@@ -216,7 +216,9 @@ pub fn read_credentials(path: &Path) -> HashMap<String, String> {
 
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, json)?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &json)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 

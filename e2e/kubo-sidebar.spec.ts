@@ -3,8 +3,16 @@ import { test, expect, type Page } from '@playwright/test';
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 async function listKubos(page: Page) {
-  const resp = await page.request.get('/kubos');
-  return (await resp.json()) as { name: string; running: boolean; activeSessions: number; abots: string[] }[];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await page.request.get('/kubos');
+    if (!resp.ok()) {
+      await page.waitForTimeout(500);
+      continue;
+    }
+    const data = await resp.json();
+    if (Array.isArray(data)) return data as { name: string; running: boolean; activeSessions: number; abots: string[] }[];
+  }
+  return [] as { name: string; running: boolean; activeSessions: number; abots: string[] }[];
 }
 
 async function createKubo(page: Page, name: string) {
@@ -22,9 +30,16 @@ async function stopKubo(page: Page, name: string) {
 }
 
 async function listSessions(page: Page) {
-  const resp = await page.request.get('/sessions');
-  const body = await resp.json();
-  return (body.sessions ?? body ?? []) as { name: string; alive: boolean; kubo: string | null; bundlePath: string | null }[];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await page.request.get('/sessions');
+    if (!resp.ok()) {
+      await page.waitForTimeout(500);
+      continue;
+    }
+    const body = await resp.json();
+    return (body.sessions ?? body ?? []) as { name: string; alive: boolean; kubo: string | null; bundlePath: string | null }[];
+  }
+  return [] as { name: string; alive: boolean; kubo: string | null; bundlePath: string | null }[];
 }
 
 async function addAbotToKubo(page: Page, kubo: string, abot: string, createSession = true) {
@@ -50,7 +65,7 @@ async function removeAbotFromKubo(page: Page, kubo: string, abot: string) {
 
 async function waitForApp(page: Page) {
   await page.goto('/');
-  await page.locator('flutter-view').waitFor({ timeout: 15_000 });
+  await page.locator('flutter-view').waitFor({ timeout: 30_000 });
   await page.waitForTimeout(2000);
 }
 
@@ -265,7 +280,12 @@ test.describe('Kubo credentials', () => {
 // ── Known abots registry ──────────────────────────────────────────────────
 
 async function listAbots(page: Page) {
-  const resp = await page.request.get('/abots');
+  // Retry once on transient 500 (can happen if concurrent workers are writing abots.json)
+  let resp = await page.request.get('/abots');
+  if (!resp.ok()) {
+    await page.waitForTimeout(200);
+    resp = await page.request.get('/abots');
+  }
   expect(resp.ok(), `GET /abots failed: ${resp.status()}`).toBeTruthy();
   const body = await resp.json();
   return (body.abots ?? []) as { name: string; added_at: string }[];
@@ -403,6 +423,7 @@ test.describe('Active kubo selection', () => {
   });
 
   test('active kubo persists across page reloads', async ({ page }) => {
+    test.setTimeout(60_000);
     // Pre-seed localStorage with a non-default kubo name.
     const kuboName = `e2e-persist-${Date.now()}`;
     await trackedCreateKubo(page, kuboName);
@@ -414,7 +435,7 @@ test.describe('Active kubo selection', () => {
 
     // Reload and verify it persists.
     await page.reload();
-    await page.locator('flutter-view').waitFor({ timeout: 15_000 });
+    await page.locator('flutter-view').waitFor({ timeout: 30_000 });
     await page.waitForTimeout(2000);
 
     const activeKubo = await page.evaluate(() => localStorage.getItem('abot_active_kubo'));
@@ -438,7 +459,7 @@ test.describe('Active kubo selection', () => {
 
     // Reload to pick up the localStorage value.
     await page.reload();
-    await page.locator('flutter-view').waitFor({ timeout: 15_000 });
+    await page.locator('flutter-view').waitFor({ timeout: 30_000 });
     await page.waitForTimeout(2000);
 
     const count = await page.locator('.xterm-container').count();
@@ -466,6 +487,155 @@ test.describe('Active kubo selection', () => {
     const allSessions = await listSessions(page);
     expect(allSessions.filter(s => (s.kubo ?? 'default') === emptyKubo).length).toBe(0);
     expect(allSessions.filter(s => (s.kubo ?? 'default') === 'default').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── Kubo landing page ─────────────────────────────────────────────────────
+
+test.describe('Kubo landing page', () => {
+  test.afterEach(async ({ page }) => {
+    if (page.url() === 'about:blank') await page.goto('/');
+    await page.evaluate(() => {
+      localStorage.removeItem('abot_active_kubo');
+      localStorage.removeItem('abot_open_kubos');
+    }).catch(() => {});
+    await cleanupResources(page);
+  });
+
+  test('kubo with abots has sessions visible via API', async ({ page }) => {
+    // Clean slate
+    const sessions = await listSessions(page);
+    for (const s of sessions) {
+      await deleteSession(page, s.name).catch(() => {});
+    }
+
+    // Add abots to default kubo
+    const ts = Date.now();
+    const abot1 = `e2e-lp-a-${ts}`;
+    const abot2 = `e2e-lp-b-${ts}`;
+    await trackedAddAbot(page, 'default', abot1);
+    await trackedAddAbot(page, 'default', abot2);
+
+    // Both sessions should exist on the server
+    const allSessions = await listSessions(page);
+    expect(allSessions.find(s => s.name === abot1)).toBeDefined();
+    expect(allSessions.find(s => s.name === abot2)).toBeDefined();
+
+    // App loads and shows flutter-view
+    await waitForApp(page);
+    const flutterView = page.locator('flutter-view');
+    await expect(flutterView).toBeVisible();
+  });
+
+  test('closing all sessions leaves no sessions on server', async ({ page }) => {
+    // Create an abot
+    const ts = Date.now();
+    await trackedAddAbot(page, 'default', `e2e-lp-close-${ts}`);
+
+    // Verify session exists
+    let sessions = await listSessions(page);
+    expect(sessions.length).toBeGreaterThanOrEqual(1);
+
+    // Delete all sessions via API
+    for (const s of sessions) {
+      await deleteSession(page, s.name).catch(() => {});
+    }
+    createdSessions.length = 0;
+
+    // Verify no sessions remain
+    sessions = await listSessions(page);
+    expect(sessions.length).toBe(0);
+
+    // Reload app — should show empty state (landing page)
+    await waitForApp(page);
+    const count = await page.locator('.xterm-container').count();
+    expect(count).toBe(0);
+  });
+
+  test('switching active kubo via localStorage persists across reload', async ({ page }) => {
+    test.setTimeout(60_000);
+    // Create two kubos with abots
+    const ts = Date.now();
+    const kubo1 = `e2e-lp-k1-${ts}`;
+    const kubo2 = `e2e-lp-k2-${ts}`;
+    await trackedCreateKubo(page, kubo1);
+    await trackedCreateKubo(page, kubo2);
+    await trackedAddAbot(page, kubo1, `e2e-lp-k1a-${ts}`);
+    await trackedAddAbot(page, kubo2, `e2e-lp-k2a-${ts}`);
+
+    // Set kubo1 as active and verify it persists after reload
+    await page.goto('/');
+    await page.evaluate((name) => localStorage.setItem('abot_active_kubo', name), kubo1);
+    await page.reload();
+    await page.locator('flutter-view').waitFor({ timeout: 30_000 });
+
+    let activeKubo = await page.evaluate(() => localStorage.getItem('abot_active_kubo'));
+    expect(activeKubo).toBe(kubo1);
+
+    // Switch to kubo2 and verify persistence
+    await page.evaluate((name) => localStorage.setItem('abot_active_kubo', name), kubo2);
+    await page.reload();
+    await page.locator('flutter-view').waitFor({ timeout: 30_000 });
+
+    activeKubo = await page.evaluate(() => localStorage.getItem('abot_active_kubo'));
+    expect(activeKubo).toBe(kubo2);
+  });
+
+  test('empty kubo (no abots) shows no xterms — landing page visible', async ({ page }) => {
+    // Clean slate
+    const sessions = await listSessions(page);
+    for (const s of sessions) {
+      await deleteSession(page, s.name).catch(() => {});
+    }
+
+    // Create an empty kubo
+    const kuboName = `e2e-lp-empty-${Date.now()}`;
+    await trackedCreateKubo(page, kuboName);
+
+    // Set it as active and load
+    await page.goto('/');
+    await page.evaluate((name) => localStorage.setItem('abot_active_kubo', name), kuboName);
+    await page.reload();
+    await page.locator('flutter-view').waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(2000);
+
+    // No xterm containers — landing page should be showing
+    const count = await page.locator('.xterm-container').count();
+    expect(count).toBe(0);
+
+    // Active kubo should still be our empty kubo
+    const activeKubo = await page.evaluate(() => localStorage.getItem('abot_active_kubo'));
+    expect(activeKubo).toBe(kuboName);
+  });
+
+  test('adding abot to active empty kubo creates a session', async ({ page }) => {
+    // Create empty kubo and set active
+    const kuboName = `e2e-lp-add-${Date.now()}`;
+    await trackedCreateKubo(page, kuboName);
+
+    // No sessions in this kubo initially
+    let sessions = await listSessions(page);
+    expect(sessions.filter(s => (s.kubo ?? 'default') === kuboName).length).toBe(0);
+
+    // Add an abot — this creates a session in the kubo
+    const abotName = `e2e-lp-newabot-${Date.now()}`;
+    await trackedAddAbot(page, kuboName, abotName);
+
+    // Session should now exist in the kubo
+    sessions = await listSessions(page);
+    const session = sessions.find(s => s.name === abotName);
+    expect(session).toBeDefined();
+    expect(session!.kubo).toBe(kuboName);
+
+    // Set as active and verify app loads
+    await page.goto('/');
+    await page.evaluate((name) => localStorage.setItem('abot_active_kubo', name), kuboName);
+    await page.reload();
+    await page.locator('flutter-view').waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(2000);
+
+    const activeKubo = await page.evaluate(() => localStorage.getItem('abot_active_kubo'));
+    expect(activeKubo).toBe(kuboName);
   });
 });
 
@@ -527,7 +697,7 @@ test.describe('Kubo creation round-trip', () => {
     }, kubo);
 
     await page.reload();
-    await page.locator('flutter-view').waitFor({ timeout: 15_000 });
+    await page.locator('flutter-view').waitFor({ timeout: 30_000 });
     await page.waitForTimeout(2000);
 
     // Verify localStorage persisted

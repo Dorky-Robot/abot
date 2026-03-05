@@ -342,14 +342,24 @@ async fn handle_connection(state: Arc<DaemonState>, stream: tokio::net::UnixStre
 
         match serde_json::from_str::<DaemonRequest>(&line) {
             Ok(req) => {
-                let response = ipc::handle_request(&state, req).await;
-                if let Some(resp) = response {
-                    let json = serde_json::to_string(&resp)?;
-                    let mut w = writer.lock().await;
-                    w.write_all(json.as_bytes()).await?;
-                    w.write_all(b"\n").await?;
-                    w.flush().await?;
-                }
+                let state = state.clone();
+                let writer = writer.clone();
+                tokio::spawn(async move {
+                    let response = ipc::handle_request(&state, req).await;
+                    if let Some(resp) = response {
+                        match serde_json::to_string(&resp) {
+                            Ok(json) => {
+                                let mut w = writer.lock().await;
+                                let _ = w.write_all(json.as_bytes()).await;
+                                let _ = w.write_all(b"\n").await;
+                                let _ = w.flush().await;
+                            }
+                            Err(e) => {
+                                tracing::error!("failed to serialize daemon response: {}", e);
+                            }
+                        }
+                    }
+                });
             }
             Err(e) => {
                 tracing::warn!("invalid daemon request: {} — {}", e, line);

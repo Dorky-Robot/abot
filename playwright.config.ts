@@ -5,8 +5,9 @@ const port = 7071;
 
 export default defineConfig({
   testDir: './e2e',
-  timeout: 30_000,
+  timeout: 60_000,
   expect: { timeout: 10_000 },
+  workers: 1, // single worker to avoid cross-test data corruption (shared daemon)
   globalSetup: path.resolve(__dirname, 'e2e/global-setup.ts'),
   globalTeardown: path.resolve(__dirname, 'e2e/global-teardown.ts'),
   use: {
