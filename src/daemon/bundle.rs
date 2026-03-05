@@ -698,8 +698,24 @@ fn find_worktree_path(canonical_path: &Path, kubo_branch: &str) -> Option<String
     None
 }
 
-/// Remove a worktree for the given branch (no-op if none exists).
-fn remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+/// Auto-commit any outstanding changes in a worktree, then remove it.
+/// Ensures no work is lost when the worktree is cleaned up.
+fn commit_and_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
+        let wt = std::path::Path::new(&wt_path);
+        if let Ok(committed) = auto_commit_abot(wt) {
+            if committed {
+                tracing::info!("auto-committed changes in worktree '{}'", wt_path);
+            }
+        }
+        let _ = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]);
+        let _ = run_git(canonical_path, &["worktree", "prune"]);
+    }
+    Ok(())
+}
+
+/// Force-remove a worktree without committing (for discard).
+fn force_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
     if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
         let _ = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]);
         let _ = run_git(canonical_path, &["worktree", "prune"]);
@@ -708,10 +724,10 @@ fn remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
 }
 
 /// Integrate a kubo variant into the abot's default branch, then delete the branch.
-/// If a worktree exists for this branch, it is removed first.
+/// Commits any outstanding worktree changes before merging.
 /// Returns Err if the merge has conflicts (merge is aborted in that case).
 pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    remove_worktree(canonical_path, kubo_branch)?;
+    commit_and_remove_worktree(canonical_path, kubo_branch)?;
 
     // Merge the kubo branch into the current (default) branch
     let merge_output = run_git(canonical_path, &["merge", kubo_branch, "--no-edit"]);
@@ -731,9 +747,9 @@ pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()>
     Ok(())
 }
 
-/// Dismiss a kubo variant — remove the worktree but keep the branch as past work.
+/// Dismiss a kubo variant — commit outstanding changes, remove worktree, keep branch.
 pub fn dismiss_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    remove_worktree(canonical_path, kubo_branch)?;
+    commit_and_remove_worktree(canonical_path, kubo_branch)?;
 
     tracing::info!(
         "dismissed variant '{}' from {}",
@@ -743,9 +759,9 @@ pub fn dismiss_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Discard a kubo variant — delete the branch and worktree if any.
+/// Discard a kubo variant — delete the branch and worktree without saving.
 pub fn discard_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    remove_worktree(canonical_path, kubo_branch)?;
+    force_remove_worktree(canonical_path, kubo_branch)?;
 
     // Force-delete the branch
     run_git(canonical_path, &["branch", "-D", kubo_branch])?;
@@ -1448,6 +1464,82 @@ mod tests {
         assert!(detail.created_at.is_some());
         assert!(!detail.default_branch.is_empty());
         assert!(detail.kubo_branches.is_empty()); // no kubo branches yet
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_integrate_variant_commits_worktree_changes() {
+        let dir = std::env::temp_dir().join("abot-integrate-commit-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create canonical abot + kubo worktree
+        let abots_dir = dir.join("abots");
+        let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
+        let kubos_dir = dir.join("kubos");
+        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
+        let kubo_path = kubos_dir.join("lab.kubo");
+        worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
+
+        // Create a file in the worktree (simulating terminal work)
+        let wt_path = kubo_path.join("alice");
+        let test_file = wt_path.join("home").join("work.txt");
+        std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
+        std::fs::write(&test_file, "hello from lab").unwrap();
+
+        // Verify file is NOT on default branch yet
+        let default_file = abot_path.join("home").join("work.txt");
+        assert!(!default_file.exists());
+
+        // Integrate — should auto-commit worktree changes, merge into default
+        integrate_variant(&abot_path, "kubo/lab").unwrap();
+
+        // File should now be on the default branch
+        assert!(
+            default_file.exists(),
+            "work.txt should exist on default branch after integrate"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&default_file).unwrap(),
+            "hello from lab"
+        );
+
+        // Kubo branch should be deleted
+        let branches = run_git(&abot_path, &["branch", "--list", "kubo/lab"]).unwrap();
+        assert!(branches.trim().is_empty(), "kubo/lab branch should be gone");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_discard_variant_does_not_commit_changes() {
+        let dir = std::env::temp_dir().join("abot-discard-nocommit-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let abots_dir = dir.join("abots");
+        let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
+        let kubos_dir = dir.join("kubos");
+        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
+        let kubo_path = kubos_dir.join("lab.kubo");
+        worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
+
+        // Create a file in the worktree
+        let wt_path = kubo_path.join("alice");
+        let test_file = wt_path.join("home").join("secret.txt");
+        std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
+        std::fs::write(&test_file, "discard me").unwrap();
+
+        // Discard — should NOT commit changes
+        discard_variant(&abot_path, "kubo/lab").unwrap();
+
+        // File should NOT be on the default branch
+        let default_file = abot_path.join("home").join("secret.txt");
+        assert!(
+            !default_file.exists(),
+            "secret.txt should NOT exist after discard"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
