@@ -81,22 +81,6 @@ impl DaemonState {
 
         Ok(Box::new(backend))
     }
-
-    /// Get or create the default kubo, returning its name.
-    pub async fn ensure_default_kubo(&self) -> anyhow::Result<String> {
-        let kubos_dir = bundle::resolve_kubos_dir(&self.data_dir);
-        std::fs::create_dir_all(&kubos_dir)?;
-
-        let mut kubos = self.kubos.lock().await;
-        if kubos.contains_key("default") {
-            return Ok("default".to_string());
-        }
-
-        let kubo_path = kubo::Kubo::ensure_kubo_dir(&kubos_dir, "default")?;
-        let new_kubo = kubo::new_kubo("default".to_string(), kubo_path)?;
-        kubos.insert("default".to_string(), new_kubo);
-        Ok("default".to_string())
-    }
 }
 
 pub async fn run(data_dir: &Path) -> Result<()> {

@@ -136,16 +136,12 @@ class KuboSettingsPanel extends StatelessWidget {
                           const SizedBox(height: AbotSpacing.lg),
                         ],
 
-                        // Start / Shutdown
+                        // Start / Stop
                         if (!kubo.running && onStart != null) ...[
-                          _SectionLabel(label: 'Container'),
-                          const SizedBox(height: AbotSpacing.sm),
-                          _buildActionButton(p, 'Start container', p.green, onStart!),
+                          _buildActionButton(p, 'Start kubo', p.green, onStart!),
                         ],
                         if (kubo.running && onShutdown != null) ...[
-                          _SectionLabel(label: 'Danger Zone'),
-                          const SizedBox(height: AbotSpacing.sm),
-                          _buildActionButton(p, 'Shutdown container', p.red, onShutdown!),
+                          _buildActionButton(p, 'Stop kubo', p.red, onShutdown!),
                         ],
                       ],
                     ),

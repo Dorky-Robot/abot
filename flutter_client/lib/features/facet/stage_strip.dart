@@ -152,15 +152,16 @@ class _StageStripState extends State<StageStrip> {
   List<String> _manifestOnlyAbots(String kuboName, _KuboGroup group) {
     final kuboInfo = widget.kubos.where((k) => k.name == kuboName).firstOrNull;
     if (kuboInfo == null) return [];
-    final sessionNames = <String>{
-      ...group.facets.map((f) => f.sessionName),
-      ...group.unattachedSessions.map((s) => s.name),
+    // Use displayName (bare abot name) to compare with manifest abots
+    final sessionDisplayNames = <String>{
+      ...group.facets.map((f) => widget.sessionInfoMap[f.sessionName]?.displayName ?? f.sessionName),
+      ...group.unattachedSessions.map((s) => s.displayName),
     };
-    return kuboInfo.abots.where((a) => !sessionNames.contains(a)).toList();
+    return kuboInfo.abots.where((a) => !sessionDisplayNames.contains(a)).toList();
   }
 
-  String _kuboFor(String sessionName) {
-    return widget.sessionInfoMap[sessionName]?.kubo ?? 'default';
+  String? _kuboFor(String sessionName) {
+    return widget.sessionInfoMap[sessionName]?.kubo;
   }
 
   @override
@@ -311,27 +312,25 @@ class _StageStripState extends State<StageStrip> {
     for (final k in widget.kubos) {
       groups.putIfAbsent(k.name, () => _KuboGroup(kuboName: k.name));
     }
-    groups.putIfAbsent('default', () => _KuboGroup(kuboName: 'default'));
 
     // Assign all sessions (open and unattached) to groups
     for (final facet in widget.allFacets) {
       final kubo = _kuboFor(facet.sessionName);
-      groups.putIfAbsent(kubo, () => _KuboGroup(kuboName: kubo));
-      groups[kubo]!.facets.add(facet);
+      if (kubo != null) {
+        groups.putIfAbsent(kubo, () => _KuboGroup(kuboName: kubo));
+        groups[kubo]!.facets.add(facet);
+      }
     }
     for (final session in widget.serverSessions) {
       if (widget.openSessionNames.contains(session.name)) continue;
-      final kubo = session.kubo ?? 'default';
-      groups.putIfAbsent(kubo, () => _KuboGroup(kuboName: kubo));
-      groups[kubo]!.unattachedSessions.add(session);
+      final kubo = session.kubo;
+      if (kubo != null) {
+        groups.putIfAbsent(kubo, () => _KuboGroup(kuboName: kubo));
+        groups[kubo]!.unattachedSessions.add(session);
+      }
     }
 
-    final sortedKeys = groups.keys.toList()
-      ..sort((a, b) {
-        if (a == 'default') return -1;
-        if (b == 'default') return 1;
-        return a.compareTo(b);
-      });
+    final sortedKeys = groups.keys.toList()..sort();
 
     final kuboRunning = <String, bool>{};
     for (final k in widget.kubos) {
@@ -409,7 +408,7 @@ class _StageStripState extends State<StageStrip> {
                   // Open abots (have facets)
                   for (final facet in group.facets)
                     _AbotRow(
-                      name: facet.sessionName,
+                      name: widget.sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName,
                       isRunning: widget.sessionInfoMap[facet.sessionName]?.isRunning ?? true,
                       isFocused: facet.id == widget.focusedId,
                       isDirty: widget.sessionInfoMap[facet.sessionName]?.dirty ?? false,
@@ -417,19 +416,19 @@ class _StageStripState extends State<StageStrip> {
                           ? null
                           : () => widget.onFocusFacet(facet.id),
                       onRemove: widget.onRemoveAbot != null
-                          ? () => widget.onRemoveAbot!(kuboName, facet.sessionName)
+                          ? () => widget.onRemoveAbot!(kuboName, widget.sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName)
                           : null,
                     ),
                   // Unattached abots (server sessions not open as facets)
                   for (final session in group.unattachedSessions)
                     _AbotRow(
-                      name: session.name,
+                      name: session.displayName,
                       isRunning: session.isRunning,
                       isFocused: false,
                       isDirty: session.dirty,
                       onTap: () => widget.onOpenSession(session.name),
                       onRemove: widget.onRemoveAbot != null
-                          ? () => widget.onRemoveAbot!(kuboName, session.name)
+                          ? () => widget.onRemoveAbot!(kuboName, session.displayName)
                           : null,
                     ),
                   // Abots from manifest that have no sessions at all
@@ -482,13 +481,14 @@ class _StageStripState extends State<StageStrip> {
   Widget _buildAbotsTab(CatPalette p) {
     final knownAbots = widget.knownAbots;
 
-    // Build a set of abot names that have active sessions
+    // Build a set of bare abot names that have active sessions
     final activeAbotNames = <String>{};
     for (final session in widget.serverSessions) {
-      activeAbotNames.add(session.name);
+      activeAbotNames.add(session.displayName);
     }
     for (final facet in widget.allFacets) {
-      activeAbotNames.add(facet.sessionName);
+      final info = widget.sessionInfoMap[facet.sessionName];
+      activeAbotNames.add(info?.displayName ?? facet.sessionName);
     }
 
     if (knownAbots.isEmpty) {
@@ -1367,7 +1367,7 @@ class _SessionTileState extends State<_SessionTile> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      widget.session.name,
+                      widget.session.displayName,
                       style: TextStyle(
                         fontSize: 13,
                         color: p.text,

@@ -45,7 +45,7 @@ function parseInsetValues(clipPath: string): number[] {
 }
 
 // Helper: add an abot to a kubo via REST, creating a session.
-async function addAbotToKubo(page: Page, abot: string, kubo = 'default') {
+async function addAbotToKubo(page: Page, abot: string, kubo: string) {
   const resp = await page.request.post(
     `/kubos/${encodeURIComponent(kubo)}/abots`,
     { data: { abot, createSession: true } },
@@ -57,12 +57,20 @@ async function addAbotToKubo(page: Page, abot: string, kubo = 'default') {
 // macOS uses Meta, others use Control.
 const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
 
-// Track created sessions for cleanup.
+// Track created resources for cleanup.
 const createdSessions: string[] = [];
+const createdKubos: string[] = [];
 
-async function trackedAddAbot(page: Page, abot: string, kubo = 'default') {
+async function createKubo(page: Page, name: string) {
+  const resp = await page.request.post('/kubos', { data: { name } });
+  expect(resp.ok(), `createKubo(${name}) failed: ${resp.status()}`).toBeTruthy();
+  createdKubos.push(name);
+  return resp.json();
+}
+
+async function trackedAddAbot(page: Page, abot: string, kubo: string) {
   const result = await addAbotToKubo(page, abot, kubo);
-  createdSessions.push(abot);
+  createdSessions.push(`${abot}@${kubo}`);
   return result;
 }
 
@@ -71,6 +79,10 @@ async function cleanup(page: Page) {
     await page.request.delete(`/sessions/${encodeURIComponent(name)}`).catch(() => {});
   }
   createdSessions.length = 0;
+  for (const name of createdKubos) {
+    await page.request.delete(`/kubos/${encodeURIComponent(name)}`).catch(() => {});
+  }
+  createdKubos.length = 0;
 }
 
 test.describe('Facet lifecycle — minimize & close', () => {
@@ -79,8 +91,10 @@ test.describe('Facet lifecycle — minimize & close', () => {
   });
 
   test('app loads with flutter-view and xterm', async ({ page }) => {
-    // Create an abot BEFORE loading the page, so _initialize picks it up.
-    await trackedAddAbot(page, `e2e-facet-${Date.now()}`);
+    const ts = Date.now();
+    const kubo = `e2e-facet-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-facet-${ts}`, kubo);
     await waitForApp(page);
 
     // Wait for xterm container to appear (platform view creation is async)
@@ -117,8 +131,10 @@ test.describe('Facet lifecycle — minimize & close', () => {
 
     // Create exactly 2 sessions so Ctrl+W is active.
     const ts = Date.now();
-    await trackedAddAbot(page, `e2e-mina-${ts}`);
-    await trackedAddAbot(page, `e2e-minb-${ts}`);
+    const kubo = `e2e-min-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-mina-${ts}`, kubo);
+    await trackedAddAbot(page, `e2e-minb-${ts}`, kubo);
     await waitForApp(page);
 
     const before = await sessionNames(page);
@@ -158,14 +174,15 @@ test.describe('Facet lifecycle — minimize & close', () => {
       await page.request.delete(`/sessions/${encodeURIComponent(s.name)}`).catch(() => {});
     }
     const ts = Date.now();
-    await trackedAddAbot(page, `e2e-single-${ts}`);
+    const kubo = `e2e-single-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-single-${ts}`, kubo);
     await waitForApp(page);
 
     const namesBefore = await sessionNames(page);
     expect(namesBefore.length).toBe(1);
 
     // With 1 facet, Ctrl+W should be a no-op (can't minimize last facet).
-    // Sessions should remain unchanged on server regardless of xterm state.
     await page.keyboard.press(`${mod}+w`);
     await page.waitForTimeout(500);
 
@@ -175,7 +192,9 @@ test.describe('Facet lifecycle — minimize & close', () => {
 
   test('Ctrl+N does NOT create a new session (shortcut removed)', async ({ page }) => {
     const ts = Date.now();
-    await trackedAddAbot(page, `e2e-noN-${ts}`);
+    const kubo = `e2e-noN-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-noN-${ts}`, kubo);
     await waitForApp(page);
 
     const before = await sessionNames(page);
@@ -194,8 +213,10 @@ test.describe('Sidebar preview transforms', () => {
 
   test('xterm containers have valid CSS transforms with 2+ facets', async ({ page }) => {
     const ts = Date.now();
-    await trackedAddAbot(page, `e2e-tfma-${ts}`);
-    await trackedAddAbot(page, `e2e-tfmb-${ts}`);
+    const kubo = `e2e-tfm-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-tfma-${ts}`, kubo);
+    await trackedAddAbot(page, `e2e-tfmb-${ts}`, kubo);
     await waitForApp(page);
 
     // Wait for xterm containers (platform view creation is async)
@@ -222,8 +243,10 @@ test.describe('Sidebar preview transforms', () => {
 
   test('clip-path inset values are all non-negative', async ({ page }) => {
     const ts = Date.now();
-    await trackedAddAbot(page, `e2e-clpa-${ts}`);
-    await trackedAddAbot(page, `e2e-clpb-${ts}`);
+    const kubo = `e2e-clp-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-clpa-${ts}`, kubo);
+    await trackedAddAbot(page, `e2e-clpb-${ts}`, kubo);
     await waitForApp(page);
 
     // Wait for xterm containers (platform view creation is async)
@@ -255,8 +278,10 @@ test.describe('Sidebar preview transforms', () => {
 
   test('sidebar preview stays within viewport bounds', async ({ page }) => {
     const ts = Date.now();
-    await trackedAddAbot(page, `e2e-vpa-${ts}`);
-    await trackedAddAbot(page, `e2e-vpb-${ts}`);
+    const kubo = `e2e-vp-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-vpa-${ts}`, kubo);
+    await trackedAddAbot(page, `e2e-vpb-${ts}`, kubo);
     await waitForApp(page);
     await page.waitForTimeout(500);
 
@@ -285,8 +310,10 @@ test.describe('Sidebar preview transforms', () => {
     await page.waitForTimeout(500);
 
     const ts = Date.now();
-    await trackedAddAbot(page, `e2e-sva-${ts}`);
-    await trackedAddAbot(page, `e2e-svb-${ts}`);
+    const kubo = `e2e-sv-kubo-${ts}`;
+    await createKubo(page, kubo);
+    await trackedAddAbot(page, `e2e-sva-${ts}`, kubo);
+    await trackedAddAbot(page, `e2e-svb-${ts}`, kubo);
     await waitForApp(page);
     await page.waitForTimeout(500);
 
@@ -327,40 +354,58 @@ test.describe('Session API contract', () => {
     expect(Array.isArray(sessions)).toBeTruthy();
   });
 
-  test('POST /sessions creates a session with canonical abot + worktree', async ({ page }) => {
-    const name = `e2e-api-${Date.now()}`;
-    createdSessions.push(name);
+  test('POST /sessions creates a session with qualified name', async ({ page }) => {
+    const ts = Date.now();
+    const kubo = `e2e-api-kubo-${ts}`;
+    const abot = `e2e-api-${ts}`;
+    const qualified = `${abot}@${kubo}`;
+    await createKubo(page, kubo);
+    createdSessions.push(qualified);
 
-    const resp = await page.request.post('/sessions', { data: { name } });
+    const resp = await page.request.post('/sessions', { data: { name: abot, kubo } });
     expect(resp.ok()).toBeTruthy();
 
-    // Session should exist with a bundlePath (worktree inside kubo) and kubo set
-    const session = await page.request.get(`/sessions/${name}`).then(r => r.json());
-    expect(session.name).toBe(name);
+    // Session should exist with qualified name, bundlePath inside kubo, and kubo set
+    const session = await page.request.get(`/sessions/${encodeURIComponent(qualified)}`).then(r => r.json());
+    expect(session.name).toBe(qualified);
     expect(session.bundlePath).toBeTruthy();
-    expect(session.bundlePath).toContain('default.kubo');
-    expect(session.kubo).toBe('default');
+    expect(session.bundlePath).toContain(`${kubo}.kubo`);
+    expect(session.kubo).toBe(kubo);
+  });
+
+  test('POST /sessions without kubo returns error', async ({ page }) => {
+    const resp = await page.request.post('/sessions', { data: { name: `e2e-noq-${Date.now()}` } });
+    expect(resp.ok()).toBeFalsy();
+    expect(resp.status()).toBe(400);
   });
 
   test('DELETE /sessions/:name removes the session', async ({ page }) => {
-    const name = `e2e-del-${Date.now()}`;
-    await page.request.post('/sessions', { data: { name } });
+    const ts = Date.now();
+    const kubo = `e2e-del-kubo-${ts}`;
+    const abot = `e2e-del-${ts}`;
+    const qualified = `${abot}@${kubo}`;
+    await createKubo(page, kubo);
+    await page.request.post('/sessions', { data: { name: abot, kubo } });
 
-    const resp = await page.request.delete(`/sessions/${name}`);
+    const resp = await page.request.delete(`/sessions/${encodeURIComponent(qualified)}`);
     expect(resp.ok()).toBeTruthy();
 
     const sessions = await sessionNames(page);
-    expect(sessions).not.toContain(name);
+    expect(sessions).not.toContain(qualified);
   });
 
   test('GET /sessions/:name returns individual session', async ({ page }) => {
-    const name = `e2e-get-${Date.now()}`;
-    createdSessions.push(name);
-    await page.request.post('/sessions', { data: { name } });
+    const ts = Date.now();
+    const kubo = `e2e-get-kubo-${ts}`;
+    const abot = `e2e-get-${ts}`;
+    const qualified = `${abot}@${kubo}`;
+    await createKubo(page, kubo);
+    createdSessions.push(qualified);
+    await page.request.post('/sessions', { data: { name: abot, kubo } });
 
-    const resp = await page.request.get(`/sessions/${name}`);
+    const resp = await page.request.get(`/sessions/${encodeURIComponent(qualified)}`);
     expect(resp.ok()).toBeTruthy();
     const body = await resp.json();
-    expect(body.name).toBe(name);
+    expect(body.name).toBe(qualified);
   });
 });

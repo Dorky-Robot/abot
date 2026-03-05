@@ -70,11 +70,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Abot name for abot detail overlay (null = hidden).
   String? _abotDetailName;
 
-  /// Active kubo shown in main area landing page.
-  String _activeKubo = 'default';
+  /// Active kubo shown in main area landing page (null = none selected).
+  String? _activeKubo;
 
   /// Which kubos are visible in the sidebar (persisted in localStorage).
-  Set<String> _openKubos = {'default'};
+  Set<String> _openKubos = {};
 
   static const _activeKuboKey = 'abot_active_kubo';
   static const _openKubosKey = 'abot_open_kubos';
@@ -95,7 +95,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     if (openKubosJson != null) {
       try {
         final list = (jsonDecode(openKubosJson) as List).cast<String>();
-        _openKubos = {'default', ...list};
+        _openKubos = {...list};
       } catch (_) {}
     }
 
@@ -137,6 +137,28 @@ class _FacetShellState extends ConsumerState<FacetShell>
       debugPrint('[FacetShell] Failed to fetch sessions: $e');
       // Server unreachable — empty state, onboarding page shown.
     }
+
+    // Reconcile localStorage kubos against server — prune stale entries.
+    try {
+      final kubos = await ref.read(kuboServiceProvider.notifier).listKubos();
+      if (!mounted) return;
+      final serverKuboNames = kubos.map((k) => k.name).toSet();
+      final stale = _openKubos.difference(serverKuboNames);
+      if (stale.isNotEmpty) {
+        setState(() {
+          _openKubos.removeAll(stale);
+          if (_activeKubo != null && !serverKuboNames.contains(_activeKubo)) {
+            _activeKubo = _openKubos.isNotEmpty ? _openKubos.first : null;
+          }
+          _persistOpenKubos();
+          if (_activeKubo != null) {
+            web.window.localStorage.setItem(_activeKuboKey, _activeKubo!);
+          } else {
+            web.window.localStorage.removeItem(_activeKuboKey);
+          }
+        });
+      }
+    } catch (_) {}
 
     if (!mounted) return;
     wsService.connect();
@@ -320,43 +342,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Open kubo failed: $e')),
-      );
-    }
-  }
-
-  /// Close a kubo: stop container, hide from sidebar.
-  Future<void> _closeKubo(String kuboName) async {
-    if (kuboName == 'default') return; // Cannot close default kubo.
-    try {
-      // Minimize all facets belonging to this kubo.
-      final state = ref.read(facetManagerProvider);
-      final sessionsAsync = ref.read(sessionServiceProvider);
-      final sessionInfoMap = sessionsAsync.when(
-        data: (list) => {for (final s in list) s.name: s},
-        loading: () => <String, SessionInfo>{},
-        error: (_, _) => <String, SessionInfo>{},
-      );
-      for (final facet in state.facets.values.toList()) {
-        final kubo = sessionInfoMap[facet.sessionName]?.kubo ?? 'default';
-        if (kubo == kuboName) {
-          _minimizeFacet(facet.id);
-        }
-      }
-
-      await ref.read(kuboServiceProvider.notifier).stopKubo(kuboName);
-      if (!mounted) return;
-      setState(() {
-        _openKubos.remove(kuboName);
-        if (_activeKubo == kuboName) {
-          _activeKubo = 'default';
-          web.window.localStorage.setItem(_activeKuboKey, 'default');
-        }
-      });
-      _persistOpenKubos();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to close kubo: $e')),
       );
     }
   }
@@ -590,9 +575,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  /// Open a .abot bundle via native OS file picker (into default kubo).
+  /// Open a .abot bundle via native OS file picker (into active kubo).
   Future<void> _openBundle() async {
-    await _openBundleInKubo('default');
+    if (_activeKubo == null) return;
+    await _openBundleInKubo(_activeKubo!);
   }
 
   /// Open a .abot bundle via native OS file picker into a specific kubo.
@@ -948,12 +934,20 @@ class _FacetShellState extends ConsumerState<FacetShell>
                     );
                   }
                   if (!mounted) return;
-                  setState(() => _kuboSettingsName = null);
+                  setState(() {}); // rebuild with fresh kubo state
                 } : null,
-                onShutdown: kubo.running && kubo.name != 'default' ? () async {
-                  await _closeKubo(kubo.name);
+                onShutdown: kubo.running ? () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  try {
+                    await ref.read(kuboServiceProvider.notifier).stopKubo(kubo.name);
+                  } catch (e) {
+                    if (!mounted) return;
+                    messenger.showSnackBar(
+                      SnackBar(content: Text('Failed to stop kubo: $e')),
+                    );
+                  }
                   if (!mounted) return;
-                  setState(() => _kuboSettingsName = null);
+                  setState(() {}); // rebuild with fresh kubo state
                 } : null,
               );
             }),
@@ -1022,7 +1016,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onDeleteSession: _onDeleteSession,
               onSessionSettings: (name) =>
                   setState(() => _sessionSettingsName = name),
-              onNewSession: () => _addAbotToKubo('default'),
+              onNewSession: () { if (_activeKubo != null) _addAbotToKubo(_activeKubo!); },
               onNewSessionInKubo: (kubo) => _addAbotToKubo(kubo),
               onNewKubo: _createNewKubo,
               onOpenBundle: _openBundle,
@@ -1062,7 +1056,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 final focusedId = ref.read(facetManagerProvider).focusedId;
                 if (focusedId != null) {
                   final focusedSession = ref.read(facetManagerProvider).facets[focusedId]?.sessionName;
-                  final focusedKubo = sessionInfoMap[focusedSession]?.kubo ?? 'default';
+                  final focusedKubo = sessionInfoMap[focusedSession]?.kubo;
                   if (focusedKubo != kubo) {
                     ref.read(facetManagerProvider.notifier).unfocus();
                   }
@@ -1079,7 +1073,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Kubo landing page — shows card grid or empty onboarding for the active kubo.
   Widget _buildKuboLandingPage(String kubo, Map<String, SessionInfo> sessionInfoMap) {
     final kuboSessions = sessionInfoMap.values
-        .where((s) => (s.kubo ?? 'default') == kubo)
+        .where((s) => s.kubo == kubo)
         .toList();
     if (kuboSessions.isEmpty) {
       // Check if the kubo has abots from the manifest (even without sessions).
@@ -1234,6 +1228,69 @@ class _FacetShellState extends ConsumerState<FacetShell>
     );
   }
 
+  /// Empty state landing page — no kubos open, show create/open actions.
+  Widget _buildEmptyStateLandingPage() {
+    final p = context.palette;
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 360),
+        padding: const EdgeInsets.all(AbotSpacing.lg),
+        decoration: BoxDecoration(
+          color: p.surface0,
+          borderRadius: BorderRadius.circular(AbotRadius.md),
+          border: Border.all(color: p.surface1),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.dashboard_outlined, size: 40, color: p.mauve),
+            const SizedBox(height: AbotSpacing.md),
+            Text('Welcome to abot',
+              style: TextStyle(
+                color: p.text, fontFamily: AbotFonts.mono,
+                fontSize: 16, fontWeight: FontWeight.w600,
+              )),
+            const SizedBox(height: AbotSpacing.sm),
+            Text(
+              'A kubo is a shared runtime room. Create one to get started, or open an existing one from disk.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: AbotSpacing.md),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _createNewKubo,
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Create kubo'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: p.mauve,
+                    foregroundColor: p.base,
+                    textStyle: TextStyle(fontFamily: AbotFonts.mono, fontSize: 12),
+                  ),
+                ),
+                const SizedBox(width: AbotSpacing.sm),
+                OutlinedButton.icon(
+                  onPressed: _openKuboFromDisk,
+                  icon: const Icon(Icons.folder_open, size: 16),
+                  label: const Text('Open kubo'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: p.text,
+                    side: BorderSide(color: p.surface1),
+                    textStyle: TextStyle(fontFamily: AbotFonts.mono, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// Build the focused terminal area. ALL terminals are full-size
   /// (Positioned.fill) so their xterm.js WebGL canvases render at full
   /// resolution. Unfocused terminals are CSS-transformed to their sidebar
@@ -1241,7 +1298,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
   Widget _buildFocusedArea(FacetManagerState state, Map<String, SessionInfo> sessionInfoMap) {
     final focusedId = state.focusedId;
     if (focusedId == null) {
-      return _buildKuboLandingPage(_activeKubo, sessionInfoMap);
+      if (_activeKubo != null) {
+        return _buildKuboLandingPage(_activeKubo!, sessionInfoMap);
+      }
+      return _buildEmptyStateLandingPage();
     }
 
     for (final id in state.order) {

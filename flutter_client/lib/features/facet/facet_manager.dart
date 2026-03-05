@@ -83,7 +83,7 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
   /// Returns the facet if a new session was created, null if the abot was only
   /// employed (worktree created) without a new session (e.g. abot already has
   /// a session in another kubo).
-  Future<FacetData?> createAbotInKubo(String abotName, {String kubo = 'default'}) async {
+  Future<FacetData?> createAbotInKubo(String abotName, {required String kubo}) async {
     final result = await ref.read(kuboServiceProvider.notifier).addAbotToKubo(
       kubo,
       abotName,

@@ -29,14 +29,22 @@ function tempBundleDir(testName: string): string {
 }
 
 test.describe('Document lifecycle — save/open/close API', () => {
-  let testSession: string;
+  let testSession: string; // qualified name: abot@kubo
+  let testAbot: string;
+  let testKubo: string;
 
   test.beforeEach(async ({ page }) => {
-    // Create a fresh session for each test.
-    // Sessions now get a canonical abot + worktree automatically.
-    testSession = `doc-test-${Date.now()}`;
+    const ts = Date.now();
+    testAbot = `doc-test-${ts}`;
+    testKubo = `doc-kubo-${ts}`;
+    testSession = `${testAbot}@${testKubo}`;
+
+    // Create kubo, then session inside it.
+    const kuboResp = await page.request.post('/kubos', { data: { name: testKubo } });
+    expect(kuboResp.ok()).toBeTruthy();
+
     const resp = await page.request.post('/sessions', {
-      data: { name: testSession },
+      data: { name: testAbot, kubo: testKubo },
     });
     expect(resp.ok()).toBeTruthy();
   });
@@ -45,20 +53,23 @@ test.describe('Document lifecycle — save/open/close API', () => {
     try {
       await page.request.delete(`/sessions/${encodeURIComponent(testSession)}`);
     } catch {}
+    try {
+      await page.request.delete(`/kubos/${encodeURIComponent(testKubo)}`);
+    } catch {}
   });
 
   test('new session has bundlePath (worktree in kubo) and is not dirty', async ({ page }) => {
     const session = await getSession(page, testSession);
     // Sessions now always have a bundlePath — the worktree inside the kubo
     expect(session.bundlePath).toBeTruthy();
-    expect(session.bundlePath).toContain('default.kubo');
-    expect(session.kubo).toBe('default');
+    expect(session.bundlePath).toContain(`${testKubo}.kubo`);
+    expect(session.kubo).toBe(testKubo);
     expect(session.dirty).toBe(false);
   });
 
   test('POST save-as creates bundle on disk and returns path', async ({ page }) => {
     const dir = tempBundleDir('save-as');
-    const bundlePath = path.join(dir, `${testSession}.abot`);
+    const bundlePath = path.join(dir, `${testAbot}.abot`);
 
     const resp = await page.request.post(
       `/sessions/${encodeURIComponent(testSession)}/save-as`,
@@ -78,7 +89,7 @@ test.describe('Document lifecycle — save/open/close API', () => {
     // Verify manifest content.
     const manifest = JSON.parse(fs.readFileSync(path.join(bundlePath, 'manifest.json'), 'utf-8'));
     expect(manifest.version).toBe(2);
-    expect(manifest.name).toBe(testSession);
+    expect(manifest.name).toBe(testAbot);
     expect(manifest.updated_at).toBeDefined();
 
     fs.rmSync(dir, { recursive: true, force: true });
@@ -86,7 +97,7 @@ test.describe('Document lifecycle — save/open/close API', () => {
 
   test('save-as updates session bundlePath', async ({ page }) => {
     const dir = tempBundleDir('save-as-path');
-    const bundlePath = path.join(dir, `${testSession}.abot`);
+    const bundlePath = path.join(dir, `${testAbot}.abot`);
 
     await page.request.post(
       `/sessions/${encodeURIComponent(testSession)}/save-as`,
@@ -146,7 +157,7 @@ test.describe('Document lifecycle — save/open/close API', () => {
 
   test('POST open restores session from bundle', async ({ page }) => {
     const dir = tempBundleDir('open');
-    const bundlePath = path.join(dir, `${testSession}.abot`);
+    const bundlePath = path.join(dir, `${testAbot}.abot`);
 
     // Save the session to a custom path.
     await page.request.post(
@@ -163,37 +174,39 @@ test.describe('Document lifecycle — save/open/close API', () => {
     let sessions = await sessionNames(page);
     expect(sessions).not.toContain(testSession);
 
-    // Open the bundle.
+    // Open the bundle into the same kubo.
     const resp = await page.request.post('/sessions/open', {
-      data: { path: bundlePath },
+      data: { path: bundlePath, kubo: testKubo },
     });
     expect(resp.ok()).toBeTruthy();
 
     const body = await resp.json();
-    expect(body.name).toBe(testSession);
+    // Opened session gets qualified name
+    const openedName = body.name;
+    expect(openedName).toContain(testAbot);
 
     // Session should be back.
     sessions = await sessionNames(page);
-    expect(sessions).toContain(testSession);
+    expect(sessions).toContain(openedName);
 
-    // The reopened session should point to the worktree (not the original bundle)
-    const session = await getSession(page, testSession);
+    // The reopened session should point to the worktree inside the kubo
+    const session = await getSession(page, openedName);
     expect(session.bundlePath).toBeTruthy();
-    expect(session.bundlePath).toContain('default.kubo');
+    expect(session.bundlePath).toContain(`${testKubo}.kubo`);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
   test('open on nonexistent path returns error', async ({ page }) => {
     const resp = await page.request.post('/sessions/open', {
-      data: { path: '/tmp/abot-does-not-exist-xyz.abot' },
+      data: { path: '/tmp/abot-does-not-exist-xyz.abot', kubo: testKubo },
     });
     expect(resp.status()).toBe(400);
   });
 
   test('save-as preserves created_at on re-save', async ({ page }) => {
     const dir = tempBundleDir('preserve-created');
-    const bundlePath = path.join(dir, `${testSession}.abot`);
+    const bundlePath = path.join(dir, `${testAbot}.abot`);
 
     // First save.
     await page.request.post(

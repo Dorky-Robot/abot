@@ -33,6 +33,9 @@ class SessionInfo {
 
   /// Whether this session has been saved to a .abot bundle.
   bool get isSaved => bundlePath != null;
+
+  /// Bare abot name (strips the @kubo qualifier if present).
+  String get displayName => name.contains('@') ? name.split('@').first : name;
 }
 
 /// Session service provider.
@@ -60,7 +63,7 @@ class SessionServiceNotifier extends AsyncNotifier<List<SessionInfo>> {
   }
 
   /// Create a new session inside a kubo.
-  Future<SessionInfo> createSession(String name, {String kubo = 'default'}) async {
+  Future<SessionInfo> createSession(String name, {required String kubo}) async {
     final body = <String, dynamic>{'name': name, 'kubo': kubo};
     final data =
         await _api.post('/sessions', body) as Map<String, dynamic>;

@@ -37,13 +37,13 @@ pub async fn create_session(
     let name = body
         .get("name")
         .and_then(|v| v.as_str())
-        .unwrap_or("default")
+        .ok_or_else(|| AppError::BadRequest("missing name".into()))?
         .to_string();
 
     let kubo = body
         .get("kubo")
         .and_then(|v| v.as_str())
-        .unwrap_or("default")
+        .ok_or_else(|| AppError::BadRequest("missing kubo".into()))?
         .to_string();
 
     let resp = app
@@ -258,6 +258,12 @@ pub async fn open_bundle(
         .ok_or_else(|| AppError::BadRequest("missing path".into()))?
         .to_string();
 
+    let kubo = body
+        .get("kubo")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("missing kubo".into()))?
+        .to_string();
+
     let resp = app
         .daemon_client
         .rpc(DaemonRequest::OpenBundle {
@@ -265,6 +271,7 @@ pub async fn open_bundle(
             path,
             cols: 120,
             rows: 40,
+            kubo,
         })
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
