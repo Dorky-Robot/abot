@@ -89,10 +89,11 @@ test.describe('Kubo REST API', () => {
     await cleanupResources(page);
   });
 
-  test('GET /kubos returns at least the default kubo', async ({ page }) => {
+  test('GET /kubos returns a list (default kubo created on demand)', async ({ page }) => {
+    // The default kubo is created lazily (on first session/abot add),
+    // so a fresh data dir may have zero kubos initially.
     const kubos = await listKubos(page);
-    expect(kubos.length).toBeGreaterThanOrEqual(1);
-    expect(kubos.map(k => k.name)).toContain('default');
+    expect(Array.isArray(kubos)).toBeTruthy();
   });
 
   test('POST /kubos creates a new kubo', async ({ page }) => {
@@ -261,6 +262,98 @@ test.describe('Kubo credentials', () => {
   });
 });
 
+// ── Known abots registry ──────────────────────────────────────────────────
+
+async function listAbots(page: Page) {
+  const resp = await page.request.get('/abots');
+  expect(resp.ok(), `GET /abots failed: ${resp.status()}`).toBeTruthy();
+  const body = await resp.json();
+  return (body.abots ?? []) as { name: string; added_at: string }[];
+}
+
+async function getAbotDetail(page: Page, name: string) {
+  const resp = await page.request.get(`/abots/${encodeURIComponent(name)}`);
+  expect(resp.ok(), `GET /abots/${name} failed: ${resp.status()}`).toBeTruthy();
+  return await resp.json();
+}
+
+async function removeKnownAbot(page: Page, name: string) {
+  const resp = await page.request.delete(`/abots/${encodeURIComponent(name)}`);
+  expect(resp.ok(), `DELETE /abots/${name} failed: ${resp.status()}`).toBeTruthy();
+  return await resp.json();
+}
+
+test.describe('Known abots registry', () => {
+  test.afterEach(async ({ page }) => {
+    await cleanupResources(page);
+  });
+
+  test('GET /abots returns list', async ({ page }) => {
+    const abots = await listAbots(page);
+    expect(Array.isArray(abots)).toBeTruthy();
+  });
+
+  test('adding abot to kubo auto-registers in known abots', async ({ page }) => {
+    const kubo = `e2e-ka-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-kaabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    const abots = await listAbots(page);
+    expect(abots.map(a => a.name)).toContain(abot);
+  });
+
+  test('GET /abots/:name returns detail with git info', async ({ page }) => {
+    const kubo = `e2e-detail-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-detabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    const detail = await getAbotDetail(page, abot);
+    expect(detail.name).toBe(abot);
+    expect(detail.path).toBeTruthy();
+    expect(detail.default_branch).toBeTruthy();
+    expect(Array.isArray(detail.kubo_branches)).toBeTruthy();
+  });
+
+  test('DELETE /abots/:name removes from known list', async ({ page }) => {
+    const kubo = `e2e-rmka-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-rmkaabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Verify it's in the list
+    let abots = await listAbots(page);
+    expect(abots.map(a => a.name)).toContain(abot);
+
+    // Remove from known list
+    const result = await removeKnownAbot(page, abot);
+    expect(result.removed).toBe(abot);
+
+    // Verify it's gone
+    abots = await listAbots(page);
+    expect(abots.map(a => a.name)).not.toContain(abot);
+  });
+
+  test('sync picks up abots from kubo manifests', async ({ page }) => {
+    // Adding an abot to a kubo should make it appear in the known list
+    // (this tests the side-effect in AddAbotToKubo handler)
+    const kubo = `e2e-sync-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-syncabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    const abots = await listAbots(page);
+    const found = abots.find(a => a.name === abot);
+    expect(found).toBeDefined();
+    expect(found!.added_at).toBeTruthy();
+  });
+});
+
 // ── Active kubo selection ─────────────────────────────────────────────────
 
 test.describe('Active kubo selection', () => {
@@ -344,6 +437,215 @@ test.describe('Active kubo selection', () => {
     const allSessions = await listSessions(page);
     expect(allSessions.filter(s => (s.kubo ?? 'default') === emptyKubo).length).toBe(0);
     expect(allSessions.filter(s => (s.kubo ?? 'default') === 'default').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── Kubo creation round-trip ───────────────────────────────────────────────
+
+test.describe('Kubo creation round-trip', () => {
+  test.afterEach(async ({ page }) => {
+    if (page.url() === 'about:blank') await page.goto('/');
+    await page.evaluate(() => {
+      localStorage.removeItem('abot_active_kubo');
+      localStorage.removeItem('abot_open_kubos');
+    }).catch(() => {});
+    await cleanupResources(page);
+  });
+
+  test('creating a kubo makes it immediately listable via API', async ({ page }) => {
+    const name = `e2e-create-rt-${Date.now()}`;
+    await trackedCreateKubo(page, name);
+
+    const kubos = await listKubos(page);
+    const found = kubos.find(k => k.name === name);
+    expect(found).toBeDefined();
+    expect(found!.running).toBe(false);
+    expect(found!.activeSessions).toBe(0);
+    expect(found!.abots).toEqual([]);
+  });
+
+  test('creating a kubo and adding an abot produces a working session', async ({ page }) => {
+    const kubo = `e2e-create-sess-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-create-abot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Session should exist in the new kubo
+    const sessions = await listSessions(page);
+    const session = sessions.find(s => s.name === abot);
+    expect(session).toBeDefined();
+    expect(session!.kubo).toBe(kubo);
+
+    // Kubo should list the abot
+    const kubos = await listKubos(page);
+    const found = kubos.find(k => k.name === kubo);
+    expect(found).toBeDefined();
+    expect(found!.abots).toContain(abot);
+  });
+
+  test('new kubo appears in app after creation and reload', async ({ page }) => {
+    const kubo = `e2e-create-ui-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    // Set it as active kubo (simulating what the Flutter client does on create)
+    await page.goto('/');
+    await page.evaluate((name) => {
+      localStorage.setItem('abot_active_kubo', name);
+      const open = JSON.parse(localStorage.getItem('abot_open_kubos') ?? '[]');
+      if (!open.includes(name)) open.push(name);
+      localStorage.setItem('abot_open_kubos', JSON.stringify(open));
+    }, kubo);
+
+    await page.reload();
+    await page.locator('flutter-view').waitFor({ timeout: 15_000 });
+    await page.waitForTimeout(2000);
+
+    // Verify localStorage persisted
+    const activeKubo = await page.evaluate(() => localStorage.getItem('abot_active_kubo'));
+    expect(activeKubo).toBe(kubo);
+
+    const openKubos = await page.evaluate(() => {
+      const raw = localStorage.getItem('abot_open_kubos');
+      return raw ? JSON.parse(raw) : [];
+    });
+    expect(openKubos).toContain(kubo);
+  });
+});
+
+// ── Add existing abot to another kubo ─────────────────────────────────────
+
+test.describe('Add existing abot to another kubo', () => {
+  test.afterEach(async ({ page }) => {
+    await cleanupResources(page);
+  });
+
+  test('an abot employed in one kubo can be added to a second kubo', async ({ page }) => {
+    // Create first kubo and add abot
+    const kubo1 = `e2e-src-${Date.now()}`;
+    await trackedCreateKubo(page, kubo1);
+    const abot = `e2e-shared-${Date.now()}`;
+    await trackedAddAbot(page, kubo1, abot);
+
+    // Verify abot exists in first kubo
+    let kubos = await listKubos(page);
+    expect(kubos.find(k => k.name === kubo1)!.abots).toContain(abot);
+
+    // Create second kubo and add the SAME abot
+    const kubo2 = `e2e-dst-${Date.now()}`;
+    await trackedCreateKubo(page, kubo2);
+    const result = await addAbotToKubo(page, kubo2, abot, true);
+    expect(result.abot).toBe(abot);
+    expect(result.kubo).toBe(kubo2);
+
+    // The abot should now be in both kubos
+    kubos = await listKubos(page);
+    expect(kubos.find(k => k.name === kubo1)!.abots).toContain(abot);
+    expect(kubos.find(k => k.name === kubo2)!.abots).toContain(abot);
+
+    // Both sessions should exist (one per kubo)
+    const sessions = await listSessions(page);
+    const abotSessions = sessions.filter(s => s.name === abot);
+    // Session name is the abot name — second add may reuse or create new
+    expect(abotSessions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('adding same abot to second kubo preserves existing session', async ({ page }) => {
+    // When an abot already has a session in kubo1, adding it to kubo2
+    // should NOT kill the existing session — only create the worktree.
+    const kubo1 = `e2e-rep1-${Date.now()}`;
+    await trackedCreateKubo(page, kubo1);
+    const abot = `e2e-repabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo1, abot);
+
+    // Session should exist in kubo1
+    let sessions = await listSessions(page);
+    let session = sessions.find(s => s.name === abot);
+    expect(session).toBeDefined();
+    expect(session!.kubo).toBe(kubo1);
+
+    // Now add same abot to kubo2 with createSession=true
+    const kubo2 = `e2e-rep2-${Date.now()}`;
+    await trackedCreateKubo(page, kubo2);
+    const result = await addAbotToKubo(page, kubo2, abot, true);
+    expect(result.abot).toBe(abot);
+    // Session is NOT created (preserved in kubo1)
+    expect(result.session).toBeUndefined();
+
+    // Original session should still be alive in kubo1
+    sessions = await listSessions(page);
+    session = sessions.find(s => s.name === abot);
+    expect(session).toBeDefined();
+    expect(session!.kubo).toBe(kubo1);
+
+    // But the abot should appear in both kubos' manifests
+    const kubos = await listKubos(page);
+    expect(kubos.find(k => k.name === kubo1)!.abots).toContain(abot);
+    expect(kubos.find(k => k.name === kubo2)!.abots).toContain(abot);
+  });
+
+  test('adding abot with dead session in another kubo creates new session', async ({ page }) => {
+    // Scenario: alice has a dead session in kubo1. User adds alice to kubo2.
+    // The dead session should be replaced with a new one in kubo2.
+    const kubo1 = `e2e-dead1-${Date.now()}`;
+    await trackedCreateKubo(page, kubo1);
+    const abot = `e2e-deadabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo1, abot);
+
+    // Kill the session (delete it)
+    await deleteSession(page, abot);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    // Add to kubo2 — should create a new session since old one is gone
+    const kubo2 = `e2e-dead2-${Date.now()}`;
+    await trackedCreateKubo(page, kubo2);
+    const result = await addAbotToKubo(page, kubo2, abot, true);
+    expect(result.abot).toBe(abot);
+    expect(result.session).toBe(abot);
+    createdSessions.push(abot);
+
+    // Session should be in kubo2
+    const sessions = await listSessions(page);
+    const session = sessions.find(s => s.name === abot);
+    expect(session).toBeDefined();
+    expect(session!.kubo).toBe(kubo2);
+  });
+
+  test('add-abot response includes all expected fields', async ({ page }) => {
+    const kubo = `e2e-resp-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+    const abot = `e2e-respabot-${Date.now()}`;
+
+    // POST with raw request to inspect the full response
+    const resp = await page.request.post(`/kubos/${encodeURIComponent(kubo)}/abots`, {
+      data: { abot, createSession: true },
+    });
+    expect(resp.ok(), `POST failed: ${resp.status()} ${await resp.text()}`).toBeTruthy();
+    const body = await resp.json();
+    expect(body.kubo).toBe(kubo);
+    expect(body.abot).toBe(abot);
+    expect(body.session).toBe(abot);
+    createdKubos.push(kubo);
+    createdSessions.push(abot);
+  });
+
+  test('abot worktree is created in the second kubo', async ({ page }) => {
+    const kubo1 = `e2e-wt1-${Date.now()}`;
+    await trackedCreateKubo(page, kubo1);
+    const abot = `e2e-wtabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo1, abot);
+
+    const kubo2 = `e2e-wt2-${Date.now()}`;
+    await trackedCreateKubo(page, kubo2);
+    await addAbotToKubo(page, kubo2, abot, false);
+
+    // Abot detail should show kubo branches for both kubos
+    const detail = await getAbotDetail(page, abot);
+    expect(detail.name).toBe(abot);
+    const branchNames = (detail.kubo_branches ?? []).map((b: any) => b.kubo_name);
+    expect(branchNames).toContain(kubo1);
+    expect(branchNames).toContain(kubo2);
   });
 });
 

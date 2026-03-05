@@ -5,6 +5,7 @@ import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/network/abot_service.dart';
 import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
@@ -18,6 +19,7 @@ import '../../core/network/api_client.dart';
 import '../settings/settings_panel.dart';
 import '../settings/session_settings_panel.dart';
 import '../settings/kubo_settings_panel.dart';
+import '../settings/abot_detail_panel.dart';
 
 const double _narrowBreakpoint = 768;
 const String _offscreenTransform = 'translate(-9999px, 0) scale(0.01, 0.01)';
@@ -64,6 +66,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   /// Kubo name for per-kubo settings overlay (null = hidden).
   String? _kuboSettingsName;
+
+  /// Abot name for abot detail overlay (null = hidden).
+  String? _abotDetailName;
 
   /// Active kubo shown in main area landing page.
   String _activeKubo = 'default';
@@ -146,6 +151,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
         }
         ref.read(sessionServiceProvider.notifier).refresh();
         ref.read(kuboServiceProvider.notifier).refresh();
+        ref.read(abotServiceProvider.notifier).refresh();
       }
     });
   }
@@ -199,6 +205,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   // --- Sidebar collapse ---
 
+  void _showAbotDetail(String name) {
+    setState(() => _abotDetailName = name);
+  }
+
   void _toggleSidebar() {
     setState(() => _sidebarCollapsed = !_sidebarCollapsed);
     if (_sidebarCollapsed) {
@@ -245,6 +255,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
     try {
       await ref.read(kuboServiceProvider.notifier).createKubo(name);
       if (!mounted) return;
+      setState(() {
+        _openKubos.add(name);
+        _activeKubo = name;
+      });
+      web.window.localStorage.setItem(_activeKuboKey, name);
+      _persistOpenKubos();
       ref.read(kuboServiceProvider.notifier).refresh();
     } catch (e) {
       if (!mounted) return;
@@ -262,6 +278,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       await ref.read(facetManagerProvider.notifier).createAbotInKubo(name, kubo: kubo);
       if (!mounted) return;
       ref.read(kuboServiceProvider.notifier).refresh();
+      ref.read(abotServiceProvider.notifier).refresh();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -573,21 +590,31 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  /// Open a .abot bundle via native OS file picker.
+  /// Open a .abot bundle via native OS file picker (into default kubo).
   Future<void> _openBundle() async {
+    await _openBundleInKubo('default');
+  }
+
+  /// Open a .abot bundle via native OS file picker into a specific kubo.
+  Future<void> _openBundleInKubo(String kubo) async {
     try {
       final data = await const ApiClient().post('/api/pick-file', {})
           as Map<String, dynamic>;
       final path = data['path'] as String?;
       if (path == null || path.isEmpty || !mounted) return;
 
-      final result = await ref.read(sessionServiceProvider.notifier).openBundle(path);
+      // Extract the abot name from the bundle path (e.g. /path/to/bob.abot → bob)
+      final bundleName = path.split('/').last.replaceAll('.abot', '');
+
+      // Use the kubo-aware addAbotToKubo flow instead of openBundle
+      // (which always targets default kubo).
+      await ref.read(facetManagerProvider.notifier).createAbotInKubo(
+        bundleName,
+        kubo: kubo,
+      );
       if (!mounted) return;
-      // Open the session as a focused facet
-      final name = result['name'] as String?;
-      if (name != null) {
-        ref.read(facetManagerProvider.notifier).openOrFocusSession(name);
-      }
+      ref.read(kuboServiceProvider.notifier).refresh();
+      ref.read(abotServiceProvider.notifier).refresh();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -792,6 +819,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final sessionsAsync = ref.watch(sessionServiceProvider);
     final wsState = ref.watch(wsServiceProvider);
     final kubosAsync = ref.watch(kuboServiceProvider);
+    final abotsAsync = ref.watch(abotServiceProvider);
 
     return Scaffold(
       backgroundColor: context.palette.base,
@@ -832,7 +860,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
             },
             child: Focus(
               autofocus: true,
-              child: _buildFacetLayout(facetState, sessionsAsync, wsState, kubosAsync),
+              child: _buildFacetLayout(facetState, sessionsAsync, wsState, kubosAsync, abotsAsync),
             ),
           ),
           if (_showSettings)
@@ -855,6 +883,33 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 ref.read(sessionServiceProvider.notifier).refresh();
               },
             ),
+          if (_abotDetailName != null)
+            Builder(builder: (context) {
+              final abots = ref.read(abotServiceProvider).when(
+                data: (list) => list,
+                loading: () => <AbotInfo>[],
+                error: (_, _) => <AbotInfo>[],
+              );
+              final abot = abots.where((a) => a.name == _abotDetailName).firstOrNull
+                  ?? AbotInfo(name: _abotDetailName!);
+              return AbotDetailPanel(
+                detail: abot,
+                onClose: () => setState(() => _abotDetailName = null),
+                onRemove: () async {
+                  final name = _abotDetailName!;
+                  await ref.read(abotServiceProvider.notifier).removeAbot(name);
+                  if (!mounted) return;
+                  setState(() => _abotDetailName = null);
+                },
+                onSwitchToKubo: (kuboName) {
+                  setState(() {
+                    _activeKubo = kuboName;
+                    _abotDetailName = null;
+                  });
+                  web.window.localStorage.setItem(_activeKuboKey, kuboName);
+                },
+              );
+            }),
           if (_kuboSettingsName != null)
             Builder(builder: (context) {
               final kubos = ref.read(kuboServiceProvider).when(
@@ -894,7 +949,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   Widget _buildFacetLayout(
       FacetManagerState state, AsyncValue<List<SessionInfo>> sessionsAsync,
-      WsState wsState, AsyncValue<List<KuboInfo>> kubosAsync) {
+      WsState wsState, AsyncValue<List<KuboInfo>> kubosAsync,
+      AsyncValue<List<AbotInfo>> abotsAsync) {
     final allFacets = state.order
         .map((id) => state.facets[id])
         .whereType<FacetData>()
@@ -916,6 +972,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
       data: (list) => list,
       loading: () => <KuboInfo>[],
       error: (_, _) => <KuboInfo>[],
+    );
+
+    final knownAbots = abotsAsync.when(
+      data: (list) => list,
+      loading: () => <AbotInfo>[],
+      error: (_, _) => <AbotInfo>[],
     );
 
     return LayoutBuilder(
@@ -949,6 +1011,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onNewSessionInKubo: (kubo) => _addAbotToKubo(kubo),
               onNewKubo: _createNewKubo,
               onOpenBundle: _openBundle,
+              onOpenBundleInKubo: _openBundleInKubo,
               onOpenKubo: _openKuboFromDisk,
               onRemoveAbot: _removeAbotFromKubo,
               onKuboSettings: (name) =>
@@ -965,6 +1028,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 setState(() => _sidebarTab = tab);
                 _updateSidebarTransforms();
               },
+              knownAbots: knownAbots,
+              onAbotDetail: (name) => _showAbotDetail(name),
               activeKubo: _activeKubo,
               onActiveKuboChanged: (kubo) {
                 setState(() => _activeKubo = kubo);

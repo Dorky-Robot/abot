@@ -80,15 +80,27 @@ class FacetManagerNotifier extends Notifier<FacetManagerState> {
   FacetManagerState build() => const FacetManagerState();
 
   /// Create a named abot in a kubo: canonical abot + worktree + session + facet.
-  Future<FacetData> createAbotInKubo(String abotName, {String kubo = 'default'}) async {
+  /// Returns the facet if a new session was created, null if the abot was only
+  /// employed (worktree created) without a new session (e.g. abot already has
+  /// a session in another kubo).
+  Future<FacetData?> createAbotInKubo(String abotName, {String kubo = 'default'}) async {
     final result = await ref.read(kuboServiceProvider.notifier).addAbotToKubo(
       kubo,
       abotName,
       createSession: true,
     );
 
-    // The session name is the abot name (returned by the daemon)
-    final sessionName = result['session'] as String? ?? abotName;
+    // If no session was created (abot already has one in another kubo),
+    // just return null — the worktree and manifest were still set up.
+    final sessionName = result['session'] as String?;
+    if (sessionName == null) return null;
+
+    // Remove any existing facet for this session (backend killed the old one)
+    final existing = state.getBySession(sessionName);
+    if (existing != null) {
+      ref.read(wsServiceProvider.notifier).detachSession(sessionName);
+      remove(existing.id);
+    }
 
     final facet = create(sessionName);
     ref.read(wsServiceProvider.notifier).attachSession(sessionName);

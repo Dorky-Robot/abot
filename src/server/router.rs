@@ -2,6 +2,7 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 use std::sync::Arc;
 
+use super::abots;
 use super::anthropic_oauth;
 use super::assets;
 use super::browse;
@@ -61,6 +62,10 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/sessions/{name}/save", post(sessions::save_session))
         .route("/sessions/{name}/save-as", post(sessions::save_session_as))
         .route("/sessions/{name}/close", post(sessions::close_session))
+        // Abots (known abots registry)
+        .route("/abots", get(abots::list_abots))
+        .route("/abots/{name}", get(abots::get_abot))
+        .route("/abots/{name}", delete(abots::remove_abot))
         // Kubos
         .route("/kubos", get(kubos::list_kubos))
         .route("/kubos", post(kubos::create_kubo))

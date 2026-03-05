@@ -212,6 +212,19 @@ pub enum DaemonRequest {
         /// Git subcommand: "status", "log", "diff"
         op: String,
     },
+
+    // ── Known abots registry ─────────────────────────────────────
+    /// RPC: list all known abots
+    #[serde(rename = "list-abots")]
+    ListAbots { id: String },
+
+    /// RPC: get detailed info for a single abot
+    #[serde(rename = "get-abot-info")]
+    GetAbotInfo { id: String, abot: String },
+
+    /// RPC: remove an abot from the known list
+    #[serde(rename = "remove-known-abot")]
+    RemoveKnownAbot { id: String, abot: String },
 }
 
 fn default_cols() -> u16 {
@@ -327,6 +340,19 @@ pub enum DaemonResponse {
         abot: String,
         op: String,
         output: String,
+    },
+    // ── Known abots responses ────────────────────────────────────
+    AbotList {
+        id: String,
+        abots: Vec<serde_json::Value>,
+    },
+    AbotInfo {
+        id: String,
+        abot: serde_json::Value,
+    },
+    KnownAbotRemoved {
+        id: String,
+        abot: String,
     },
 }
 
@@ -803,6 +829,9 @@ pub async fn handle_request(
                                     gen,
                                 );
                             }
+
+                            // Track in known abots registry
+                            super::bundle::add_known_abot(&state.data_dir, &session_name);
 
                             Some(DaemonResponse::Opened {
                                 id,
@@ -1289,9 +1318,22 @@ pub async fn handle_request(
                 return Some(DaemonResponse::Error { id, error });
             }
 
-            // Optionally create a session (handle_create_session also calls
-            // ensure_abot_in_kubo but it no-ops since everything already exists)
-            if create_session {
+            // Track in known abots registry
+            super::bundle::add_known_abot(&state.data_dir, &abot);
+
+            // Optionally create a session. If the abot already has a LIVE
+            // session in a different kubo, skip session creation to avoid
+            // killing it. Dead sessions or sessions in the same kubo are
+            // replaced normally.
+            let should_create = if create_session {
+                let sessions = state.sessions.lock().await;
+                let existing = sessions.get(&abot);
+                !matches!(existing, Some(s) if s.is_alive() && s.kubo.as_deref() != Some(&kubo))
+            } else {
+                false
+            };
+
+            if should_create {
                 match handle_create_session(
                     state,
                     id.clone(),
@@ -1407,6 +1449,47 @@ pub async fn handle_request(
             }
 
             Some(DaemonResponse::AbotRemovedFromKubo { id, kubo, abot })
+        }
+
+        // ── Known abots registry ─────────────────────────────────────
+        DaemonRequest::ListAbots { id } => {
+            let abots = super::bundle::read_known_abots(&state.data_dir);
+            let list: Vec<serde_json::Value> = abots
+                .iter()
+                .map(|a| {
+                    // Include detail inline to avoid N+1 fetches
+                    match super::bundle::get_abot_detail(&state.data_dir, &a.name) {
+                        Ok(detail) => {
+                            let mut val = serde_json::to_value(&detail)
+                                .unwrap_or_else(|_| serde_json::json!({ "name": a.name }));
+                            if let Some(obj) = val.as_object_mut() {
+                                obj.insert("added_at".to_string(), serde_json::json!(a.added_at));
+                            }
+                            val
+                        }
+                        Err(_) => serde_json::json!({ "name": a.name, "added_at": a.added_at }),
+                    }
+                })
+                .collect();
+            Some(DaemonResponse::AbotList { id, abots: list })
+        }
+
+        DaemonRequest::GetAbotInfo { id, abot } => {
+            match super::bundle::get_abot_detail(&state.data_dir, &abot) {
+                Ok(detail) => {
+                    let val = serde_json::to_value(&detail).unwrap_or_default();
+                    Some(DaemonResponse::AbotInfo { id, abot: val })
+                }
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: e.to_string(),
+                }),
+            }
+        }
+
+        DaemonRequest::RemoveKnownAbot { id, abot } => {
+            super::bundle::remove_known_abot(&state.data_dir, &abot);
+            Some(DaemonResponse::KnownAbotRemoved { id, abot })
         }
     }
 }

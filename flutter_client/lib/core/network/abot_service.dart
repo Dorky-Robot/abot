@@ -1,0 +1,93 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'api_client.dart';
+
+/// A known abot from the registry (now includes detail inline).
+class AbotInfo {
+  final String name;
+  final String path;
+  final String? createdAt;
+  final String defaultBranch;
+  final List<KuboBranchInfo> kuboBranches;
+  final String gitStatus;
+
+  const AbotInfo({
+    required this.name,
+    this.path = '',
+    this.createdAt,
+    this.defaultBranch = 'main',
+    this.kuboBranches = const [],
+    this.gitStatus = '',
+  });
+
+  factory AbotInfo.fromJson(Map<String, dynamic> json) => AbotInfo(
+        name: json['name'] as String,
+        path: json['path'] as String? ?? '',
+        createdAt: json['created_at'] as String?,
+        defaultBranch: json['default_branch'] as String? ?? 'main',
+        kuboBranches: (json['kubo_branches'] as List?)
+                ?.map((e) =>
+                    KuboBranchInfo.fromJson(e as Map<String, dynamic>))
+                .toList() ??
+            [],
+        gitStatus: json['git_status'] as String? ?? '',
+      );
+}
+
+/// A kubo branch in an abot's git repo.
+class KuboBranchInfo {
+  final String kuboName;
+  final String branch;
+  final bool hasWorktree;
+  final bool merged;
+
+  const KuboBranchInfo({
+    required this.kuboName,
+    required this.branch,
+    this.hasWorktree = false,
+    this.merged = false,
+  });
+
+  factory KuboBranchInfo.fromJson(Map<String, dynamic> json) =>
+      KuboBranchInfo(
+        kuboName: json['kubo_name'] as String,
+        branch: json['branch'] as String,
+        hasWorktree: json['has_worktree'] as bool? ?? false,
+        merged: json['merged'] as bool? ?? false,
+      );
+}
+
+/// Abot service provider.
+final abotServiceProvider =
+    AsyncNotifierProvider<AbotServiceNotifier, List<AbotInfo>>(
+        AbotServiceNotifier.new);
+
+class AbotServiceNotifier extends AsyncNotifier<List<AbotInfo>> {
+  final _api = const ApiClient();
+
+  @override
+  Future<List<AbotInfo>> build() async {
+    return listAbots();
+  }
+
+  /// List all known abots (with detail inline).
+  Future<List<AbotInfo>> listAbots() async {
+    final data = await _api.get('/abots');
+    if (data is Map && data['abots'] is List) {
+      return (data['abots'] as List)
+          .map((e) => AbotInfo.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  /// Remove an abot from the known list.
+  Future<void> removeAbot(String name) async {
+    await _api.delete('/abots/${Uri.encodeComponent(name)}');
+    state = AsyncData(await listAbots());
+  }
+
+  /// Refresh the abots list.
+  Future<void> refresh() async {
+    state = AsyncData(await listAbots());
+  }
+}

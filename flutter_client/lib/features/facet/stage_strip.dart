@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
+import '../../core/network/abot_service.dart';
 import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
@@ -26,6 +27,7 @@ class StageStrip extends StatefulWidget {
   final void Function(String kubo) onNewSessionInKubo;
   final VoidCallback onNewKubo;
   final VoidCallback? onOpenBundle;
+  final void Function(String kubo)? onOpenBundleInKubo;
   final VoidCallback? onOpenKubo;
   final void Function(String kuboName, String abotName)? onRemoveAbot;
   final void Function(String kuboName)? onKuboSettings;
@@ -39,6 +41,8 @@ class StageStrip extends StatefulWidget {
   final void Function(SidebarTab tab)? onTabChanged;
   final String? activeKubo;
   final void Function(String kubo)? onActiveKuboChanged;
+  final List<AbotInfo> knownAbots;
+  final void Function(String abotName)? onAbotDetail;
 
   const StageStrip({
     super.key,
@@ -55,6 +59,7 @@ class StageStrip extends StatefulWidget {
     required this.onNewSessionInKubo,
     required this.onNewKubo,
     this.onOpenBundle,
+    this.onOpenBundleInKubo,
     this.onOpenKubo,
     this.onRemoveAbot,
     this.onKuboSettings,
@@ -68,6 +73,8 @@ class StageStrip extends StatefulWidget {
     this.onTabChanged,
     this.activeKubo,
     this.onActiveKuboChanged,
+    this.knownAbots = const [],
+    this.onAbotDetail,
   });
 
   @override
@@ -77,9 +84,11 @@ class StageStrip extends StatefulWidget {
 class _StageStripState extends State<StageStrip> {
   static const _tabKey = 'abot_sidebar_tab';
   static const _collapsedKey = 'abot_collapsed_kubos';
+  static const _collapsedAbotsKey = 'abot_collapsed_abots';
 
   SidebarTab _activeTab = SidebarTab.abots;
   final Set<String> _collapsedKubos = {};
+  final Set<String> _collapsedAbots = {};
 
   @override
   void initState() {
@@ -106,6 +115,16 @@ class _StageStripState extends State<StageStrip> {
         debugPrint('[StageStrip] Failed to restore collapsed kubos: $e');
       }
     }
+
+    final collapsedAbots = storage.getItem(_collapsedAbotsKey);
+    if (collapsedAbots != null) {
+      try {
+        final list = (jsonDecode(collapsedAbots) as List).cast<String>();
+        _collapsedAbots.addAll(list);
+      } catch (e) {
+        debugPrint('[StageStrip] Failed to restore collapsed abots: $e');
+      }
+    }
   }
 
   void _persistTab() {
@@ -116,6 +135,11 @@ class _StageStripState extends State<StageStrip> {
   void _persistCollapsed() {
     web.window.localStorage.setItem(
         _collapsedKey, jsonEncode(_collapsedKubos.toList()));
+  }
+
+  void _persistCollapsedAbots() {
+    web.window.localStorage.setItem(
+        _collapsedAbotsKey, jsonEncode(_collapsedAbots.toList()));
   }
 
   /// Return abot names from the kubo manifest that have no sessions (neither open nor unattached).
@@ -429,7 +453,9 @@ class _StageStripState extends State<StageStrip> {
                   _KuboActionBar(
                     kuboName: kuboName,
                     onAdd: () => widget.onNewSessionInKubo(kuboName),
-                    onOpen: widget.onOpenBundle,
+                    onOpen: widget.onOpenBundleInKubo != null
+                        ? () => widget.onOpenBundleInKubo!(kuboName)
+                        : widget.onOpenBundle,
                     onSettings: widget.onKuboSettings != null
                         ? () => widget.onKuboSettings!(kuboName)
                         : null,
@@ -444,76 +470,294 @@ class _StageStripState extends State<StageStrip> {
     );
   }
 
-  // ── Abots tab (flat layout, identical to original) ───────────────────
+  // ── Abots tab (collapsible groups with kubo branches) ────────────────
 
   Widget _buildAbotsTab(CatPalette p) {
-    final unattachedSessions = widget.serverSessions
-        .where((s) => !widget.openSessionNames.contains(s.name))
-        .toList();
+    final knownAbots = widget.knownAbots;
+
+    // Build a set of abot names that have active sessions
+    final activeAbotNames = <String>{};
+    for (final session in widget.serverSessions) {
+      activeAbotNames.add(session.name);
+    }
+    for (final facet in widget.allFacets) {
+      activeAbotNames.add(facet.sessionName);
+    }
+
+    if (knownAbots.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.smart_toy_outlined, size: 32, color: p.overlay0),
+            const SizedBox(height: AbotSpacing.sm),
+            Text('No abots yet',
+                style: TextStyle(
+                    fontSize: 12,
+                    color: p.overlay0,
+                    fontFamily: AbotFonts.mono)),
+            const SizedBox(height: AbotSpacing.sm),
+            Text('Add an abot to a kubo to get started',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: p.overlay0,
+                    fontFamily: AbotFonts.mono)),
+          ],
+        ),
+      );
+    }
 
     return CustomScrollView(
       slivers: [
-        SliverPadding(
-          padding: const EdgeInsets.symmetric(
-            vertical: AbotSpacing.sm,
-            horizontal: AbotSpacing.sm,
-          ),
-          sliver: SliverList(
-            delegate: SliverChildBuilderDelegate((context, index) {
-              final facet = widget.allFacets[index];
-              final isFocused = facet.id == widget.focusedId;
-              return Padding(
-                key: ValueKey(facet.id),
-                padding: const EdgeInsets.only(bottom: AbotSpacing.sm),
-                child: SizedBox(
-                  key: widget.cardKeys?[facet.id],
-                  child: _StripCard(
-                    facet: facet,
-                    isFocused: isFocused,
-                    isDirty:
-                        widget.sessionInfoMap[facet.sessionName]?.dirty ??
-                            false,
-                    onTap: isFocused
-                        ? null
-                        : () => widget.onFocusFacet(facet.id),
-                    onSettings: widget.onSessionSettings != null
-                        ? () =>
-                            widget.onSessionSettings!(facet.sessionName)
+        for (final abot in knownAbots)
+          _buildAbotSection(p, abot, activeAbotNames.contains(abot.name)),
+      ],
+    );
+  }
+
+  Widget _buildAbotSection(CatPalette p, AbotInfo abot, bool hasActiveSession) {
+    final isCollapsed = _collapsedAbots.contains(abot.name);
+    final activeBranches = abot.kuboBranches.where((b) => b.hasWorktree).toList();
+    final pastBranches = abot.kuboBranches.where((b) => !b.hasWorktree).toList();
+
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
+      sliver: SliverList(
+        delegate: SliverChildListDelegate([
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: AbotSpacing.sm),
+                child: _AbotGroupHeader(
+                  name: abot.name,
+                  hasActiveSession: hasActiveSession,
+                  isCollapsed: isCollapsed,
+                  onToggle: () {
+                    setState(() {
+                      if (isCollapsed) {
+                        _collapsedAbots.remove(abot.name);
+                      } else {
+                        _collapsedAbots.add(abot.name);
+                      }
+                    });
+                    _persistCollapsedAbots();
+                  },
+                  onTapDetail: widget.onAbotDetail != null
+                      ? () => widget.onAbotDetail!(abot.name)
+                      : null,
+                ),
+              ),
+              if (!isCollapsed) ...[
+                // Active kubo branches (with worktrees)
+                for (final branch in activeBranches)
+                  _KuboBranchRow(
+                    kuboName: branch.kuboName,
+                    isActive: true,
+                    merged: branch.merged,
+                    onTap: widget.onActiveKuboChanged != null
+                        ? () => widget.onActiveKuboChanged!(branch.kuboName)
                         : null,
+                  ),
+                // Past kubo branches (no worktree)
+                for (final branch in pastBranches)
+                  _KuboBranchRow(
+                    kuboName: branch.kuboName,
+                    isActive: false,
+                    merged: branch.merged,
+                  ),
+                if (abot.kuboBranches.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(
+                        top: AbotSpacing.xs, left: 24),
+                    child: Text(
+                      'not employed',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: p.overlay0,
+                        fontFamily: AbotFonts.mono,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+              ],
+              const SizedBox(height: AbotSpacing.sm),
+            ],
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ── Abot group header (used in Abots tab) ────────────────────────────
+
+class _AbotGroupHeader extends StatefulWidget {
+  final String name;
+  final bool hasActiveSession;
+  final bool isCollapsed;
+  final VoidCallback onToggle;
+  final VoidCallback? onTapDetail;
+
+  const _AbotGroupHeader({
+    required this.name,
+    required this.hasActiveSession,
+    required this.isCollapsed,
+    required this.onToggle,
+    this.onTapDetail,
+  });
+
+  @override
+  State<_AbotGroupHeader> createState() => _AbotGroupHeaderState();
+}
+
+class _AbotGroupHeaderState extends State<_AbotGroupHeader> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onToggle,
+        behavior: HitTestBehavior.opaque,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: AbotSpacing.xs),
+          child: Row(
+            children: [
+              Icon(
+                widget.isCollapsed ? Icons.chevron_right : Icons.expand_more,
+                size: 16,
+                color: p.overlay1,
+              ),
+              const SizedBox(width: 4),
+              if (widget.hasActiveSession)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: p.green,
+                      shape: BoxShape.circle,
+                    ),
                   ),
                 ),
-              );
-            }, childCount: widget.allFacets.length),
+              Expanded(
+                child: Text(
+                  widget.name,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: p.subtext0,
+                    fontFamily: AbotFonts.mono,
+                    letterSpacing: 0.5,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (_hovered && widget.onTapDetail != null)
+                InkWell(
+                  onTap: widget.onTapDetail,
+                  borderRadius: BorderRadius.circular(AbotRadius.sm),
+                  child: Padding(
+                    padding: const EdgeInsets.all(2),
+                    child: Icon(Icons.info_outline, size: 14, color: p.overlay1),
+                  ),
+                ),
+            ],
           ),
         ),
-        if (unattachedSessions.isNotEmpty)
-          SliverPadding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate([
-                _SectionDivider(
-                    label: 'Sessions',
-                    color: p.surface1,
-                    textColor: p.subtext0),
-                const SizedBox(height: AbotSpacing.xs),
-                for (final session in unattachedSessions) ...[
-                  _SessionTile(
-                    session: session,
-                    isDirty:
-                        widget.sessionInfoMap[session.name]?.dirty ?? false,
-                    onTap: () => widget.onOpenSession(session.name),
-                    onDelete: () => widget.onDeleteSession(session.name),
-                    onSettings: widget.onSessionSettings != null
-                        ? () => widget.onSessionSettings!(session.name)
-                        : null,
-                  ),
-                  const SizedBox(height: AbotSpacing.xs),
-                ],
-              ]),
-            ),
+      ),
+    );
+  }
+}
+
+// ── Kubo branch row (used in Abots tab) ──────────────────────────────
+
+class _KuboBranchRow extends StatefulWidget {
+  final String kuboName;
+  final bool isActive;
+  final bool merged;
+  final VoidCallback? onTap;
+
+  const _KuboBranchRow({
+    required this.kuboName,
+    required this.isActive,
+    this.merged = false,
+    this.onTap,
+  });
+
+  @override
+  State<_KuboBranchRow> createState() => _KuboBranchRowState();
+}
+
+class _KuboBranchRowState extends State<_KuboBranchRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AbotSpacing.sm,
+            vertical: 5,
           ),
-      ],
+          margin: const EdgeInsets.only(left: 12),
+          decoration: BoxDecoration(
+            color: _hovered ? p.surface0 : Colors.transparent,
+            borderRadius: BorderRadius.circular(AbotRadius.sm),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(
+                  color: widget.isActive ? p.green : p.overlay0,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: AbotSpacing.sm),
+              Expanded(
+                child: Text(
+                  widget.kuboName,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: widget.onTap != null ? p.text : p.subtext0,
+                    fontFamily: AbotFonts.mono,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (widget.merged)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: p.surface1,
+                    borderRadius: BorderRadius.circular(AbotRadius.sm),
+                  ),
+                  child: Text(
+                    'merged',
+                    style: TextStyle(
+                      fontSize: 9,
+                      color: p.subtext0,
+                      fontFamily: AbotFonts.mono,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -794,45 +1038,6 @@ class _KuboActionBar extends StatelessWidget {
   }
 }
 
-// ── Section divider ──────────────────────────────────────────────────
-
-class _SectionDivider extends StatelessWidget {
-  final String label;
-  final Color color;
-  final Color textColor;
-
-  const _SectionDivider({
-    required this.label,
-    required this.color,
-    required this.textColor,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: AbotSpacing.xs),
-      child: Row(
-        children: [
-          Expanded(child: Divider(color: color, height: 1)),
-          Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                color: textColor,
-                fontFamily: AbotFonts.mono,
-              ),
-            ),
-          ),
-          Expanded(child: Divider(color: color, height: 1)),
-        ],
-      ),
-    );
-  }
-}
-
 // ── Icon button ──────────────────────────────────────────────────────
 
 class _IconBtn extends StatelessWidget {
@@ -995,17 +1200,9 @@ class _SidebarFooter extends StatelessWidget {
 
 class _StripCard extends StatefulWidget {
   final FacetData facet;
-  final bool isFocused;
-  final bool isDirty;
-  final VoidCallback? onTap;
-  final VoidCallback? onSettings;
 
   const _StripCard({
     required this.facet,
-    this.isFocused = false,
-    this.isDirty = false,
-    this.onTap,
-    this.onSettings,
   });
 
   @override
@@ -1013,22 +1210,14 @@ class _StripCard extends StatefulWidget {
 }
 
 class _StripCardState extends State<_StripCard> {
-  bool _hovered = false;
-
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
-        child: Container(
+    return Container(
           decoration: BoxDecoration(
             color: p.base,
             border: Border.all(
-              color: widget.isFocused ? p.mauve : p.surface1,
+              color: p.surface1,
               width: 2,
             ),
             borderRadius: BorderRadius.circular(AbotRadius.lg),
@@ -1036,50 +1225,12 @@ class _StripCardState extends State<_StripCard> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
-                height: 88,
-                child: Stack(
-                  children: [
-                    if (_hovered && widget.onSettings != null)
-                      Positioned(
-                        right: AbotSpacing.sm,
-                        top: AbotSpacing.sm,
-                        child: InkWell(
-                          onTap: widget.onSettings,
-                          borderRadius:
-                              BorderRadius.circular(AbotRadius.sm),
-                          child: Container(
-                            padding: const EdgeInsets.all(3),
-                            decoration: BoxDecoration(
-                              color: p.surface0.withValues(alpha: 0.8),
-                              borderRadius:
-                                  BorderRadius.circular(AbotRadius.sm),
-                            ),
-                            child: Icon(Icons.settings_outlined,
-                                size: 16, color: p.subtext0),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+              const SizedBox(height: 88),
               Padding(
                 padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    if (widget.isDirty)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 4),
-                        child: Container(
-                          width: 5,
-                          height: 5,
-                          decoration: BoxDecoration(
-                            color: p.yellow,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                      ),
                     Flexible(
                       child: Container(
                         padding: const EdgeInsets.symmetric(
@@ -1093,9 +1244,7 @@ class _StripCardState extends State<_StripCard> {
                           widget.facet.sessionName,
                           style: TextStyle(
                             fontSize: 12,
-                            color: widget.isFocused
-                                ? p.mauve
-                                : p.subtext0,
+                            color: p.subtext0,
                             fontFamily: AbotFonts.mono,
                           ),
                           overflow: TextOverflow.ellipsis,
@@ -1107,8 +1256,6 @@ class _StripCardState extends State<_StripCard> {
               ),
             ],
           ),
-        ),
-      ),
     );
   }
 }
@@ -1117,17 +1264,13 @@ class _StripCardState extends State<_StripCard> {
 
 class _SessionTile extends StatefulWidget {
   final SessionInfo session;
-  final bool isDirty;
   final VoidCallback onTap;
   final VoidCallback onDelete;
-  final VoidCallback? onSettings;
 
   const _SessionTile({
     required this.session,
-    this.isDirty = false,
     required this.onTap,
     required this.onDelete,
-    this.onSettings,
   });
 
   @override
@@ -1165,32 +1308,14 @@ class _SessionTileState extends State<_SessionTile> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
-                      children: [
-                        Flexible(
-                          child: Text(
-                            widget.session.name,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: p.text,
-                              fontFamily: AbotFonts.mono,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        if (widget.isDirty)
-                          Padding(
-                            padding: const EdgeInsets.only(left: 4),
-                            child: Container(
-                              width: 5,
-                              height: 5,
-                              decoration: BoxDecoration(
-                                color: p.yellow,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                      ],
+                    Text(
+                      widget.session.name,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: p.text,
+                        fontFamily: AbotFonts.mono,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
                     Text(
                       widget.session.status.name,
@@ -1204,16 +1329,6 @@ class _SessionTileState extends State<_SessionTile> {
                 ),
               ),
               if (_hovered) ...[
-                if (widget.onSettings != null)
-                  InkWell(
-                    onTap: widget.onSettings,
-                    borderRadius: BorderRadius.circular(AbotRadius.sm),
-                    child: Padding(
-                      padding: const EdgeInsets.all(4),
-                      child: Icon(Icons.settings_outlined,
-                          size: 16, color: p.subtext0),
-                    ),
-                  ),
                 InkWell(
                   onTap: widget.onDelete,
                   borderRadius: BorderRadius.circular(AbotRadius.sm),

@@ -162,6 +162,9 @@ pub async fn run(data_dir: &Path) -> Result<()> {
         }
     }
 
+    // Sync known abots with kubo manifests
+    bundle::sync_known_abots(data_dir);
+
     let state = Arc::new(DaemonState {
         sessions: Mutex::new(HashMap::new()),
         data_dir: data_dir.to_path_buf(),

@@ -1,3 +1,4 @@
+pub mod abots;
 pub mod anthropic_oauth;
 pub mod assets;
 pub mod browse;
