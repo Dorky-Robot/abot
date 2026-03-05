@@ -38,13 +38,13 @@ class KuboBranchInfo {
   final String kuboName;
   final String branch;
   final bool hasWorktree;
-  final bool merged;
+  final bool hasSession;
 
   const KuboBranchInfo({
     required this.kuboName,
     required this.branch,
     this.hasWorktree = false,
-    this.merged = false,
+    this.hasSession = false,
   });
 
   factory KuboBranchInfo.fromJson(Map<String, dynamic> json) =>
@@ -52,7 +52,7 @@ class KuboBranchInfo {
         kuboName: json['kubo_name'] as String,
         branch: json['branch'] as String,
         hasWorktree: json['has_worktree'] as bool? ?? false,
-        merged: json['merged'] as bool? ?? false,
+        hasSession: json['has_session'] as bool? ?? false,
       );
 }
 
@@ -83,6 +83,30 @@ class AbotServiceNotifier extends AsyncNotifier<List<AbotInfo>> {
   /// Remove an abot from the known list.
   Future<void> removeAbot(String name) async {
     await _api.delete('/abots/${Uri.encodeComponent(name)}');
+    state = AsyncData(await listAbots());
+  }
+
+  /// Dismiss a kubo variant (remove worktree, keep branch as past work).
+  Future<void> dismissVariant(String abotName, String kuboName) async {
+    await _api.post('/abots/${Uri.encodeComponent(abotName)}/dismiss', {
+      'kubo': kuboName,
+    });
+    state = AsyncData(await listAbots());
+  }
+
+  /// Integrate a kubo variant into the abot's default branch.
+  Future<void> integrateVariant(String abotName, String kuboName) async {
+    await _api.post('/abots/${Uri.encodeComponent(abotName)}/integrate', {
+      'kubo': kuboName,
+    });
+    state = AsyncData(await listAbots());
+  }
+
+  /// Discard a kubo variant (delete branch + worktree).
+  Future<void> discardVariant(String abotName, String kuboName) async {
+    await _api.post('/abots/${Uri.encodeComponent(abotName)}/discard', {
+      'kubo': kuboName,
+    });
     state = AsyncData(await listAbots());
   }
 

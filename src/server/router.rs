@@ -66,6 +66,9 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/abots", get(abots::list_abots))
         .route("/abots/{name}", get(abots::get_abot))
         .route("/abots/{name}", delete(abots::remove_abot))
+        .route("/abots/{name}/dismiss", post(abots::dismiss_variant))
+        .route("/abots/{name}/integrate", post(abots::integrate_variant))
+        .route("/abots/{name}/discard", post(abots::discard_variant))
         // Kubos
         .route("/kubos", get(kubos::list_kubos))
         .route("/kubos", post(kubos::create_kubo))

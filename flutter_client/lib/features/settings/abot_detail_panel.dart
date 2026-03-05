@@ -8,6 +8,9 @@ class AbotDetailPanel extends StatelessWidget {
   final VoidCallback onClose;
   final VoidCallback? onRemove;
   final void Function(String kuboName)? onSwitchToKubo;
+  final void Function(String kuboName)? onIntegrate;
+  final void Function(String kuboName)? onDiscard;
+  final void Function(String kuboName)? onDismiss;
 
   const AbotDetailPanel({
     super.key,
@@ -15,6 +18,9 @@ class AbotDetailPanel extends StatelessWidget {
     required this.onClose,
     this.onRemove,
     this.onSwitchToKubo,
+    this.onIntegrate,
+    this.onDiscard,
+    this.onDismiss,
   });
 
   @override
@@ -112,9 +118,9 @@ class AbotDetailPanel extends StatelessWidget {
                           ),
                         const SizedBox(height: AbotSpacing.lg),
 
-                        // Active in (kubos with live worktrees)
+                        // Working in (kubos with live worktrees)
                         if (activeBranches.isNotEmpty) ...[
-                          _SectionLabel(label: 'Active in'),
+                          _SectionLabel(label: 'Working in'),
                           const SizedBox(height: AbotSpacing.sm),
                           for (final branch in activeBranches)
                             _KuboBranchRow(
@@ -124,18 +130,27 @@ class AbotDetailPanel extends StatelessWidget {
                                   ? () =>
                                       onSwitchToKubo!(branch.kuboName)
                                   : null,
+                              onDismiss: onDismiss != null
+                                  ? () => onDismiss!(branch.kuboName)
+                                  : null,
                             ),
                           const SizedBox(height: AbotSpacing.lg),
                         ],
 
-                        // Past work (kubo branches without worktrees)
+                        // Variants (kubo branches without worktrees)
                         if (pastBranches.isNotEmpty) ...[
-                          _SectionLabel(label: 'Past work'),
+                          _SectionLabel(label: 'Variants'),
                           const SizedBox(height: AbotSpacing.sm),
                           for (final branch in pastBranches)
                             _KuboBranchRow(
                               branch: branch,
                               isActive: false,
+                              onIntegrate: onIntegrate != null
+                                  ? () => onIntegrate!(branch.kuboName)
+                                  : null,
+                              onDiscard: onDiscard != null
+                                  ? () => onDiscard!(branch.kuboName)
+                                  : null,
                             ),
                           const SizedBox(height: AbotSpacing.lg),
                         ],
@@ -256,16 +271,28 @@ class _KuboBranchRow extends StatelessWidget {
   final KuboBranchInfo branch;
   final bool isActive;
   final VoidCallback? onTap;
+  final VoidCallback? onDismiss;
+  final VoidCallback? onIntegrate;
+  final VoidCallback? onDiscard;
 
   const _KuboBranchRow({
     required this.branch,
     required this.isActive,
     this.onTap,
+    this.onDismiss,
+    this.onIntegrate,
+    this.onDiscard,
   });
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
+    final dotColor = branch.hasSession
+        ? p.green
+        : isActive
+            ? p.green.withValues(alpha: 0.5)
+            : p.overlay0;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: AbotSpacing.xs),
       child: GestureDetector(
@@ -277,7 +304,7 @@ class _KuboBranchRow extends StatelessWidget {
               width: 6,
               height: 6,
               decoration: BoxDecoration(
-                color: isActive ? p.green : p.overlay0,
+                color: dotColor,
                 shape: BoxShape.circle,
               ),
             ),
@@ -293,24 +320,50 @@ class _KuboBranchRow extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            if (branch.merged)
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 6, vertical: 1),
-                decoration: BoxDecoration(
-                  color: p.surface1,
-                  borderRadius: BorderRadius.circular(AbotRadius.sm),
-                ),
-                child: Text(
-                  'merged',
-                  style: TextStyle(
-                    fontSize: 9,
-                    color: p.subtext0,
-                    fontFamily: AbotFonts.mono,
-                  ),
-                ),
-              ),
+            if (isActive && onDismiss != null)
+              _DetailActionChip(label: 'dismiss', color: p.subtext0, onTap: onDismiss!),
+            if (!isActive && onIntegrate != null)
+              _DetailActionChip(label: 'integrate', color: p.green, onTap: onIntegrate!),
+            if (!isActive && onDiscard != null) ...[
+              const SizedBox(width: 4),
+              _DetailActionChip(label: 'discard', color: p.red, onTap: onDiscard!),
+            ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailActionChip extends StatelessWidget {
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _DetailActionChip({
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(
+          color: p.surface1,
+          borderRadius: BorderRadius.circular(AbotRadius.sm),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 9,
+            color: color,
+            fontFamily: AbotFonts.mono,
+          ),
         ),
       ),
     );

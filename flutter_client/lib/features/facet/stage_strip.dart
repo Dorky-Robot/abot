@@ -43,6 +43,9 @@ class StageStrip extends StatefulWidget {
   final void Function(String kubo)? onActiveKuboChanged;
   final List<AbotInfo> knownAbots;
   final void Function(String abotName)? onAbotDetail;
+  final void Function(String abotName, String kuboName)? onIntegrateVariant;
+  final void Function(String abotName, String kuboName)? onDiscardVariant;
+  final void Function(String abotName, String kuboName)? onDismissVariant;
 
   const StageStrip({
     super.key,
@@ -75,6 +78,9 @@ class StageStrip extends StatefulWidget {
     this.onActiveKuboChanged,
     this.knownAbots = const [],
     this.onAbotDetail,
+    this.onIntegrateVariant,
+    this.onDiscardVariant,
+    this.onDismissVariant,
   });
 
   @override
@@ -553,18 +559,27 @@ class _StageStripState extends State<StageStrip> {
                 for (final branch in activeBranches)
                   _KuboBranchRow(
                     kuboName: branch.kuboName,
+                    hasSession: branch.hasSession,
                     isActive: true,
-                    merged: branch.merged,
                     onTap: widget.onActiveKuboChanged != null
                         ? () => widget.onActiveKuboChanged!(branch.kuboName)
+                        : null,
+                    onDismiss: widget.onDismissVariant != null
+                        ? () => widget.onDismissVariant!(abot.name, branch.kuboName)
                         : null,
                   ),
                 // Past kubo branches (no worktree)
                 for (final branch in pastBranches)
                   _KuboBranchRow(
                     kuboName: branch.kuboName,
+                    hasSession: false,
                     isActive: false,
-                    merged: branch.merged,
+                    onIntegrate: widget.onIntegrateVariant != null
+                        ? () => widget.onIntegrateVariant!(abot.name, branch.kuboName)
+                        : null,
+                    onDiscard: widget.onDiscardVariant != null
+                        ? () => widget.onDiscardVariant!(abot.name, branch.kuboName)
+                        : null,
                   ),
                 if (abot.kuboBranches.isEmpty)
                   Padding(
@@ -680,14 +695,20 @@ class _AbotGroupHeaderState extends State<_AbotGroupHeader> {
 class _KuboBranchRow extends StatefulWidget {
   final String kuboName;
   final bool isActive;
-  final bool merged;
+  final bool hasSession;
   final VoidCallback? onTap;
+  final VoidCallback? onDismiss;
+  final VoidCallback? onIntegrate;
+  final VoidCallback? onDiscard;
 
   const _KuboBranchRow({
     required this.kuboName,
     required this.isActive,
-    this.merged = false,
+    this.hasSession = false,
     this.onTap,
+    this.onDismiss,
+    this.onIntegrate,
+    this.onDiscard,
   });
 
   @override
@@ -700,6 +721,13 @@ class _KuboBranchRowState extends State<_KuboBranchRow> {
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
+    // Dot color: bright green if session active, dim green if worktree only, grey if past
+    final dotColor = widget.hasSession
+        ? p.green
+        : widget.isActive
+            ? p.green.withValues(alpha: 0.5)
+            : p.overlay0;
+
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
@@ -722,7 +750,7 @@ class _KuboBranchRowState extends State<_KuboBranchRow> {
                 width: 7,
                 height: 7,
                 decoration: BoxDecoration(
-                  color: widget.isActive ? p.green : p.overlay0,
+                  color: dotColor,
                   shape: BoxShape.circle,
                 ),
               ),
@@ -738,23 +766,52 @@ class _KuboBranchRowState extends State<_KuboBranchRow> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              if (widget.merged)
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                  decoration: BoxDecoration(
-                    color: p.surface1,
-                    borderRadius: BorderRadius.circular(AbotRadius.sm),
-                  ),
-                  child: Text(
-                    'merged',
-                    style: TextStyle(
-                      fontSize: 9,
-                      color: p.subtext0,
-                      fontFamily: AbotFonts.mono,
-                    ),
-                  ),
-                ),
+              if (_hovered) ...[
+                if (widget.isActive && widget.onDismiss != null)
+                  _ActionChip(label: 'dismiss', color: p.subtext0, onTap: widget.onDismiss!),
+                if (!widget.isActive && widget.onIntegrate != null)
+                  _ActionChip(label: 'integrate', color: p.green, onTap: widget.onIntegrate!),
+                if (!widget.isActive && widget.onDiscard != null) ...[
+                  const SizedBox(width: 4),
+                  _ActionChip(label: 'discard', color: p.red, onTap: widget.onDiscard!),
+                ],
+              ],
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ActionChip extends StatelessWidget {
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ActionChip({
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        decoration: BoxDecoration(
+          color: p.surface1,
+          borderRadius: BorderRadius.circular(AbotRadius.sm),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 9,
+            color: color,
+            fontFamily: AbotFonts.mono,
           ),
         ),
       ),

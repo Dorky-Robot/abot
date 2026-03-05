@@ -908,6 +908,18 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   });
                   web.window.localStorage.setItem(_activeKuboKey, kuboName);
                 },
+                onIntegrate: (kuboName) async {
+                  final name = _abotDetailName!;
+                  await ref.read(abotServiceProvider.notifier).integrateVariant(name, kuboName);
+                },
+                onDiscard: (kuboName) async {
+                  final name = _abotDetailName!;
+                  await ref.read(abotServiceProvider.notifier).discardVariant(name, kuboName);
+                },
+                onDismiss: (kuboName) async {
+                  final name = _abotDetailName!;
+                  await ref.read(abotServiceProvider.notifier).dismissVariant(name, kuboName);
+                },
               );
             }),
           if (_kuboSettingsName != null)
@@ -1030,6 +1042,15 @@ class _FacetShellState extends ConsumerState<FacetShell>
               },
               knownAbots: knownAbots,
               onAbotDetail: (name) => _showAbotDetail(name),
+              onIntegrateVariant: (abotName, kuboName) async {
+                await ref.read(abotServiceProvider.notifier).integrateVariant(abotName, kuboName);
+              },
+              onDiscardVariant: (abotName, kuboName) async {
+                await ref.read(abotServiceProvider.notifier).discardVariant(abotName, kuboName);
+              },
+              onDismissVariant: (abotName, kuboName) async {
+                await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
+              },
               activeKubo: _activeKubo,
               onActiveKuboChanged: (kubo) {
                 setState(() => _activeKubo = kubo);

@@ -680,6 +680,119 @@ pub fn worktree_remove_abot(
     Ok(())
 }
 
+// ── Variant lifecycle ────────────────────────────────────────────
+
+/// Integrate a kubo variant into the abot's default branch, then delete the branch.
+/// If a worktree exists for this branch, it is removed first.
+/// Returns Err if the merge has conflicts (merge is aborted in that case).
+pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    // Remove worktree if it exists
+    let worktrees_output =
+        run_git(canonical_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    let has_worktree = worktrees_output.split("\n\n").any(|block| {
+        block
+            .lines()
+            .any(|l| l == format!("branch refs/heads/{}", kubo_branch))
+    });
+    if has_worktree {
+        // Find the worktree path
+        for block in worktrees_output.split("\n\n") {
+            let is_match = block
+                .lines()
+                .any(|l| l == format!("branch refs/heads/{}", kubo_branch));
+            if is_match {
+                if let Some(path_line) = block.lines().find(|l| l.starts_with("worktree ")) {
+                    let wt_path = path_line.strip_prefix("worktree ").unwrap_or("");
+                    let _ = run_git(canonical_path, &["worktree", "remove", wt_path, "--force"]);
+                }
+                break;
+            }
+        }
+        let _ = run_git(canonical_path, &["worktree", "prune"]);
+    }
+
+    // Merge the kubo branch into the current (default) branch
+    let merge_result = std::process::Command::new("git")
+        .args(["merge", kubo_branch, "--no-edit"])
+        .current_dir(canonical_path)
+        .output()
+        .with_context(|| format!("failed to run git merge {}", kubo_branch))?;
+
+    if !merge_result.status.success() {
+        // Abort the failed merge
+        let _ = run_git(canonical_path, &["merge", "--abort"]);
+        let stderr = String::from_utf8_lossy(&merge_result.stderr);
+        anyhow::bail!("merge conflict integrating '{}': {}", kubo_branch, stderr);
+    }
+
+    // Delete the branch (it's now merged)
+    run_git(canonical_path, &["branch", "-d", kubo_branch])?;
+
+    tracing::info!(
+        "integrated variant '{}' into {}",
+        kubo_branch,
+        canonical_path.display()
+    );
+    Ok(())
+}
+
+/// Dismiss a kubo variant — remove the worktree but keep the branch.
+/// The branch becomes "past work" that can later be integrated or discarded.
+pub fn dismiss_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    let worktrees_output =
+        run_git(canonical_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    for block in worktrees_output.split("\n\n") {
+        let is_match = block
+            .lines()
+            .any(|l| l == format!("branch refs/heads/{}", kubo_branch));
+        if is_match {
+            if let Some(path_line) = block.lines().find(|l| l.starts_with("worktree ")) {
+                let wt_path = path_line.strip_prefix("worktree ").unwrap_or("");
+                run_git(canonical_path, &["worktree", "remove", wt_path, "--force"])?;
+            }
+            break;
+        }
+    }
+    let _ = run_git(canonical_path, &["worktree", "prune"]);
+
+    tracing::info!(
+        "dismissed variant '{}' from {}",
+        kubo_branch,
+        canonical_path.display()
+    );
+    Ok(())
+}
+
+/// Discard a kubo variant — delete the branch (and worktree if any).
+pub fn discard_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
+    // Remove worktree if it exists
+    let worktrees_output =
+        run_git(canonical_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    for block in worktrees_output.split("\n\n") {
+        let is_match = block
+            .lines()
+            .any(|l| l == format!("branch refs/heads/{}", kubo_branch));
+        if is_match {
+            if let Some(path_line) = block.lines().find(|l| l.starts_with("worktree ")) {
+                let wt_path = path_line.strip_prefix("worktree ").unwrap_or("");
+                let _ = run_git(canonical_path, &["worktree", "remove", wt_path, "--force"]);
+            }
+            break;
+        }
+    }
+    let _ = run_git(canonical_path, &["worktree", "prune"]);
+
+    // Force-delete the branch
+    run_git(canonical_path, &["branch", "-D", kubo_branch])?;
+
+    tracing::info!(
+        "discarded variant '{}' from {}",
+        kubo_branch,
+        canonical_path.display()
+    );
+    Ok(())
+}
+
 // ── Known abots registry ────────────────────────────────────────
 
 /// A known abot entry in `abots.json`.
@@ -706,7 +819,6 @@ pub struct KuboBranch {
     pub kubo_name: String,
     pub branch: String,
     pub has_worktree: bool,
-    pub merged: bool,
 }
 
 /// Read the known abots list from `{data_dir}/abots.json`.
@@ -827,8 +939,6 @@ pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
             run_git(&abot_path, &["branch", "--list", "kubo/*"]).unwrap_or_default();
         let worktrees_output =
             run_git(&abot_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-        let merged_output =
-            run_git(&abot_path, &["branch", "--merged", "HEAD"]).unwrap_or_default();
 
         // Parse worktree paths to know which branches have active worktrees
         let worktree_branches: std::collections::HashSet<String> = worktrees_output
@@ -839,16 +949,6 @@ pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
                         .unwrap_or("")
                         .to_string()
                 })
-            })
-            .collect();
-
-        let merged_branches: std::collections::HashSet<String> = merged_output
-            .lines()
-            .map(|l| {
-                l.trim()
-                    .trim_start_matches("* ")
-                    .trim_start_matches("+ ")
-                    .to_string()
             })
             .collect();
 
@@ -866,7 +966,6 @@ pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
                 KuboBranch {
                     kubo_name,
                     has_worktree: worktree_branches.contains(&branch),
-                    merged: merged_branches.contains(&branch),
                     branch,
                 }
             })

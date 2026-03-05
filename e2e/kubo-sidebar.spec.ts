@@ -274,7 +274,36 @@ async function listAbots(page: Page) {
 async function getAbotDetail(page: Page, name: string) {
   const resp = await page.request.get(`/abots/${encodeURIComponent(name)}`);
   expect(resp.ok(), `GET /abots/${name} failed: ${resp.status()}`).toBeTruthy();
-  return await resp.json();
+  return await resp.json() as {
+    name: string;
+    path: string;
+    default_branch: string;
+    kubo_branches: { kubo_name: string; branch: string; has_worktree: boolean; has_session: boolean }[];
+  };
+}
+
+async function integrateVariant(page: Page, abot: string, kubo: string) {
+  const resp = await page.request.post(
+    `/abots/${encodeURIComponent(abot)}/integrate`,
+    { data: { kubo } },
+  );
+  return { ok: resp.ok(), status: resp.status(), body: await resp.json() };
+}
+
+async function dismissVariant(page: Page, abot: string, kubo: string) {
+  const resp = await page.request.post(
+    `/abots/${encodeURIComponent(abot)}/dismiss`,
+    { data: { kubo } },
+  );
+  return { ok: resp.ok(), status: resp.status(), body: await resp.json() };
+}
+
+async function discardVariant(page: Page, abot: string, kubo: string) {
+  const resp = await page.request.post(
+    `/abots/${encodeURIComponent(abot)}/discard`,
+    { data: { kubo } },
+  );
+  return { ok: resp.ok(), status: resp.status(), body: await resp.json() };
 }
 
 async function removeKnownAbot(page: Page, name: string) {
@@ -711,5 +740,293 @@ test.describe('Remove abot from kubo', () => {
     const result = await removeAbotFromKubo(page, kubo, 'nonexistent');
     expect(result.kubo).toBe(kubo);
     expect(result.abot).toBe('nonexistent');
+  });
+});
+
+// ── Variant lifecycle ──────────────────────────────────────────────────────
+
+test.describe('Variant lifecycle', () => {
+  test.afterEach(async ({ page }) => {
+    await cleanupResources(page);
+  });
+
+  test('abot detail includes has_session field on kubo branches', async ({ page }) => {
+    const kubo = `e2e-hs-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-hsabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    const detail = await getAbotDetail(page, abot);
+    const branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect(branch!.has_worktree).toBe(true);
+    // has_session should be true because addAbotToKubo created a session
+    expect(typeof branch!.has_session).toBe('boolean');
+  });
+
+  test('abot detail does not include merged field', async ({ page }) => {
+    const kubo = `e2e-nm-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-nmabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    const detail = await getAbotDetail(page, abot);
+    const branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect((branch as any).merged).toBeUndefined();
+  });
+
+  test('dismiss removes worktree but keeps branch', async ({ page }) => {
+    const kubo = `e2e-dism-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-dismabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Verify employed state (has worktree)
+    let detail = await getAbotDetail(page, abot);
+    let branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect(branch!.has_worktree).toBe(true);
+
+    // Dismiss
+    const result = await dismissVariant(page, abot, kubo);
+    expect(result.ok, `dismiss failed: ${result.status} ${JSON.stringify(result.body)}`).toBeTruthy();
+    expect(result.body.dismissed).toBe(abot);
+    expect(result.body.kubo).toBe(kubo);
+
+    // Session should be gone
+    const sessions = await listSessions(page);
+    expect(sessions.find(s => s.name === abot)).toBeUndefined();
+
+    // Branch should still exist but worktree should be gone
+    detail = await getAbotDetail(page, abot);
+    branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect(branch!.has_worktree).toBe(false);
+
+    // Abot should be removed from kubo manifest
+    const kubos = await listKubos(page);
+    const found = kubos.find(k => k.name === kubo);
+    expect(found!.abots).not.toContain(abot);
+
+    // Clean up tracking
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+  });
+
+  test('integrate merges variant into default branch and deletes kubo branch', async ({ page }) => {
+    const kubo = `e2e-int-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-intabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Dismiss first (removes worktree + session, keeps branch)
+    await dismissVariant(page, abot, kubo);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    // Verify kubo branch still exists but worktree is gone
+    let detail = await getAbotDetail(page, abot);
+    let branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect(branch!.has_worktree).toBe(false);
+
+    // Integrate the variant
+    const result = await integrateVariant(page, abot, kubo);
+    expect(result.ok, `integrate failed: ${result.status} ${JSON.stringify(result.body)}`).toBeTruthy();
+    expect(result.body.integrated).toBe(abot);
+    expect(result.body.kubo).toBe(kubo);
+
+    // Kubo branch should be gone
+    detail = await getAbotDetail(page, abot);
+    expect(detail.kubo_branches.find(b => b.kubo_name === kubo)).toBeUndefined();
+  });
+
+  test('discard deletes kubo branch without merging', async ({ page }) => {
+    const kubo = `e2e-disc-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-discabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Dismiss first (removes worktree + session, keeps branch)
+    await dismissVariant(page, abot, kubo);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    // Verify kubo branch still exists
+    let detail = await getAbotDetail(page, abot);
+    expect(detail.kubo_branches.find(b => b.kubo_name === kubo)).toBeDefined();
+
+    // Discard the variant
+    const result = await discardVariant(page, abot, kubo);
+    expect(result.ok, `discard failed: ${result.status} ${JSON.stringify(result.body)}`).toBeTruthy();
+    expect(result.body.discarded).toBe(abot);
+    expect(result.body.kubo).toBe(kubo);
+
+    // Kubo branch should be gone
+    detail = await getAbotDetail(page, abot);
+    expect(detail.kubo_branches.find(b => b.kubo_name === kubo)).toBeUndefined();
+  });
+
+  test('discard works on employed variant (has worktree + session)', async ({ page }) => {
+    const kubo = `e2e-discact-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-discactabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Discard while still employed — should kill session + remove worktree + delete branch
+    const result = await discardVariant(page, abot, kubo);
+    expect(result.ok, `discard failed: ${result.status} ${JSON.stringify(result.body)}`).toBeTruthy();
+
+    // Session should be gone
+    const sessions = await listSessions(page);
+    expect(sessions.find(s => s.name === abot)).toBeUndefined();
+
+    // Kubo branch should be gone
+    const detail = await getAbotDetail(page, abot);
+    expect(detail.kubo_branches.find(b => b.kubo_name === kubo)).toBeUndefined();
+
+    // Clean up tracking
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+  });
+
+  test('integrate on employed variant removes worktree first', async ({ page }) => {
+    const kubo = `e2e-intact-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-intactabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Delete session but keep worktree (don't remove from kubo)
+    await deleteSession(page, abot);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    // Integrate while worktree still exists
+    const result = await integrateVariant(page, abot, kubo);
+    expect(result.ok, `integrate failed: ${result.status} ${JSON.stringify(result.body)}`).toBeTruthy();
+
+    // Kubo branch should be gone
+    const detail = await getAbotDetail(page, abot);
+    expect(detail.kubo_branches.find(b => b.kubo_name === kubo)).toBeUndefined();
+  });
+
+  test('integrate on nonexistent abot returns error', async ({ page }) => {
+    const result = await integrateVariant(page, 'nonexistent-abot', 'nonexistent-kubo');
+    expect(result.ok).toBeFalsy();
+  });
+
+  test('discard on nonexistent abot returns error', async ({ page }) => {
+    const result = await discardVariant(page, 'nonexistent-abot', 'nonexistent-kubo');
+    expect(result.ok).toBeFalsy();
+  });
+
+  test('integrate removes abot from kubo manifest', async ({ page }) => {
+    const kubo = `e2e-intmf-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-intmfabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Dismiss first, then integrate
+    await dismissVariant(page, abot, kubo);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    await integrateVariant(page, abot, kubo);
+
+    // Kubo manifest should no longer list this abot
+    const kubos = await listKubos(page);
+    const found = kubos.find(k => k.name === kubo);
+    expect(found).toBeDefined();
+    expect(found!.abots).not.toContain(abot);
+  });
+
+  test('discard removes abot from kubo manifest', async ({ page }) => {
+    const kubo = `e2e-discmf-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-discmfabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Dismiss first, then discard
+    await dismissVariant(page, abot, kubo);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    await discardVariant(page, abot, kubo);
+
+    // Kubo manifest should no longer list this abot
+    const kubos = await listKubos(page);
+    const found = kubos.find(k => k.name === kubo);
+    expect(found).toBeDefined();
+    expect(found!.abots).not.toContain(abot);
+  });
+
+  test('full lifecycle: employ → dismiss → integrate', async ({ page }) => {
+    const kubo = `e2e-lc-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-lcabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Verify employed (has worktree + session)
+    let detail = await getAbotDetail(page, abot);
+    let branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect(branch!.has_worktree).toBe(true);
+
+    // Dismiss — removes worktree + session, keeps branch
+    await dismissVariant(page, abot, kubo);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    // Worktree gone, branch still there
+    detail = await getAbotDetail(page, abot);
+    branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect(branch!.has_worktree).toBe(false);
+
+    // Integrate — merges into default, removes branch
+    const result = await integrateVariant(page, abot, kubo);
+    expect(result.ok).toBeTruthy();
+
+    // Branch gone
+    detail = await getAbotDetail(page, abot);
+    expect(detail.kubo_branches.find(b => b.kubo_name === kubo)).toBeUndefined();
+  });
+
+  test('full lifecycle: employ → dismiss → discard', async ({ page }) => {
+    const kubo = `e2e-lcd-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-lcdabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Dismiss — removes worktree + session, keeps branch
+    await dismissVariant(page, abot, kubo);
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+
+    // Branch still exists, worktree gone
+    let detail = await getAbotDetail(page, abot);
+    let branch = detail.kubo_branches.find(b => b.kubo_name === kubo);
+    expect(branch).toBeDefined();
+    expect(branch!.has_worktree).toBe(false);
+
+    // Discard — deletes branch
+    const result = await discardVariant(page, abot, kubo);
+    expect(result.ok).toBeTruthy();
+
+    // Branch gone
+    detail = await getAbotDetail(page, abot);
+    expect(detail.kubo_branches.find(b => b.kubo_name === kubo)).toBeUndefined();
   });
 });
