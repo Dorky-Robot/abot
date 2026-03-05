@@ -140,6 +140,16 @@ impl DaemonClient {
     /// Send an RPC request and wait for response.
     /// Accepts any Serialize type — injects a unique `id` for RPC correlation.
     pub async fn rpc(&self, msg: impl Serialize) -> Result<Value> {
+        self.rpc_with_timeout(msg, std::time::Duration::from_secs(5))
+            .await
+    }
+
+    /// RPC with a custom timeout — use for slow operations (Docker start, image pull).
+    pub async fn rpc_with_timeout(
+        &self,
+        msg: impl Serialize,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         let id = uuid::Uuid::new_v4().to_string();
         let mut msg = serde_json::to_value(msg)?;
         msg["id"] = serde_json::json!(id);
@@ -154,7 +164,7 @@ impl DaemonClient {
         self.send_raw(&msg).await?;
 
         // Wait with timeout
-        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+        match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(resp)) => Ok(resp),
             Ok(Err(_)) => {
                 let mut pending = self.pending.lock().await;

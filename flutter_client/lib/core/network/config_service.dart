@@ -5,8 +5,9 @@ import 'api_client.dart';
 class ConfigState {
   final String instanceName;
   final String bundleDir;
+  final String kubosDir;
 
-  const ConfigState({this.instanceName = '', this.bundleDir = ''});
+  const ConfigState({this.instanceName = '', this.bundleDir = '', this.kubosDir = ''});
 }
 
 /// Config service provider.
@@ -27,6 +28,7 @@ class ConfigNotifier extends AsyncNotifier<ConfigState> {
     return ConfigState(
       instanceName: config['instanceName'] as String? ?? '',
       bundleDir: config['bundleDir'] as String? ?? '',
+      kubosDir: config['kubosDir'] as String? ?? '',
     );
   }
 
@@ -37,6 +39,11 @@ class ConfigNotifier extends AsyncNotifier<ConfigState> {
 
   Future<void> setBundleDir(String dir) async {
     await _api.put('/api/config/bundle-dir', {'bundleDir': dir});
+    state = AsyncData(await _fetchConfig());
+  }
+
+  Future<void> setKubosDir(String dir) async {
+    await _api.put('/api/config/kubos-dir', {'kubosDir': dir});
     state = AsyncData(await _fetchConfig());
   }
 }

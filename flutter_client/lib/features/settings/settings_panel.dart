@@ -23,6 +23,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
   final _nameController = TextEditingController();
   final _nameFocus = FocusNode();
   final _bundleDirController = TextEditingController();
+  final _kubosDirController = TextEditingController();
   bool _nameInitialized = false;
 
   @override
@@ -37,6 +38,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     _nameFocus.removeListener(_onNameFocusChange);
     _nameFocus.dispose();
     _bundleDirController.dispose();
+    _kubosDirController.dispose();
     super.dispose();
   }
 
@@ -80,6 +82,33 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     setState(() {});
   }
 
+  void _saveKubosDir() {
+    final dir = _kubosDirController.text.trim();
+    ref.read(configProvider.notifier).setKubosDir(dir);
+  }
+
+  Future<void> _pickKubosDir() async {
+    try {
+      final data =
+          await const ApiClient().post('/api/pick-directory', {}) as Map<String, dynamic>;
+      if (!mounted) return;
+      final path = data['path'] as String?;
+      if (path != null && path.isNotEmpty) {
+        _kubosDirController.text = path;
+        _saveKubosDir();
+        setState(() {});
+      }
+    } catch (_) {
+      // User cancelled or picker unavailable
+    }
+  }
+
+  void _resetKubosDir() {
+    _kubosDirController.text = '';
+    ref.read(configProvider.notifier).setKubosDir('');
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
@@ -91,6 +120,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
       if (!_nameInitialized) {
         _nameController.text = config.instanceName;
         _bundleDirController.text = config.bundleDir;
+        _kubosDirController.text = config.kubosDir;
         _nameInitialized = true;
       }
     });
@@ -233,11 +263,53 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         ),
         const SizedBox(height: AbotSpacing.lg),
 
-        // Bundles location
-        _SectionLabel(label: 'Bundles Location'),
+        // Abots location
+        _SectionLabel(label: 'Abots Location'),
         const SizedBox(height: AbotSpacing.xs),
+        _buildDirPicker(
+          p,
+          controller: _bundleDirController,
+          defaultPath: '~/.abot/abots',
+          onPick: _pickBundleDir,
+          onReset: _resetBundleDir,
+          helpText: 'Default directory for .abot bundles.',
+        ),
+        const SizedBox(height: AbotSpacing.lg),
+
+        // Kubos location
+        _SectionLabel(label: 'Kubos Location'),
+        const SizedBox(height: AbotSpacing.xs),
+        _buildDirPicker(
+          p,
+          controller: _kubosDirController,
+          defaultPath: '~/.abot/kubos',
+          onPick: _pickKubosDir,
+          onReset: _resetKubosDir,
+          helpText: 'Default directory for .kubo rooms.',
+        ),
+        const SizedBox(height: AbotSpacing.lg),
+
+        // Theme toggle
+        _SectionLabel(label: 'Appearance'),
+        const SizedBox(height: AbotSpacing.xs),
+        _ThemeToggle(),
+      ],
+    );
+  }
+
+  Widget _buildDirPicker(
+    CatPalette p, {
+    required TextEditingController controller,
+    required String defaultPath,
+    required VoidCallback onPick,
+    required VoidCallback onReset,
+    required String helpText,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
         GestureDetector(
-          onTap: _pickBundleDir,
+          onTap: onPick,
           child: Container(
             height: 32,
             padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
@@ -250,14 +322,10 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
               children: [
                 Expanded(
                   child: Text(
-                    _bundleDirController.text.isNotEmpty
-                        ? _bundleDirController.text
-                        : '~/.abot/bundles',
+                    controller.text.isNotEmpty ? controller.text : defaultPath,
                     style: TextStyle(
                       fontSize: 12,
-                      color: _bundleDirController.text.isNotEmpty
-                          ? p.text
-                          : p.overlay0,
+                      color: controller.text.isNotEmpty ? p.text : p.overlay0,
                       fontFamily: AbotFonts.mono,
                     ),
                     overflow: TextOverflow.ellipsis,
@@ -274,16 +342,16 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
             TextSpan(
               children: [
                 TextSpan(
-                  text: 'Default directory for .abot bundles.',
+                  text: helpText,
                   style: TextStyle(color: p.overlay0),
                 ),
-                if (_bundleDirController.text.isNotEmpty) ...[
+                if (controller.text.isNotEmpty) ...[
                   const TextSpan(text: ' '),
                   WidgetSpan(
                     alignment: PlaceholderAlignment.baseline,
                     baseline: TextBaseline.alphabetic,
                     child: GestureDetector(
-                      onTap: _resetBundleDir,
+                      onTap: onReset,
                       child: Text(
                         'Reset',
                         style: TextStyle(
@@ -303,12 +371,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
             ),
           ),
         ),
-        const SizedBox(height: AbotSpacing.lg),
-
-        // Theme toggle
-        _SectionLabel(label: 'Appearance'),
-        const SizedBox(height: AbotSpacing.xs),
-        _ThemeToggle(),
       ],
     );
   }

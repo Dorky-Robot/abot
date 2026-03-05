@@ -157,9 +157,17 @@ pub enum DaemonRequest {
     #[serde(rename = "list-kubos")]
     ListKubos { id: String },
 
+    /// RPC: start a kubo container
+    #[serde(rename = "start-kubo")]
+    StartKubo { id: String, name: String },
+
     /// RPC: stop a kubo container
     #[serde(rename = "stop-kubo")]
     StopKubo { id: String, name: String },
+
+    /// RPC: open a kubo from a path on disk (register it in the daemon)
+    #[serde(rename = "open-kubo")]
+    OpenKubo { id: String, path: String },
 
     /// RPC: add an abot to a kubo (create canonical abot + worktree + optionally a session)
     #[serde(rename = "add-abot-to-kubo")]
@@ -175,6 +183,14 @@ pub enum DaemonRequest {
         rows: u16,
         #[serde(default)]
         env: HashMap<String, String>,
+    },
+
+    /// RPC: remove an abot from a kubo (close session, remove worktree, update manifest)
+    #[serde(rename = "remove-abot-from-kubo")]
+    RemoveAbotFromKubo {
+        id: String,
+        kubo: String,
+        abot: String,
     },
 
     // ── Abot git operations ───────────────────────────────────────
@@ -275,9 +291,18 @@ pub enum DaemonResponse {
         id: String,
         kubos: Vec<serde_json::Value>,
     },
+    KuboStarted {
+        id: String,
+        name: String,
+    },
     KuboStopped {
         id: String,
         name: String,
+    },
+    KuboOpened {
+        id: String,
+        name: String,
+        path: String,
     },
     AbotAddedToKubo {
         id: String,
@@ -285,6 +310,11 @@ pub enum DaemonResponse {
         abot: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         session: Option<String>,
+    },
+    AbotRemovedFromKubo {
+        id: String,
+        kubo: String,
+        abot: String,
     },
     AbotCloned {
         id: String,
@@ -978,7 +1008,7 @@ pub async fn handle_request(
 
         // ── Kubo management ───────────────────────────────────────────
         DaemonRequest::CreateKubo { id, name } => {
-            let kubos_dir = state.data_dir.join("kubos");
+            let kubos_dir = super::bundle::resolve_kubos_dir(&state.data_dir);
             match super::kubo::Kubo::ensure_kubo_dir(&kubos_dir, &name) {
                 Ok(kubo_path) => match super::kubo::new_kubo(name.clone(), kubo_path.clone()) {
                     Ok(new_kubo) => {
@@ -1008,6 +1038,24 @@ pub async fn handle_request(
             Some(DaemonResponse::KuboList { id, kubos: list })
         }
 
+        DaemonRequest::StartKubo { id, name } => {
+            let mut kubos = state.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(&name) {
+                match kubo.start().await {
+                    Ok(()) => Some(DaemonResponse::KuboStarted { id, name }),
+                    Err(e) => Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to start kubo: {}", e),
+                    }),
+                }
+            } else {
+                Some(DaemonResponse::Error {
+                    id,
+                    error: format!("kubo '{}' not found", name),
+                })
+            }
+        }
+
         DaemonRequest::StopKubo { id, name } => {
             let mut kubos = state.kubos.lock().await;
             if let Some(kubo) = kubos.get_mut(&name) {
@@ -1023,6 +1071,75 @@ pub async fn handle_request(
                     id,
                     error: format!("kubo '{}' not found", name),
                 })
+            }
+        }
+
+        DaemonRequest::OpenKubo { id, path } => {
+            let kubo_path = PathBuf::from(&path);
+            if !kubo_path.exists() || !kubo_path.is_dir() {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("kubo path does not exist: {}", path),
+                });
+            }
+
+            // Derive the kubo name from the directory name (strip .kubo suffix)
+            let dir_name = kubo_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let name = dir_name
+                .strip_suffix(".kubo")
+                .unwrap_or(dir_name)
+                .to_string();
+
+            if name.is_empty() {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: "could not determine kubo name from path".to_string(),
+                });
+            }
+
+            // Validate the name
+            if let Err(e) = super::kubo::validate_name(&name) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid kubo name: {}", e),
+                });
+            }
+
+            // Ensure manifest exists (create one if missing)
+            let manifest_path = kubo_path.join("manifest.json");
+            if !manifest_path.exists() {
+                let now = chrono::Utc::now().to_rfc3339();
+                let manifest = super::kubo::KuboManifest {
+                    version: 1,
+                    name: name.clone(),
+                    created_at: now.clone(),
+                    updated_at: Some(now),
+                    abots: vec![],
+                };
+                if let Err(e) = super::kubo::Kubo::write_manifest(&kubo_path, &manifest) {
+                    return Some(DaemonResponse::Error {
+                        id,
+                        error: format!("failed to write manifest: {}", e),
+                    });
+                }
+            }
+
+            // Register the kubo in the daemon
+            let mut kubos = state.kubos.lock().await;
+            if kubos.contains_key(&name) {
+                // Already registered — just return success
+                return Some(DaemonResponse::KuboOpened { id, name, path });
+            }
+            match super::kubo::new_kubo(name.clone(), kubo_path) {
+                Ok(k) => {
+                    kubos.insert(name.clone(), k);
+                    tracing::info!("opened kubo '{}' from {}", name, path);
+                    Some(DaemonResponse::KuboOpened { id, name, path })
+                }
+                Err(e) => Some(DaemonResponse::Error {
+                    id,
+                    error: format!("failed to open kubo: {}", e),
+                }),
             }
         }
 
@@ -1213,6 +1330,83 @@ pub async fn handle_request(
                     session: None,
                 })
             }
+        }
+
+        DaemonRequest::RemoveAbotFromKubo { id, kubo, abot } => {
+            // Validate names
+            if let Err(e) = super::kubo::validate_name(&abot) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid abot name: {}", e),
+                });
+            }
+            if let Err(e) = super::kubo::validate_name(&kubo) {
+                return Some(DaemonResponse::Error {
+                    id,
+                    error: format!("invalid kubo name: {}", e),
+                });
+            }
+
+            // Close the session if one exists for this abot in this kubo
+            {
+                let mut sessions = state.sessions.lock().await;
+                if let Some(mut session) = sessions.remove(&abot) {
+                    if session.kubo.as_deref() == Some(&kubo) {
+                        let kn = if session.is_alive() {
+                            session.kubo.clone()
+                        } else {
+                            None
+                        };
+                        session.backend.kill();
+                        let _ = state.output_tx.send(OutputEvent::SessionRemoved {
+                            session: abot.clone(),
+                        });
+                        drop(sessions);
+                        if let Some(kn) = kn {
+                            let mut kubos = state.kubos.lock().await;
+                            if let Some(k) = kubos.get_mut(&kn) {
+                                k.session_closed();
+                            }
+                        }
+                    } else {
+                        // Session exists but belongs to a different kubo — put it back
+                        sessions.insert(abot.clone(), session);
+                    }
+                }
+            }
+
+            // Get kubo path and resolve canonical abot path
+            let kubo_path = {
+                let kubos = state.kubos.lock().await;
+                match kubos.get(&kubo) {
+                    Some(k) => k.path.clone(),
+                    None => {
+                        return Some(DaemonResponse::Error {
+                            id,
+                            error: format!("kubo '{}' not found", kubo),
+                        })
+                    }
+                }
+            };
+
+            // Keep the worktree on disk so the abot can be re-added later
+            // (resume semantics). Only update the manifest.
+
+            // Update kubo manifest: remove abot from list
+            match super::kubo::Kubo::read_manifest(&kubo_path) {
+                Ok(mut manifest) => {
+                    manifest.abots.retain(|a| a != &abot);
+                    manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
+                    if let Err(e) = super::kubo::Kubo::write_manifest(&kubo_path, &manifest) {
+                        tracing::warn!("failed to write kubo manifest for '{}': {}", kubo, e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to read kubo manifest for '{}': {}", kubo, e);
+                }
+            }
+
+            Some(DaemonResponse::AbotRemovedFromKubo { id, kubo, abot })
         }
     }
 }
@@ -1572,6 +1766,52 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_remove_abot_from_kubo_roundtrip() {
+        // Deserialize
+        let json = r#"{"type":"remove-abot-from-kubo","id":"x","kubo":"default","abot":"alice"}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match &parsed {
+            DaemonRequest::RemoveAbotFromKubo { id, kubo, abot } => {
+                assert_eq!(id, "x");
+                assert_eq!(kubo, "default");
+                assert_eq!(abot, "alice");
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        // Serialize (what the server does) — then inject id (what rpc_with_timeout does)
+        let req = DaemonRequest::RemoveAbotFromKubo {
+            id: String::new(),
+            kubo: "default".into(),
+            abot: "alice".into(),
+        };
+        let mut value = serde_json::to_value(&req).unwrap();
+        value["id"] = serde_json::json!("test-uuid");
+        let serialized = serde_json::to_string(&value).unwrap();
+        let reparsed: DaemonRequest = serde_json::from_str(&serialized).unwrap();
+        match reparsed {
+            DaemonRequest::RemoveAbotFromKubo { id, kubo, abot } => {
+                assert_eq!(id, "test-uuid");
+                assert_eq!(kubo, "default");
+                assert_eq!(abot, "alice");
+            }
+            _ => panic!("wrong variant after roundtrip"),
+        }
+    }
+
+    #[test]
+    fn test_abot_removed_from_kubo_response_serializes() {
+        let resp = DaemonResponse::AbotRemovedFromKubo {
+            id: "r1".into(),
+            kubo: "default".into(),
+            abot: "alice".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains(r#""kubo":"default""#));
+        assert!(json.contains(r#""abot":"alice""#));
     }
 
     #[test]

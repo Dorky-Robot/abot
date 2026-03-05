@@ -64,8 +64,14 @@ pub fn build(state: Arc<AppState>) -> Router {
         // Kubos
         .route("/kubos", get(kubos::list_kubos))
         .route("/kubos", post(kubos::create_kubo))
+        .route("/kubos/open", post(kubos::open_kubo))
+        .route("/kubos/{name}/start", post(kubos::start_kubo))
         .route("/kubos/{name}/stop", post(kubos::stop_kubo))
         .route("/kubos/{name}/abots", post(kubos::add_abot_to_kubo))
+        .route(
+            "/kubos/{name}/abots/{abot}",
+            delete(kubos::remove_abot_from_kubo),
+        )
         // Shortcuts
         .route("/shortcuts", get(shortcuts::get_shortcuts))
         .route("/shortcuts", put(shortcuts::set_shortcuts))
@@ -86,6 +92,7 @@ pub fn build(state: Arc<AppState>) -> Router {
             put(config_routes::set_instance_name),
         )
         .route("/api/config/bundle-dir", put(config_routes::set_bundle_dir))
+        .route("/api/config/kubos-dir", put(config_routes::set_kubos_dir))
         // Token/credential API aliases (legacy client uses /api/tokens, /api/credentials)
         .route("/api/tokens", get(auth_handlers::list_tokens))
         .route("/api/credentials", get(auth_handlers::list_credentials))

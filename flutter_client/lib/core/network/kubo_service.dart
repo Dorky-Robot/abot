@@ -4,19 +4,25 @@ import 'api_client.dart';
 /// A kubo (shared runtime room) returned from the REST API.
 class KuboInfo {
   final String name;
+  final String path;
   final bool running;
   final int activeSessions;
+  final List<String> abots;
 
   const KuboInfo({
     required this.name,
+    this.path = '',
     required this.running,
     this.activeSessions = 0,
+    this.abots = const [],
   });
 
   factory KuboInfo.fromJson(Map<String, dynamic> json) => KuboInfo(
         name: json['name'] as String,
+        path: json['path'] as String? ?? '',
         running: json['running'] as bool? ?? false,
         activeSessions: json['activeSessions'] as int? ?? 0,
+        abots: (json['abots'] as List?)?.cast<String>() ?? [],
       );
 }
 
@@ -50,6 +56,25 @@ class KuboServiceNotifier extends AsyncNotifier<List<KuboInfo>> {
     state = AsyncData(await listKubos());
   }
 
+  /// Open a kubo from a path on disk (register in daemon).
+  Future<Map<String, dynamic>> openKubo(String path) async {
+    final data = await _api.post('/kubos/open', {'path': path});
+    state = AsyncData(await listKubos());
+    return data as Map<String, dynamic>;
+  }
+
+  /// Start a kubo container.
+  Future<void> startKubo(String name) async {
+    await _api.post('/kubos/${Uri.encodeComponent(name)}/start', {});
+    state = AsyncData(await listKubos());
+  }
+
+  /// Stop a kubo container.
+  Future<void> stopKubo(String name) async {
+    await _api.post('/kubos/${Uri.encodeComponent(name)}/stop', {});
+    state = AsyncData(await listKubos());
+  }
+
   /// Add an abot to a kubo. When [createSession] is true, also creates a
   /// terminal session and returns the response (including session name).
   Future<Map<String, dynamic>> addAbotToKubo(
@@ -69,6 +94,14 @@ class KuboServiceNotifier extends AsyncNotifier<List<KuboInfo>> {
     // Refresh kubo list to pick up new abot count
     state = AsyncData(await listKubos());
     return data as Map<String, dynamic>;
+  }
+
+  /// Remove an abot from a kubo (close session, remove worktree).
+  Future<void> removeAbotFromKubo(String kuboName, String abotName) async {
+    await _api.delete(
+      '/kubos/${Uri.encodeComponent(kuboName)}/abots/${Uri.encodeComponent(abotName)}',
+    );
+    state = AsyncData(await listKubos());
   }
 
   /// Refresh the kubo list.

@@ -94,6 +94,17 @@ impl Kubo {
             std::fs::write(&manifest_path, json)?;
         }
 
+        // Create empty credentials.json with restricted permissions
+        let creds_path = kubo_path.join("credentials.json");
+        if !creds_path.exists() {
+            std::fs::write(&creds_path, "{}")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&creds_path, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+
         Ok(kubo_path)
     }
 
@@ -363,11 +374,15 @@ impl Kubo {
 
     /// Serialize to JSON for IPC responses.
     pub fn to_json(&self) -> serde_json::Value {
+        let abots = Self::read_manifest(&self.path)
+            .map(|m| m.abots)
+            .unwrap_or_default();
         serde_json::json!({
             "name": self.name,
             "path": self.path.to_string_lossy(),
             "running": self.container_id.is_some(),
             "activeSessions": self.active_sessions,
+            "abots": abots,
         })
     }
 }
@@ -424,6 +439,19 @@ mod tests {
         let manifest = Kubo::read_manifest(&path).unwrap();
         assert_eq!(manifest.name, "test");
         assert_eq!(manifest.version, 1);
+
+        // credentials.json should be created with empty object
+        let creds_path = path.join("credentials.json");
+        assert!(creds_path.exists());
+        let contents = std::fs::read_to_string(&creds_path).unwrap();
+        assert_eq!(contents, "{}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&creds_path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

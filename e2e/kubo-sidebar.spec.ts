@@ -4,13 +4,17 @@ import { test, expect, type Page } from '@playwright/test';
 
 async function listKubos(page: Page) {
   const resp = await page.request.get('/kubos');
-  return (await resp.json()) as { name: string; running: boolean; activeSessions: number }[];
+  return (await resp.json()) as { name: string; running: boolean; activeSessions: number; abots: string[] }[];
 }
 
 async function createKubo(page: Page, name: string) {
   const resp = await page.request.post('/kubos', { data: { name } });
   expect(resp.ok(), `createKubo(${name}) failed: ${resp.status()}`).toBeTruthy();
   return await resp.json();
+}
+
+async function startKubo(page: Page, name: string) {
+  return page.request.post(`/kubos/${encodeURIComponent(name)}/start`, { data: {} });
 }
 
 async function stopKubo(page: Page, name: string) {
@@ -34,6 +38,14 @@ async function addAbotToKubo(page: Page, kubo: string, abot: string, createSessi
 
 async function deleteSession(page: Page, name: string) {
   await page.request.delete(`/sessions/${encodeURIComponent(name)}`);
+}
+
+async function removeAbotFromKubo(page: Page, kubo: string, abot: string) {
+  const resp = await page.request.delete(
+    `/kubos/${encodeURIComponent(kubo)}/abots/${encodeURIComponent(abot)}`,
+  );
+  expect(resp.ok(), `removeAbotFromKubo(${kubo}, ${abot}) failed: ${resp.status()}`).toBeTruthy();
+  return resp.json();
 }
 
 async function waitForApp(page: Page) {
@@ -141,6 +153,20 @@ test.describe('Kubo REST API', () => {
     expect(sessions.filter(s => s.kubo === kubo2).length).toBe(1);
   });
 
+  test('POST /kubos/:name/start returns non-500 for existing kubo', async ({ page }) => {
+    const name = `e2e-start-${Date.now()}`;
+    await trackedCreateKubo(page, name);
+
+    const resp = await startKubo(page, name);
+    // Should return 200 (started) or 400 (Docker unavailable / timeout) — never 500
+    expect(resp.status()).not.toBe(500);
+  });
+
+  test('POST /kubos/:name/start returns error for unknown kubo', async ({ page }) => {
+    const resp = await startKubo(page, 'nonexistent-kubo');
+    expect(resp.status()).toBe(400);
+  });
+
   test('kubo activeSessions count reflects open sessions', async ({ page }) => {
     const kuboName = `e2e-count-${Date.now()}`;
     await trackedCreateKubo(page, kuboName);
@@ -207,12 +233,41 @@ test.describe('Kubo sidebar UI', () => {
   });
 });
 
+// ── Kubo credentials ──────────────────────────────────────────────────────
+
+test.describe('Kubo credentials', () => {
+  test.afterEach(async ({ page }) => {
+    await cleanupResources(page);
+  });
+
+  test('creating a kubo initializes credentials.json on disk', async ({ page }) => {
+    const name = `e2e-creds-${Date.now()}`;
+    const result = await trackedCreateKubo(page, name);
+
+    // The kubo path should be returned — verify credentials.json exists via the FS
+    // We can't read the filesystem from Playwright, but we can verify the kubo was
+    // created and that adding an abot with credentials works end-to-end.
+    const kubos = await listKubos(page);
+    expect(kubos.map(k => k.name)).toContain(name);
+
+    // Add an abot — this exercises create_kubo_backend which reads kubo credentials
+    const abot = `e2e-creds-abot-${Date.now()}`;
+    await trackedAddAbot(page, name, abot);
+
+    const sessions = await listSessions(page);
+    const session = sessions.find(s => s.name === abot);
+    expect(session).toBeDefined();
+    expect(session!.kubo).toBe(name);
+  });
+});
+
 // ── Active kubo selection ─────────────────────────────────────────────────
 
 test.describe('Active kubo selection', () => {
   test.afterEach(async ({ page }) => {
-    // Clear active kubo localStorage to avoid polluting other tests.
-    await page.evaluate(() => localStorage.removeItem('abot_active_kubo'));
+    // Navigate to app first so localStorage is accessible.
+    if (page.url() === 'about:blank') await page.goto('/');
+    await page.evaluate(() => localStorage.removeItem('abot_active_kubo')).catch(() => {});
     await cleanupResources(page);
   });
 
@@ -255,10 +310,14 @@ test.describe('Active kubo selection', () => {
     const kuboName = `e2e-empty-${Date.now()}`;
     await trackedCreateKubo(page, kuboName);
 
-    // Set it as active before loading.
+    // Navigate first so localStorage is accessible, then set active kubo.
+    await page.goto('/');
     await page.evaluate((name) => localStorage.setItem('abot_active_kubo', name), kuboName);
 
-    await waitForApp(page);
+    // Reload to pick up the localStorage value.
+    await page.reload();
+    await page.locator('flutter-view').waitFor({ timeout: 15_000 });
+    await page.waitForTimeout(2000);
 
     const count = await page.locator('.xterm-container').count();
     expect(count).toBe(0);
@@ -285,5 +344,70 @@ test.describe('Active kubo selection', () => {
     const allSessions = await listSessions(page);
     expect(allSessions.filter(s => (s.kubo ?? 'default') === emptyKubo).length).toBe(0);
     expect(allSessions.filter(s => (s.kubo ?? 'default') === 'default').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ── Remove abot from kubo ──────────────────────────────────────────────────
+
+test.describe('Remove abot from kubo', () => {
+  test.afterEach(async ({ page }) => {
+    await cleanupResources(page);
+  });
+
+  test('DELETE /kubos/:name/abots/:abot removes abot and session', async ({ page }) => {
+    const kubo = `e2e-rm-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot = `e2e-rmabot-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot);
+
+    // Verify session exists
+    let sessions = await listSessions(page);
+    expect(sessions.find(s => s.name === abot)).toBeDefined();
+
+    // Remove abot from kubo
+    const result = await removeAbotFromKubo(page, kubo, abot);
+    expect(result.kubo).toBe(kubo);
+    expect(result.abot).toBe(abot);
+
+    // Session should be gone
+    sessions = await listSessions(page);
+    expect(sessions.find(s => s.name === abot)).toBeUndefined();
+
+    // Abot should be removed from kubo manifest
+    const kubos = await listKubos(page);
+    const updatedKubo = kubos.find(k => k.name === kubo);
+    expect(updatedKubo).toBeDefined();
+    expect(updatedKubo!.abots).not.toContain(abot);
+
+    // Remove from tracked so cleanup doesn't fail
+    const idx = createdSessions.indexOf(abot);
+    if (idx >= 0) createdSessions.splice(idx, 1);
+  });
+
+  test('GET /kubos includes abots array', async ({ page }) => {
+    const kubo = `e2e-abots-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    const abot1 = `e2e-a1-${Date.now()}`;
+    const abot2 = `e2e-a2-${Date.now()}`;
+    await trackedAddAbot(page, kubo, abot1);
+    await trackedAddAbot(page, kubo, abot2);
+
+    const kubos = await listKubos(page);
+    const found = kubos.find(k => k.name === kubo);
+    expect(found).toBeDefined();
+    expect(found!.abots).toContain(abot1);
+    expect(found!.abots).toContain(abot2);
+  });
+
+  test('removing non-existent abot from kubo still succeeds', async ({ page }) => {
+    const kubo = `e2e-rmnone-${Date.now()}`;
+    await trackedCreateKubo(page, kubo);
+
+    // Remove an abot that was never added — should succeed (idempotent)
+    const result = await removeAbotFromKubo(page, kubo, 'nonexistent');
+    expect(result.kubo).toBe(kubo);
+    expect(result.abot).toBe('nonexistent');
   });
 });

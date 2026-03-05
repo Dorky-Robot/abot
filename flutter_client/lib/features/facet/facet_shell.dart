@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
@@ -16,6 +17,7 @@ import 'stage_strip.dart';
 import '../../core/network/api_client.dart';
 import '../settings/settings_panel.dart';
 import '../settings/session_settings_panel.dart';
+import '../settings/kubo_settings_panel.dart';
 
 const double _narrowBreakpoint = 768;
 const String _offscreenTransform = 'translate(-9999px, 0) scale(0.01, 0.01)';
@@ -60,10 +62,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Session name for per-session settings overlay (null = hidden).
   String? _sessionSettingsName;
 
+  /// Kubo name for per-kubo settings overlay (null = hidden).
+  String? _kuboSettingsName;
+
   /// Active kubo shown in main area landing page.
   String _activeKubo = 'default';
 
+  /// Which kubos are visible in the sidebar (persisted in localStorage).
+  Set<String> _openKubos = {'default'};
+
   static const _activeKuboKey = 'abot_active_kubo';
+  static const _openKubosKey = 'abot_open_kubos';
 
   @override
   void initState() {
@@ -74,6 +83,15 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final stored = web.window.localStorage.getItem(_activeKuboKey);
     if (stored != null && stored.isNotEmpty) {
       _activeKubo = stored;
+    }
+
+    // Restore open kubos from localStorage.
+    final openKubosJson = web.window.localStorage.getItem(_openKubosKey);
+    if (openKubosJson != null) {
+      try {
+        final list = (jsonDecode(openKubosJson) as List).cast<String>();
+        _openKubos = {'default', ...list};
+      } catch (_) {}
     }
 
     // When a terminal finishes initializing, re-apply sidebar transforms.
@@ -248,6 +266,133 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to add abot: $e')),
+      );
+    }
+  }
+
+  void _persistOpenKubos() {
+    web.window.localStorage.setItem(
+      _openKubosKey,
+      jsonEncode(_openKubos.toList()),
+    );
+  }
+
+  /// Open a .kubo directory via native OS directory picker.
+  Future<void> _openKuboFromDisk() async {
+    try {
+      final data = await const ApiClient().post('/api/pick-directory', {})
+          as Map<String, dynamic>;
+      final path = data['path'] as String?;
+      if (path == null || path.isEmpty || !mounted) return;
+
+      final result = await ref
+          .read(kuboServiceProvider.notifier)
+          .openKubo(path);
+      if (!mounted) return;
+
+      final name = result['name'] as String?;
+      if (name != null && name.isNotEmpty) {
+        setState(() {
+          _openKubos.add(name);
+          _activeKubo = name;
+        });
+        web.window.localStorage.setItem(_activeKuboKey, name);
+        _persistOpenKubos();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Open kubo failed: $e')),
+      );
+    }
+  }
+
+  /// Close a kubo: stop container, hide from sidebar.
+  Future<void> _closeKubo(String kuboName) async {
+    if (kuboName == 'default') return; // Cannot close default kubo.
+    try {
+      // Minimize all facets belonging to this kubo.
+      final state = ref.read(facetManagerProvider);
+      final sessionsAsync = ref.read(sessionServiceProvider);
+      final sessionInfoMap = sessionsAsync.when(
+        data: (list) => {for (final s in list) s.name: s},
+        loading: () => <String, SessionInfo>{},
+        error: (_, _) => <String, SessionInfo>{},
+      );
+      for (final facet in state.facets.values.toList()) {
+        final kubo = sessionInfoMap[facet.sessionName]?.kubo ?? 'default';
+        if (kubo == kuboName) {
+          _minimizeFacet(facet.id);
+        }
+      }
+
+      await ref.read(kuboServiceProvider.notifier).stopKubo(kuboName);
+      if (!mounted) return;
+      setState(() {
+        _openKubos.remove(kuboName);
+        if (_activeKubo == kuboName) {
+          _activeKubo = 'default';
+          web.window.localStorage.setItem(_activeKuboKey, 'default');
+        }
+      });
+      _persistOpenKubos();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to close kubo: $e')),
+      );
+    }
+  }
+
+  /// Remove an abot from a kubo (unemply).
+  Future<void> _removeAbotFromKubo(String kuboName, String abotName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final p = ctx.palette;
+        return AlertDialog(
+          backgroundColor: p.base,
+          title: Text('Remove abot',
+              style: TextStyle(
+                  color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
+          content: Text('Remove "$abotName" from $kuboName?',
+              style: TextStyle(
+                  color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('Cancel',
+                  style: TextStyle(
+                      color: p.subtext0, fontFamily: AbotFonts.mono)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('Remove',
+                  style: TextStyle(color: p.red, fontFamily: AbotFonts.mono)),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      // Minimize facet if open
+      final state = ref.read(facetManagerProvider);
+      for (final facet in state.facets.values.toList()) {
+        if (facet.sessionName == abotName) {
+          _minimizeFacet(facet.id);
+        }
+      }
+
+      await ref
+          .read(kuboServiceProvider.notifier)
+          .removeAbotFromKubo(kuboName, abotName);
+      if (!mounted) return;
+      ref.read(sessionServiceProvider.notifier).refresh();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to remove abot: $e')),
       );
     }
   }
@@ -710,6 +855,38 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 ref.read(sessionServiceProvider.notifier).refresh();
               },
             ),
+          if (_kuboSettingsName != null)
+            Builder(builder: (context) {
+              final kubos = ref.read(kuboServiceProvider).when(
+                data: (list) => list,
+                loading: () => <KuboInfo>[],
+                error: (_, _) => <KuboInfo>[],
+              );
+              final kubo = kubos.where((k) => k.name == _kuboSettingsName).firstOrNull
+                  ?? KuboInfo(name: _kuboSettingsName!, running: false);
+              return KuboSettingsPanel(
+                kubo: kubo,
+                onClose: () => setState(() => _kuboSettingsName = null),
+                onStart: !kubo.running ? () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  try {
+                    await ref.read(kuboServiceProvider.notifier).startKubo(kubo.name);
+                  } catch (e) {
+                    if (!mounted) return;
+                    messenger.showSnackBar(
+                      SnackBar(content: Text('Failed to start kubo: $e')),
+                    );
+                  }
+                  if (!mounted) return;
+                  setState(() => _kuboSettingsName = null);
+                } : null,
+                onShutdown: kubo.running && kubo.name != 'default' ? () async {
+                  await _closeKubo(kubo.name);
+                  if (!mounted) return;
+                  setState(() => _kuboSettingsName = null);
+                } : null,
+              );
+            }),
         ],
       ),
     );
@@ -772,14 +949,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onNewSessionInKubo: (kubo) => _addAbotToKubo(kubo),
               onNewKubo: _createNewKubo,
               onOpenBundle: _openBundle,
-              onKuboSettings: (name) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Kubo settings: $name')),
-                );
-              },
+              onOpenKubo: _openKuboFromDisk,
+              onRemoveAbot: _removeAbotFromKubo,
+              onKuboSettings: (name) =>
+                  setState(() => _kuboSettingsName = name),
               connectionState: wsState.connectionState,
               sessionInfoMap: sessionInfoMap,
-              kubos: kubos,
+              kubos: kubos.where((k) => _openKubos.contains(k.name)).toList(),
               collapsed: _sidebarCollapsed,
               onToggleCollapse: _toggleSidebar,
               onSettingsTap: () =>
@@ -817,9 +993,79 @@ class _FacetShellState extends ConsumerState<FacetShell>
         .where((s) => (s.kubo ?? 'default') == kubo)
         .toList();
     if (kuboSessions.isEmpty) {
+      // Check if the kubo has abots from the manifest (even without sessions).
+      final kubosAsync = ref.read(kuboServiceProvider);
+      final kuboInfo = kubosAsync.when(
+        data: (list) => list.where((k) => k.name == kubo).firstOrNull,
+        loading: () => null,
+        error: (_, _) => null,
+      );
+      if (kuboInfo != null && kuboInfo.abots.isNotEmpty) {
+        // Show abot cards from manifest (they have no running sessions)
+        return _buildManifestAbotCardGrid(kubo, kuboInfo.abots);
+      }
       return _buildEmptyKuboOnboarding(kubo);
     }
     return _buildAbotCardGrid(kubo, kuboSessions);
+  }
+
+  /// Card grid of abots from kubo manifest (no running sessions).
+  Widget _buildManifestAbotCardGrid(String kubo, List<String> abotNames) {
+    final p = context.palette;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(AbotSpacing.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(kubo,
+              style: TextStyle(
+                color: p.text, fontFamily: AbotFonts.mono,
+                fontSize: 16, fontWeight: FontWeight.w600,
+              )),
+            const SizedBox(height: AbotSpacing.md),
+            Wrap(
+              spacing: AbotSpacing.md,
+              runSpacing: AbotSpacing.md,
+              children: [
+                for (final name in abotNames)
+                  _AbotCard(
+                    name: name,
+                    isRunning: false,
+                    onTap: () => _onOpenSession(name),
+                  ),
+              ],
+            ),
+            const SizedBox(height: AbotSpacing.lg),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FilledButton.icon(
+                  onPressed: () => _addAbotToKubo(kubo),
+                  icon: const Icon(Icons.add, size: 16),
+                  label: Text('Add abot',
+                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: p.mauve, foregroundColor: p.base,
+                  ),
+                ),
+                const SizedBox(width: AbotSpacing.sm),
+                OutlinedButton.icon(
+                  onPressed: _openBundle,
+                  icon: const Icon(Icons.folder_open, size: 16),
+                  label: Text('Open .abot bundle',
+                    style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: p.subtext0,
+                    side: BorderSide(color: p.surface1),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// Card grid of abots in a kubo — click a card to open its terminal.

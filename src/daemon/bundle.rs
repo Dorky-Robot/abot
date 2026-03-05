@@ -150,24 +150,8 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
         .to_string();
 
     // 2. Read credentials.json → session env
-    let mut env = HashMap::new();
     let creds_path = bundle_dir.join("credentials.json");
-    if creds_path.exists() {
-        let creds: serde_json::Value = read_json(&creds_path)?;
-        if let Some(obj) = creds.as_object() {
-            if let Some(val) = obj.get("api_key").and_then(|v| v.as_str()) {
-                if val.starts_with("sk-ant-api") {
-                    env.insert("ANTHROPIC_API_KEY".to_string(), val.to_string());
-                    env.insert("CLAUDE_API_KEY".to_string(), val.to_string());
-                } else {
-                    env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-                }
-            }
-            if let Some(val) = obj.get("claude_token").and_then(|v| v.as_str()) {
-                env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-            }
-        }
-    }
+    let mut env = read_credentials(&creds_path);
 
     // 3. Read config.json → merge custom env
     let config_path = bundle_dir.join("config.json");
@@ -199,6 +183,34 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
         env,
         path: bundle_dir,
     })
+}
+
+/// Read a `credentials.json` file and return env vars for container injection.
+///
+/// Maps `api_key` → `ANTHROPIC_API_KEY` + `CLAUDE_API_KEY` (if `sk-ant-api` prefix)
+///       or `CLAUDE_CODE_OAUTH_TOKEN` (otherwise).
+/// Maps `claude_token` → `CLAUDE_CODE_OAUTH_TOKEN`.
+/// Returns an empty map if the file is missing or invalid.
+pub fn read_credentials(path: &Path) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    let creds = match read_json(path) {
+        Ok(v) => v,
+        Err(_) => return env,
+    };
+    if let Some(obj) = creds.as_object() {
+        if let Some(val) = obj.get("api_key").and_then(|v| v.as_str()) {
+            if val.starts_with("sk-ant-api") {
+                env.insert("ANTHROPIC_API_KEY".to_string(), val.to_string());
+                env.insert("CLAUDE_API_KEY".to_string(), val.to_string());
+            } else {
+                env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
+            }
+        }
+        if let Some(val) = obj.get("claude_token").and_then(|v| v.as_str()) {
+            env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
+        }
+    }
+    env
 }
 
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
@@ -417,7 +429,7 @@ pub fn auto_commit_abot(abot_path: &Path) -> Result<bool> {
 pub fn migrate_data_dir(data_dir: &Path) -> Result<()> {
     let bundles_dir = data_dir.join("bundles");
     let abots_dir = resolve_abots_dir(data_dir);
-    let kubos_dir = data_dir.join("kubos");
+    let kubos_dir = resolve_kubos_dir(data_dir);
 
     if !bundles_dir.exists() {
         // Nothing to migrate — create dirs
@@ -505,20 +517,37 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
 
 // ── Git worktree operations ─────────────────────────────────────
 
+/// Read the data-dir config.json, returning {} on any failure.
+fn read_data_config(data_dir: &Path) -> serde_json::Value {
+    let config_path = data_dir.join("config.json");
+    std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({}))
+}
+
 /// Resolve the abots directory from config.json `bundleDir`, falling back to `{data_dir}/abots/`.
 pub fn resolve_abots_dir(data_dir: &Path) -> PathBuf {
-    let config_path = data_dir.join("config.json");
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Ok(config) = serde_json::from_str::<serde_json::Value>(&contents) {
-            if let Some(dir) = config.get("bundleDir").and_then(|v| v.as_str()) {
-                let p = PathBuf::from(dir);
-                if p.is_absolute() {
-                    return p;
-                }
-            }
+    let config = read_data_config(data_dir);
+    if let Some(dir) = config.get("bundleDir").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            return p;
         }
     }
     data_dir.join("abots")
+}
+
+/// Resolve the kubos directory from config.json `kubosDir`, falling back to `{data_dir}/kubos/`.
+pub fn resolve_kubos_dir(data_dir: &Path) -> PathBuf {
+    let config = read_data_config(data_dir);
+    if let Some(dir) = config.get("kubosDir").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            return p;
+        }
+    }
+    data_dir.join("kubos")
 }
 
 /// Create a canonical `.abot` bundle in the abots directory.
@@ -567,16 +596,27 @@ pub fn worktree_add_abot(
 
     let worktree_path = kubo_path.join(abot_name);
     if worktree_path.exists() {
-        // Already set up — check if it's a valid worktree
         let git_file = worktree_path.join(".git");
         if git_file.exists() && !git_file.is_dir() {
-            return Ok(());
+            // .git file exists — verify the gitdir target is still valid
+            if let Ok(content) = std::fs::read_to_string(&git_file) {
+                let gitdir = content.trim().strip_prefix("gitdir: ").unwrap_or("");
+                if !gitdir.is_empty() && std::path::Path::new(gitdir).exists() {
+                    return Ok(()); // Valid worktree, reuse it
+                }
+            }
+            // Stale .git file — remove and recreate
+            tracing::warn!(
+                "removing stale worktree at {} (gitdir target missing)",
+                worktree_path.display()
+            );
+        } else {
+            // Directory exists but isn't a worktree
+            tracing::warn!(
+                "removing non-worktree directory at {} to set up worktree",
+                worktree_path.display()
+            );
         }
-        // Directory exists but isn't a worktree — remove it so we can create one
-        tracing::warn!(
-            "removing non-worktree directory at {} to set up worktree",
-            worktree_path.display()
-        );
         std::fs::remove_dir_all(&worktree_path)?;
     }
 
@@ -609,7 +649,7 @@ pub fn worktree_add_abot(
 }
 
 /// Remove an abot's worktree from a kubo directory.
-/// Reserved for future "remove abot from kubo" endpoint (see TODO.md).
+/// Currently unused — remove-abot keeps worktrees for resume semantics.
 #[allow(dead_code)]
 pub fn worktree_remove_abot(
     canonical_path: &Path,
@@ -627,6 +667,9 @@ pub fn worktree_remove_abot(
         canonical_path,
         &["worktree", "remove", &worktree_str, "--force"],
     )?;
+
+    // Prune stale worktree metadata so the branch can be re-used
+    let _ = run_git(canonical_path, &["worktree", "prune"]);
 
     tracing::info!(
         "removed worktree for '{}' from {}",
@@ -993,6 +1036,78 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unsupported bundle version"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_api_key() {
+        let dir = std::env::temp_dir().join("abot-creds-api-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        write_json(&path, &serde_json::json!({"api_key": "sk-ant-api-test123"})).unwrap();
+
+        let env = read_credentials(&path);
+        assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "sk-ant-api-test123");
+        assert_eq!(env.get("CLAUDE_API_KEY").unwrap(), "sk-ant-api-test123");
+        assert!(!env.contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_non_api_key_becomes_oauth() {
+        let dir = std::env::temp_dir().join("abot-creds-oauth-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        write_json(&path, &serde_json::json!({"api_key": "some-other-token"})).unwrap();
+
+        let env = read_credentials(&path);
+        assert_eq!(
+            env.get("CLAUDE_CODE_OAUTH_TOKEN").unwrap(),
+            "some-other-token"
+        );
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_claude_token() {
+        let dir = std::env::temp_dir().join("abot-creds-token-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        write_json(&path, &serde_json::json!({"claude_token": "tok-abc"})).unwrap();
+
+        let env = read_credentials(&path);
+        assert_eq!(env.get("CLAUDE_CODE_OAUTH_TOKEN").unwrap(), "tok-abc");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_credentials_missing_file() {
+        let env = read_credentials(Path::new("/tmp/abot-does-not-exist/credentials.json"));
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn test_read_credentials_empty_json() {
+        let dir = std::env::temp_dir().join("abot-creds-empty-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("credentials.json");
+        std::fs::write(&path, "{}").unwrap();
+
+        let env = read_credentials(&path);
+        assert!(env.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

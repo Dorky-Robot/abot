@@ -45,14 +45,18 @@ impl DaemonState {
     ) -> anyhow::Result<Box<dyn SessionBackend>> {
         let global_env = self.agent_env.lock().await;
         let mut merged = global_env.clone();
-        merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
         drop(global_env);
 
         let mut kubos = self.kubos.lock().await;
         let kubo = kubos
             .get_mut(kubo_name)
             .ok_or_else(|| anyhow::anyhow!("kubo '{}' not found", kubo_name))?;
+
+        // Merge: global < kubo credentials < session env (most specific wins)
+        let kubo_creds = bundle::read_credentials(&kubo.path.join("credentials.json"));
+        merged.extend(kubo_creds);
+        merged.extend(session_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let env: Vec<String> = merged.iter().map(|(k, v)| format!("{k}={v}")).collect();
 
         // Ensure container is running
         kubo.start().await?;
@@ -80,7 +84,7 @@ impl DaemonState {
 
     /// Get or create the default kubo, returning its name.
     pub async fn ensure_default_kubo(&self) -> anyhow::Result<String> {
-        let kubos_dir = self.data_dir.join("kubos");
+        let kubos_dir = bundle::resolve_kubos_dir(&self.data_dir);
         std::fs::create_dir_all(&kubos_dir)?;
 
         let mut kubos = self.kubos.lock().await;
@@ -141,16 +145,20 @@ pub async fn run(data_dir: &Path) -> Result<()> {
     }
 
     // Initialize kubos from existing kubo directories
-    let kubos_dir = data_dir.join("kubos");
+    let kubos_dir = bundle::resolve_kubos_dir(data_dir);
     let _ = std::fs::create_dir_all(&kubos_dir);
     let mut kubos_map = HashMap::new();
-    for (name, path) in kubo::list_kubo_dirs(&kubos_dir) {
-        match kubo::new_kubo(name.clone(), path) {
-            Ok(k) => {
-                tracing::info!("discovered kubo '{}'", name);
-                kubos_map.insert(name, k);
-            }
-            Err(e) => tracing::warn!("failed to load kubo '{}': {}", name, e),
+    for (name, _) in kubo::list_kubo_dirs(&kubos_dir) {
+        // Ensure manifest + credentials exist (repairs missing manifests)
+        match kubo::Kubo::ensure_kubo_dir(&kubos_dir, &name) {
+            Ok(path) => match kubo::new_kubo(name.clone(), path) {
+                Ok(k) => {
+                    tracing::info!("discovered kubo '{}'", name);
+                    kubos_map.insert(name, k);
+                }
+                Err(e) => tracing::warn!("failed to load kubo '{}': {}", name, e),
+            },
+            Err(e) => tracing::warn!("failed to ensure kubo '{}': {}", name, e),
         }
     }
 

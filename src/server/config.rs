@@ -52,7 +52,7 @@ pub async fn set_instance_name(
     Ok(Json(json!({ "instanceName": name })))
 }
 
-/// PUT /api/config/bundle-dir — set the bundle directory path
+/// PUT /api/config/bundle-dir — set the abots directory path
 pub async fn set_bundle_dir(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
@@ -68,4 +68,22 @@ pub async fn set_bundle_dir(
     write_config(&app.data_dir, &config)?;
 
     Ok(Json(json!({ "bundleDir": dir })))
+}
+
+/// PUT /api/config/kubos-dir — set the kubos directory path
+pub async fn set_kubos_dir(
+    _csrf: CsrfVerified,
+    State(app): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let dir = body
+        .get("kubosDir")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("missing kubosDir".into()))?;
+
+    let mut config = read_config(&app.data_dir);
+    config["kubosDir"] = json!(dir);
+    write_config(&app.data_dir, &config)?;
+
+    Ok(Json(json!({ "kubosDir": dir })))
 }

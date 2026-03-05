@@ -26,6 +26,8 @@ class StageStrip extends StatefulWidget {
   final void Function(String kubo) onNewSessionInKubo;
   final VoidCallback onNewKubo;
   final VoidCallback? onOpenBundle;
+  final VoidCallback? onOpenKubo;
+  final void Function(String kuboName, String abotName)? onRemoveAbot;
   final void Function(String kuboName)? onKuboSettings;
   final WsConnectionState connectionState;
   final Map<String, SessionInfo> sessionInfoMap;
@@ -53,6 +55,8 @@ class StageStrip extends StatefulWidget {
     required this.onNewSessionInKubo,
     required this.onNewKubo,
     this.onOpenBundle,
+    this.onOpenKubo,
+    this.onRemoveAbot,
     this.onKuboSettings,
     required this.connectionState,
     this.sessionInfoMap = const {},
@@ -112,6 +116,17 @@ class _StageStripState extends State<StageStrip> {
   void _persistCollapsed() {
     web.window.localStorage.setItem(
         _collapsedKey, jsonEncode(_collapsedKubos.toList()));
+  }
+
+  /// Return abot names from the kubo manifest that have no sessions (neither open nor unattached).
+  List<String> _manifestOnlyAbots(String kuboName, _KuboGroup group) {
+    final kuboInfo = widget.kubos.where((k) => k.name == kuboName).firstOrNull;
+    if (kuboInfo == null) return [];
+    final sessionNames = <String>{
+      ...group.facets.map((f) => f.sessionName),
+      ...group.unattachedSessions.map((s) => s.name),
+    };
+    return kuboInfo.abots.where((a) => !sessionNames.contains(a)).toList();
   }
 
   String _kuboFor(String sessionName) {
@@ -199,6 +214,13 @@ class _StageStripState extends State<StageStrip> {
                   tooltip: 'Collapse sidebar',
                 ),
                 const Spacer(),
+                if (_activeTab == SidebarTab.kubos && widget.onOpenKubo != null)
+                  _IconBtn(
+                    icon: Icons.folder_open_outlined,
+                    color: p.subtext0,
+                    onTap: widget.onOpenKubo,
+                    tooltip: 'Open kubo',
+                  ),
                 _IconBtn(
                   icon: Icons.add,
                   color: p.subtext0,
@@ -363,6 +385,9 @@ class _StageStripState extends State<StageStrip> {
                       onTap: facet.id == widget.focusedId
                           ? null
                           : () => widget.onFocusFacet(facet.id),
+                      onRemove: widget.onRemoveAbot != null
+                          ? () => widget.onRemoveAbot!(kuboName, facet.sessionName)
+                          : null,
                     ),
                   // Unattached abots (server sessions not open as facets)
                   for (final session in group.unattachedSessions)
@@ -372,8 +397,22 @@ class _StageStripState extends State<StageStrip> {
                       isFocused: false,
                       isDirty: session.dirty,
                       onTap: () => widget.onOpenSession(session.name),
+                      onRemove: widget.onRemoveAbot != null
+                          ? () => widget.onRemoveAbot!(kuboName, session.name)
+                          : null,
                     ),
-                  if (group.facets.isEmpty && group.unattachedSessions.isEmpty)
+                  // Abots from manifest that have no sessions at all
+                  for (final abotName in _manifestOnlyAbots(kuboName, group))
+                    _AbotRow(
+                      name: abotName,
+                      isRunning: false,
+                      isFocused: false,
+                      onTap: () => widget.onOpenSession(abotName),
+                      onRemove: widget.onRemoveAbot != null
+                          ? () => widget.onRemoveAbot!(kuboName, abotName)
+                          : null,
+                    ),
+                  if (group.facets.isEmpty && group.unattachedSessions.isEmpty && _manifestOnlyAbots(kuboName, group).isEmpty)
                     Padding(
                       padding: const EdgeInsets.only(
                           top: AbotSpacing.xs, left: 24),
@@ -496,6 +535,7 @@ class _AbotRow extends StatefulWidget {
   final bool isFocused;
   final bool isDirty;
   final VoidCallback? onTap;
+  final VoidCallback? onRemove;
 
   const _AbotRow({
     required this.name,
@@ -503,6 +543,7 @@ class _AbotRow extends StatefulWidget {
     required this.isFocused,
     this.isDirty = false,
     this.onTap,
+    this.onRemove,
   });
 
   @override
@@ -572,6 +613,19 @@ class _AbotRowState extends State<_AbotRow> {
                     decoration: BoxDecoration(
                       color: p.yellow,
                       shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              // Remove button on hover
+              if (_hovered && widget.onRemove != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 2),
+                  child: InkWell(
+                    onTap: widget.onRemove,
+                    borderRadius: BorderRadius.circular(AbotRadius.sm),
+                    child: Padding(
+                      padding: const EdgeInsets.all(2),
+                      child: Icon(Icons.close, size: 12, color: p.overlay1),
                     ),
                   ),
                 ),
