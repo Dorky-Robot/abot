@@ -1190,7 +1190,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               children: [
                 for (final session in sessions)
                   _AbotCard(
-                    name: session.name,
+                    name: session.displayName,
                     isRunning: session.isRunning,
                     isDirty: session.dirty,
                     onTap: () => _onOpenSession(session.name),
