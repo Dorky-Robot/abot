@@ -33,7 +33,6 @@ pub struct Engine {
     sessions: Mutex<HashMap<String, Session>>,
     data_dir: PathBuf,
     output_tx: broadcast::Sender<OutputEvent>,
-    client_attachments: Mutex<HashMap<String, HashSet<String>>>,
     agent_env: Mutex<HashMap<String, String>>,
     kubos: Mutex<HashMap<String, kubo::Kubo>>,
 }
@@ -78,7 +77,6 @@ impl Engine {
             sessions: Mutex::new(HashMap::new()),
             data_dir: data_dir.to_path_buf(),
             output_tx,
-            client_attachments: Mutex::new(HashMap::new()),
             agent_env: Mutex::new(agent_env),
             kubos: Mutex::new(kubos_map),
         });
@@ -105,6 +103,19 @@ impl Engine {
                 loop {
                     interval.tick().await;
                     engine.idle_check_kubos().await;
+                }
+            });
+        }
+
+        // Container health check loop — detect dead containers and mark sessions as exited
+        {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    engine.health_check_kubos().await;
                 }
             });
         }
@@ -185,15 +196,7 @@ impl Engine {
         }
     }
 
-    pub async fn attach(&self, client_id: &str, session: &str) -> Result<String> {
-        {
-            let mut attachments = self.client_attachments.lock().await;
-            attachments
-                .entry(client_id.to_string())
-                .or_default()
-                .insert(session.to_string());
-        }
-
+    pub async fn get_session_buffer(&self, session: &str) -> Result<String> {
         let sessions = self.sessions.lock().await;
         match sessions.get(session) {
             Some(s) => Ok(s.get_buffer()),
@@ -202,27 +205,13 @@ impl Engine {
     }
 
     pub async fn delete_session(&self, name: &str) -> Result<()> {
-        let (bundle_path, kubo_name) = {
+        let (session, kubo_name) = {
             let mut sessions = self.sessions.lock().await;
-            if let Some(mut session) = sessions.remove(name) {
-                let bp = session.bundle_path.clone();
-                let kn = session.kubo.clone();
-                session.backend.kill();
-                let _ = self.output_tx.send(OutputEvent::SessionRemoved {
-                    session: name.to_string(),
-                });
-                (bp, kn)
-            } else {
-                anyhow::bail!("session '{}' not found", name);
-            }
+            Self::teardown_session(&mut sessions, &self.output_tx, name)
+                .ok_or_else(|| anyhow::anyhow!("session '{}' not found", name))?
         };
-        if let Some(kn) = kubo_name {
-            let mut kubos = self.kubos.lock().await;
-            if let Some(kubo) = kubos.get_mut(&kn) {
-                kubo.session_closed();
-            }
-        }
-        if let Some(bp) = bundle_path {
+        self.decrement_kubo(kubo_name).await;
+        if let Some(bp) = session.bundle_path {
             let _ = std::fs::remove_dir_all(&bp);
         }
         Ok(())
@@ -249,14 +238,6 @@ impl Engine {
             }
 
             sessions.insert(new_name.to_string(), session);
-            drop(sessions);
-
-            let mut attachments = self.client_attachments.lock().await;
-            for (_client_id, attached_sessions) in attachments.iter_mut() {
-                if attached_sessions.remove(old_name) {
-                    attached_sessions.insert(new_name.to_string());
-                }
-            }
             Ok(())
         } else {
             anyhow::bail!("session '{}' not found", old_name);
@@ -281,20 +262,6 @@ impl Engine {
         let mut sessions = self.sessions.lock().await;
         if let Some(s) = sessions.get_mut(name) {
             let _ = s.resize(cols, rows);
-        }
-    }
-
-    pub async fn detach(&self, client_id: &str, session: Option<&str>) {
-        let mut attachments = self.client_attachments.lock().await;
-        if let Some(session_name) = session {
-            if let Some(sessions) = attachments.get_mut(client_id) {
-                sessions.remove(session_name);
-                if sessions.is_empty() {
-                    attachments.remove(client_id);
-                }
-            }
-        } else {
-            attachments.remove(client_id);
         }
     }
 
@@ -516,27 +483,19 @@ impl Engine {
             bundle::save_bundle(&bundle_path, bundle_name, &env).await?;
         }
 
-        let mut sessions = self.sessions.lock().await;
-        if let Some(mut s) = sessions.remove(session_name) {
-            if let Some(ref bp) = s.bundle_path {
-                bundle::save_scrollback(bp, &s.get_buffer());
+        let (session, kubo_name) = {
+            let mut sessions = self.sessions.lock().await;
+            let (session, kubo_name) =
+                Self::teardown_session(&mut sessions, &self.output_tx, session_name)
+                    .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_name))?;
+            if let Some(ref bp) = session.bundle_path {
+                bundle::save_scrollback(bp, &session.get_buffer());
             }
-            let kubo_name = s.kubo.clone();
-            s.backend.kill();
-            drop(sessions);
-            if let Some(kn) = kubo_name {
-                let mut kubos = self.kubos.lock().await;
-                if let Some(kubo) = kubos.get_mut(&kn) {
-                    kubo.session_closed();
-                }
-            }
-            let _ = self.output_tx.send(OutputEvent::SessionRemoved {
-                session: session_name.to_string(),
-            });
-            Ok(())
-        } else {
-            anyhow::bail!("session '{}' not found", session_name);
-        }
+            (session, kubo_name)
+        };
+        drop(session);
+        self.decrement_kubo(kubo_name).await;
+        Ok(())
     }
 
     // ── Kubo methods ────────────────────────────────────────────
@@ -734,6 +693,35 @@ impl Engine {
             .await
     }
 
+    // ── Internal: session teardown ─────────────────────────────
+
+    /// Core teardown: remove session from map, kill backend, broadcast removal.
+    /// Returns the removed session and its kubo name for the caller to handle
+    /// any specific post-processing (save, delete bundle, decrement kubo counter).
+    fn teardown_session(
+        sessions: &mut HashMap<String, Session>,
+        output_tx: &broadcast::Sender<OutputEvent>,
+        name: &str,
+    ) -> Option<(Session, Option<String>)> {
+        let mut session = sessions.remove(name)?;
+        let kubo_name = session.kubo.clone();
+        session.backend.kill();
+        let _ = output_tx.send(OutputEvent::SessionRemoved {
+            session: name.to_string(),
+        });
+        Some((session, kubo_name))
+    }
+
+    /// Decrement the kubo's active session counter.
+    async fn decrement_kubo(&self, kubo_name: Option<String>) {
+        if let Some(kn) = kubo_name {
+            let mut kubos = self.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(&kn) {
+                kubo.session_closed();
+            }
+        }
+    }
+
     // ── Internal: session registration ────────────────────────
 
     /// Register a new session: replace any old one, take the reader,
@@ -752,20 +740,8 @@ impl Engine {
         let engine = self.clone();
 
         let mut sessions = self.sessions.lock().await;
-        let old_kubo_name = if let Some(mut old) = sessions.remove(qualified) {
-            let kn = if old.is_alive() {
-                old.kubo.clone()
-            } else {
-                None
-            };
-            old.backend.kill();
-            let _ = self.output_tx.send(OutputEvent::SessionRemoved {
-                session: qualified.to_string(),
-            });
-            kn
-        } else {
-            None
-        };
+        let old_kubo_name = Self::teardown_session(&mut sessions, &self.output_tx, qualified)
+            .and_then(|(_, kn)| kn);
         sessions.insert(qualified.to_string(), session);
 
         let rx = sessions
@@ -775,12 +751,7 @@ impl Engine {
         let gen = sessions.get(qualified).map(|s| s.generation).unwrap_or(0);
         drop(sessions);
 
-        if let Some(kn) = old_kubo_name {
-            let mut kubos = self.kubos.lock().await;
-            if let Some(kubo) = kubos.get_mut(&kn) {
-                kubo.session_closed();
-            }
-        }
+        self.decrement_kubo(old_kubo_name).await;
 
         // Restore scrollback: try tmux capture first, then bundle file
         {
@@ -913,21 +884,12 @@ impl Engine {
 
     async fn close_session_in_kubo(&self, abot: &str, kubo: &str) {
         let qualified = format!("{}@{}", abot, kubo);
-        let mut sessions = self.sessions.lock().await;
-        if let Some(mut session) = sessions.remove(&qualified) {
-            let kubo_name = session.kubo.clone();
-            session.backend.kill();
-            let _ = self
-                .output_tx
-                .send(OutputEvent::SessionRemoved { session: qualified });
-            drop(sessions);
-            if let Some(kn) = kubo_name {
-                let mut kubos = self.kubos.lock().await;
-                if let Some(k) = kubos.get_mut(&kn) {
-                    k.session_closed();
-                }
-            }
-        }
+        let kubo_name = {
+            let mut sessions = self.sessions.lock().await;
+            Self::teardown_session(&mut sessions, &self.output_tx, &qualified)
+                .and_then(|(_, kn)| kn)
+        };
+        self.decrement_kubo(kubo_name).await;
     }
 
     async fn build_session_keys(&self) -> HashSet<String> {
@@ -1012,6 +974,56 @@ impl Engine {
                 }
                 Err(e) => {
                     tracing::error!("autosave: failed to save '{}': {}", name, e);
+                }
+            }
+        }
+    }
+
+    /// Detect dead containers and mark all their sessions as exited.
+    async fn health_check_kubos(&self) {
+        // Collect kubos that have a container_id but are no longer running
+        let dead_kubos: Vec<String> = {
+            let kubos = self.kubos.lock().await;
+            let mut dead = Vec::new();
+            for (name, kubo) in kubos.iter() {
+                if kubo.container_id.is_some()
+                    && kubo.active_sessions > 0
+                    && !kubo.is_running().await
+                {
+                    dead.push(name.clone());
+                }
+            }
+            dead
+        };
+
+        for kubo_name in dead_kubos {
+            tracing::warn!(
+                "kubo '{}' container is dead, cleaning up sessions",
+                kubo_name
+            );
+
+            // Find and teardown all sessions in this kubo
+            let to_remove: Vec<String> = {
+                let sessions = self.sessions.lock().await;
+                sessions
+                    .iter()
+                    .filter(|(_, s)| s.kubo.as_deref() == Some(&kubo_name))
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            };
+
+            for session_name in &to_remove {
+                let mut sessions = self.sessions.lock().await;
+                Self::teardown_session(&mut sessions, &self.output_tx, session_name);
+            }
+
+            // Reset the kubo's container state
+            {
+                let mut kubos = self.kubos.lock().await;
+                if let Some(kubo) = kubos.get_mut(&kubo_name) {
+                    kubo.container_id = None;
+                    kubo.active_sessions = 0;
+                    kubo.last_session_close = Some(std::time::Instant::now());
                 }
             }
         }
@@ -1132,12 +1144,7 @@ fn spawn_output_relay(
                 (None, None)
             }
         };
-        if let Some(kn) = kubo_name {
-            let mut kubos = engine.kubos.lock().await;
-            if let Some(kubo) = kubos.get_mut(&kn) {
-                kubo.session_closed();
-            }
-        }
+        Engine::decrement_kubo(&engine, kubo_name).await;
         if let Some(code) = code {
             let _ = output_tx.send(OutputEvent::Exit {
                 session: current_name,

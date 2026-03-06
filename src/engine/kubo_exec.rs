@@ -24,8 +24,11 @@ pub struct KuboExecBackend {
     docker: Docker,
     container_id: String,
     exec_id: String,
-    /// Sender half of stdin pipe to the exec session
-    stdin_tx: Arc<Mutex<Option<StdinWriter>>>,
+    /// Bounded channel for sending stdin data to the writer task.
+    /// Errors on send mean the writer task is gone (pipe broken / container dead).
+    stdin_chan: mpsc::Sender<Vec<u8>>,
+    /// Handle to close stdin on kill.
+    stdin_closer: Arc<Mutex<Option<StdinWriter>>>,
     /// Receiver half of stdout/stderr from the exec session
     reader_rx: Option<mpsc::Receiver<String>>,
     /// Bare abot name (for tmux session naming)
@@ -337,7 +340,29 @@ impl KuboExecBackend {
 
         match attach {
             bollard::exec::StartExecResults::Attached { mut output, input } => {
-                let stdin_tx = Arc::new(Mutex::new(Some(input)));
+                let stdin_closer = Arc::new(Mutex::new(Some(input)));
+
+                // Persistent writer task: drains the channel and writes to Docker stdin.
+                // Errors close the channel, causing future write() calls to fail.
+                let (stdin_chan_tx, mut stdin_chan_rx) = mpsc::channel::<Vec<u8>>(64);
+                {
+                    let stdin_ref = stdin_closer.clone();
+                    tokio::spawn(async move {
+                        while let Some(data) = stdin_chan_rx.recv().await {
+                            let mut guard = stdin_ref.lock().await;
+                            if let Some(ref mut writer) = *guard {
+                                if writer.write_all(&data).await.is_err()
+                                    || writer.flush().await.is_err()
+                                {
+                                    *guard = None;
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    });
+                }
 
                 tokio::spawn(async move {
                     while let Some(Ok(chunk)) = output.next().await {
@@ -362,7 +387,8 @@ impl KuboExecBackend {
                     docker: docker.clone(),
                     container_id: container_id.to_string(),
                     exec_id: exec_id.to_string(),
-                    stdin_tx,
+                    stdin_chan: stdin_chan_tx,
+                    stdin_closer,
                     reader_rx: Some(rx),
                     abot_name: abot_name.to_string(),
                     tmux_enabled,
@@ -461,16 +487,9 @@ impl KuboExecBackend {
 
 impl SessionBackend for KuboExecBackend {
     fn write(&mut self, data: &[u8]) -> Result<()> {
-        let data = data.to_vec();
-        let stdin_tx = self.stdin_tx.clone();
-        tokio::spawn(async move {
-            let mut guard = stdin_tx.lock().await;
-            if let Some(ref mut input) = *guard {
-                let _ = input.write_all(&data).await;
-                let _ = input.flush().await;
-            }
-        });
-        Ok(())
+        self.stdin_chan
+            .try_send(data.to_vec())
+            .map_err(|_| anyhow::anyhow!("stdin channel closed (container may be dead)"))
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
@@ -511,9 +530,9 @@ impl SessionBackend for KuboExecBackend {
         // Close stdin to detach the docker exec from the tmux session.
         // The tmux session itself is left alive — that's the whole point
         // of tmux persistence. It gets cleaned up when the container stops.
-        let stdin_tx = self.stdin_tx.clone();
+        let stdin_closer = self.stdin_closer.clone();
         tokio::spawn(async move {
-            let mut guard = stdin_tx.lock().await;
+            let mut guard = stdin_closer.lock().await;
             *guard = None;
         });
     }
