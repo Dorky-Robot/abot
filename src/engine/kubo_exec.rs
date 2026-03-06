@@ -503,7 +503,14 @@ impl SessionBackend for KuboExecBackend {
     fn write(&mut self, data: &[u8]) -> Result<()> {
         self.stdin_chan
             .try_send(data.to_vec())
-            .map_err(|_| anyhow::anyhow!("stdin channel closed (container may be dead)"))
+            .map_err(|e| match e {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    anyhow::anyhow!("stdin buffer full (input dropped)")
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    anyhow::anyhow!("stdin channel closed (container may be dead)")
+                }
+            })
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {

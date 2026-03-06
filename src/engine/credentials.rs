@@ -81,15 +81,19 @@ pub fn env_to_credentials_json(
     session_env: &HashMap<String, String>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut creds = serde_json::Map::new();
-    // Prefer API key over OAuth token when both present
-    if let Some(val) = session_env.get(ANTHROPIC_API_KEY) {
-        creds.insert("api_key".into(), serde_json::Value::String(val.clone()));
-    } else if let Some(val) = session_env.get(CLAUDE_API_KEY) {
+
+    // Case 1: API key present — write as api_key (covers ANTHROPIC_API_KEY or CLAUDE_API_KEY)
+    if let Some(val) = session_env
+        .get(ANTHROPIC_API_KEY)
+        .or_else(|| session_env.get(CLAUDE_API_KEY))
+    {
         creds.insert("api_key".into(), serde_json::Value::String(val.clone()));
     }
+
+    // Case 2: OAuth token — write as claude_token, and also as api_key if no API key is set
     if let Some(val) = session_env.get(CLAUDE_CODE_OAUTH_TOKEN) {
-        // Only write claude_token if it's not already covered by api_key detection
-        if !session_env.contains_key(ANTHROPIC_API_KEY) {
+        if !session_env.contains_key(ANTHROPIC_API_KEY) && !session_env.contains_key(CLAUDE_API_KEY)
+        {
             creds.insert("api_key".into(), serde_json::Value::String(val.clone()));
         }
         creds.insert(
@@ -97,6 +101,7 @@ pub fn env_to_credentials_json(
             serde_json::Value::String(val.clone()),
         );
     }
+
     creds
 }
 

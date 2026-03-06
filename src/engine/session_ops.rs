@@ -145,16 +145,7 @@ impl Engine {
     pub async fn update_agent_env(&self, env: HashMap<String, Option<String>>) {
         let snapshot = {
             let mut agent_env = self.agent_env.lock().await;
-            for (key, value) in &env {
-                match value {
-                    Some(val) => {
-                        agent_env.insert(key.clone(), val.clone());
-                    }
-                    None => {
-                        agent_env.remove(key);
-                    }
-                }
-            }
+            apply_env_update(&mut agent_env, &env);
             tracing::info!("agent_env updated ({} entries)", agent_env.len());
             agent_env.clone()
         };
@@ -176,16 +167,7 @@ impl Engine {
 
         let mut sessions = self.sessions.lock().await;
         if let Some(s) = sessions.get_mut(session_name) {
-            for (key, value) in &env {
-                match value {
-                    Some(val) => {
-                        s.env.insert(key.clone(), val.clone());
-                    }
-                    None => {
-                        s.env.remove(key);
-                    }
-                }
-            }
+            apply_env_update(&mut s.env, &env);
             s.dirty = true;
             tracing::info!(
                 "session '{}' env updated ({} entries)",
@@ -412,6 +394,23 @@ impl Engine {
                 Err(e) => {
                     tracing::error!("autosave: failed to save '{}': {}", name, e);
                 }
+            }
+        }
+    }
+}
+
+/// Apply an env update map: `Some(val)` inserts, `None` removes.
+fn apply_env_update(
+    target: &mut HashMap<String, String>,
+    updates: &HashMap<String, Option<String>>,
+) {
+    for (key, value) in updates {
+        match value {
+            Some(val) => {
+                target.insert(key.clone(), val.clone());
+            }
+            None => {
+                target.remove(key);
             }
         }
     }
