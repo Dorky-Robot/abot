@@ -61,6 +61,62 @@ pub(crate) fn tmux_session_name(abot_name: &str) -> String {
     abot_name.replace(['.', ':'], "_")
 }
 
+/// Strip DA (Device Attributes) response sequences from stdin data.
+/// xterm.js responds to DA queries (sent by tmux) with sequences like
+/// `ESC[?1;2c` (DA1) and `ESC[>0;276;0c` (DA2). If these reach tmux stdin,
+/// the trailing characters can trigger keybindings (e.g. `c` = new-window).
+fn strip_da_responses(data: &[u8]) -> Vec<u8> {
+    let s = String::from_utf8_lossy(data);
+    // DA1: ESC[?<digits;>c   DA2: ESC[><digits;>c
+    let cleaned: String = {
+        let mut result = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                // Check for CSI: ESC[
+                if chars.peek() == Some(&'[') {
+                    chars.next(); // consume '['
+                                  // Check for ? or > (DA1 / DA2 prefix)
+                    if matches!(chars.peek(), Some('?' | '>')) {
+                        let prefix = chars.next().unwrap();
+                        // Consume parameter bytes (digits and ;)
+                        let mut is_da = false;
+                        loop {
+                            match chars.peek() {
+                                Some(&c) if c.is_ascii_digit() || c == ';' => {
+                                    chars.next();
+                                }
+                                Some(&'c') => {
+                                    chars.next(); // consume final 'c'
+                                    is_da = true;
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
+                        if !is_da {
+                            // Not a DA response — preserve the original sequence
+                            result.push('\x1b');
+                            result.push('[');
+                            result.push(prefix);
+                        }
+                    } else {
+                        // Not a DA response — preserve ESC[
+                        result.push('\x1b');
+                        result.push('[');
+                    }
+                } else {
+                    result.push(ch);
+                }
+            } else {
+                result.push(ch);
+            }
+        }
+        result
+    };
+    cleaned.into_bytes()
+}
+
 /// Run a command inside a container and return (exit_code, stdout).
 async fn exec_cmd(docker: &Docker, container_id: &str, cmd: &[&str]) -> Result<(i64, String)> {
     let exec = docker
@@ -190,30 +246,9 @@ async fn tmux_new_session(
     )
     .await;
 
-    // Disable the prefix key entirely — we use tmux only for session
-    // persistence, never for interactive tmux commands. This prevents
-    // escape sequence leakage (DA responses from xterm.js) from
-    // accidentally triggering tmux keybindings like pane splits.
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &["tmux", "set-option", "-t", session, "prefix", "None"],
-    )
-    .await;
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &["tmux", "set-option", "-t", session, "prefix2", "None"],
-    )
-    .await;
-
-    // Also disable mouse (prevents accidental pane creation via mouse events)
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &["tmux", "set-option", "-t", session, "mouse", "off"],
-    )
-    .await;
+    // Keep default tmux prefix (Ctrl+B) for interactive use.
+    // DA response filtering happens client-side (terminal_facet.dart) and
+    // server-side (stdin writer strips DA responses before forwarding).
 
     Ok(())
 }
@@ -501,16 +536,21 @@ impl KuboExecBackend {
 
 impl SessionBackend for KuboExecBackend {
     fn write(&mut self, data: &[u8]) -> Result<()> {
-        self.stdin_chan
-            .try_send(data.to_vec())
-            .map_err(|e| match e {
-                tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                    anyhow::anyhow!("stdin buffer full (input dropped)")
-                }
-                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                    anyhow::anyhow!("stdin channel closed (container may be dead)")
-                }
-            })
+        // Strip DA (Device Attributes) responses that xterm.js echoes back.
+        // These look like ESC[?1;2c or ESC[>0;276;0c and can trigger tmux
+        // keybindings if they reach the terminal stdin.
+        let filtered = strip_da_responses(data);
+        if filtered.is_empty() {
+            return Ok(());
+        }
+        self.stdin_chan.try_send(filtered).map_err(|e| match e {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                anyhow::anyhow!("stdin buffer full (input dropped)")
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                anyhow::anyhow!("stdin channel closed (container may be dead)")
+            }
+        })
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
@@ -619,5 +659,52 @@ impl SessionBackend for KuboExecBackend {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_da1_response() {
+        let input = b"\x1b[?1;2c";
+        assert_eq!(strip_da_responses(input), b"");
+    }
+
+    #[test]
+    fn strip_da2_response() {
+        let input = b"\x1b[>0;276;0c";
+        assert_eq!(strip_da_responses(input), b"");
+    }
+
+    #[test]
+    fn strip_da_mixed_with_text() {
+        let input = b"hello\x1b[?1;2cworld";
+        assert_eq!(strip_da_responses(input), b"helloworld");
+    }
+
+    #[test]
+    fn preserve_normal_input() {
+        let input = b"ls -la\r\n";
+        assert_eq!(strip_da_responses(input), input.to_vec());
+    }
+
+    #[test]
+    fn preserve_ctrl_b() {
+        let input = b"\x02";
+        assert_eq!(strip_da_responses(input), input.to_vec());
+    }
+
+    #[test]
+    fn preserve_other_csi_sequences() {
+        let input = b"\x1b[1;3H";
+        assert_eq!(strip_da_responses(input), input.to_vec());
+    }
+
+    #[test]
+    fn strip_extended_da_response() {
+        let input = b"\x1b[?64;1;2;6;9;15;16;17;18;21;22c";
+        assert_eq!(strip_da_responses(input), b"");
     }
 }
