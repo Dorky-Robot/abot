@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 /// Abstract interface for session backends.
 ///
 /// Each backend manages a single interactive process with stdin/stdout and TTY support.
-/// The daemon creates sessions via a backend, then manages I/O and lifecycle uniformly.
+/// The engine creates sessions via a backend, then manages I/O and lifecycle uniformly.
 pub trait SessionBackend: Send {
     /// Write data to the process's stdin.
     fn write(&mut self, data: &[u8]) -> Result<()>;
@@ -20,6 +20,7 @@ pub trait SessionBackend: Send {
     fn kill(&mut self);
 
     /// Check if the process is still running.
+    /// Session tracks status independently via mark_exited; kept for backend parity.
     #[allow(dead_code)]
     fn is_alive(&mut self) -> bool;
 

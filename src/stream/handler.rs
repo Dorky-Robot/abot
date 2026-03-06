@@ -315,7 +315,7 @@ async fn handle_p2p_signal(
                                 clients.send_to(&cid, ServerMessage::P2pReady).await;
                             }
                             P2pEvent::Data(text) => {
-                                handle_p2p_data(&app_clone, &cid, &text).await;
+                                handle_p2p_data(&app_clone, &text).await;
                             }
                             P2pEvent::Closed => {
                                 tracing::info!("P2P DataChannel closed for client {}", cid);
@@ -356,7 +356,7 @@ async fn handle_p2p_signal(
 }
 
 /// Handle a message received over the P2P DataChannel.
-async fn handle_p2p_data(app: &Arc<AppState>, _client_id: &str, text: &str) {
+async fn handle_p2p_data(app: &Arc<AppState>, text: &str) {
     let parsed = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(v) => v,
         Err(_) => return,

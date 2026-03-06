@@ -1,9 +1,9 @@
-pub mod backend;
-pub mod bundle;
-pub mod kubo;
-pub mod kubo_exec;
-pub mod ring_buffer;
-pub mod session;
+pub(crate) mod backend;
+pub(crate) mod bundle;
+pub(crate) mod kubo;
+pub(crate) mod kubo_exec;
+pub(crate) mod ring_buffer;
+pub(crate) mod session;
 
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
@@ -31,12 +31,12 @@ pub enum OutputEvent {
 /// The engine owns sessions, kubos, and abots directly.
 /// Replaces DaemonState + ipc.rs handler.
 pub struct Engine {
-    pub sessions: Mutex<HashMap<String, Session>>,
-    pub data_dir: PathBuf,
-    pub output_tx: broadcast::Sender<OutputEvent>,
-    pub client_attachments: Mutex<HashMap<String, HashSet<String>>>,
-    pub agent_env: Mutex<HashMap<String, String>>,
-    pub kubos: Mutex<HashMap<String, kubo::Kubo>>,
+    sessions: Mutex<HashMap<String, Session>>,
+    data_dir: PathBuf,
+    output_tx: broadcast::Sender<OutputEvent>,
+    client_attachments: Mutex<HashMap<String, HashSet<String>>>,
+    agent_env: Mutex<HashMap<String, String>>,
+    kubos: Mutex<HashMap<String, kubo::Kubo>>,
 }
 
 impl Engine {
@@ -161,7 +161,7 @@ impl Engine {
                     }
                 }
 
-                let kubo_name_for_scrollback = kubo.clone();
+                let kubo_for_scrollback = kubo.clone();
                 let session = Session::new(
                     qualified.clone(),
                     backend,
@@ -169,65 +169,16 @@ impl Engine {
                     bundle_path.clone(),
                     Some(kubo),
                 );
-                let session_name = session.name.clone();
 
-                let output_tx = self.output_tx.clone();
-                let reader_name = session_name.clone();
-                let engine = self.clone();
-
-                let mut sessions = self.sessions.lock().await;
-                let old_kubo_name = if let Some(mut old) = sessions.remove(&qualified) {
-                    let kn = if old.is_alive() {
-                        old.kubo.clone()
-                    } else {
-                        None
-                    };
-                    old.backend.kill();
-                    kn
-                } else {
-                    None
-                };
-                sessions.insert(qualified.clone(), session);
-
-                let rx = sessions
-                    .get_mut(&qualified)
-                    .and_then(|s| s.backend.take_reader());
-                let shared_name = sessions.get(&qualified).map(|s| s.shared_name.clone());
-                let gen = sessions.get(&qualified).map(|s| s.generation).unwrap_or(0);
-                drop(sessions);
-
-                if let Some(kn) = old_kubo_name {
-                    let mut kubos = self.kubos.lock().await;
-                    if let Some(kubo) = kubos.get_mut(&kn) {
-                        kubo.session_closed();
-                    }
-                }
-
-                // Restore scrollback
-                {
-                    let mut scrollback: Option<String> = None;
-                    {
-                        let kubos = self.kubos.lock().await;
-                        if let Some(k) = kubos.get(&kubo_name_for_scrollback) {
-                            scrollback = capture_tmux_scrollback(k, &name).await;
-                        }
-                    }
-                    if scrollback.is_none() {
-                        if let Some(ref bp) = bundle_path {
-                            scrollback = bundle::load_scrollback(bp);
-                        }
-                    }
-                    if let Some(sb) = scrollback {
-                        let mut sessions = self.sessions.lock().await;
-                        if let Some(s) = sessions.get_mut(&qualified) {
-                            s.buffer.pre_populate(sb);
-                        }
-                    }
-                }
-
-                if let Some(mut rx) = rx {
-                    spawn_output_relay(output_tx, engine, shared_name, reader_name, &mut rx, gen);
-                }
+                let session_name = self
+                    .register_session(
+                        &qualified,
+                        session,
+                        &kubo_for_scrollback,
+                        &name,
+                        bundle_path.as_deref(),
+                    )
+                    .await;
 
                 Ok(session_name)
             }
@@ -317,24 +268,24 @@ impl Engine {
         }
     }
 
-    pub async fn write_input(&self, session: &str, data: &str) -> Result<()> {
+    pub async fn write_input(&self, name: &str, data: &str) -> Result<()> {
         let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(session) {
-            if session.is_alive() {
-                session.write(data.as_bytes())?;
+        if let Some(s) = sessions.get_mut(name) {
+            if s.is_alive() {
+                s.write(data.as_bytes())?;
             } else {
-                anyhow::bail!("session is not alive");
+                anyhow::bail!("session '{}' is not alive", name);
             }
         } else {
-            anyhow::bail!("session not found");
+            anyhow::bail!("session '{}' not found", name);
         }
         Ok(())
     }
 
-    pub async fn resize(&self, session: &str, cols: u16, rows: u16) {
+    pub async fn resize(&self, name: &str, cols: u16, rows: u16) {
         let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(session) {
-            let _ = session.resize(cols, rows);
+        if let Some(s) = sessions.get_mut(name) {
+            let _ = s.resize(cols, rows);
         }
     }
 
@@ -424,6 +375,7 @@ impl Engine {
     ) -> Result<(String, String)> {
         let opened = bundle::open_bundle(path).await?;
         let name = opened.name.clone();
+        kubo::validate_name(&name)?;
         let canonical_path = opened.path.clone();
 
         let worktree_path = self
@@ -445,64 +397,12 @@ impl Engine {
                     Some(worktree_path.clone()),
                     Some(kubo_name.to_string()),
                 );
-                let session_name = session.name.clone();
 
-                let output_tx = self.output_tx.clone();
-                let reader_name = session_name.clone();
-                let engine = self.clone();
+                let session_name = self
+                    .register_session(&qualified, session, kubo_name, &name, Some(&worktree_path))
+                    .await;
 
-                let mut sessions = self.sessions.lock().await;
-                let old_kubo_name = if let Some(mut old) = sessions.remove(&qualified) {
-                    let kn = if old.is_alive() {
-                        old.kubo.clone()
-                    } else {
-                        None
-                    };
-                    old.backend.kill();
-                    let _ = self.output_tx.send(OutputEvent::SessionRemoved {
-                        session: qualified.clone(),
-                    });
-                    kn
-                } else {
-                    None
-                };
-                sessions.insert(qualified.clone(), session);
-
-                let rx = sessions
-                    .get_mut(&qualified)
-                    .and_then(|s| s.backend.take_reader());
-                let shared_name = sessions.get(&qualified).map(|s| s.shared_name.clone());
-                let gen = sessions.get(&qualified).map(|s| s.generation).unwrap_or(0);
-                drop(sessions);
-
-                if let Some(kn) = old_kubo_name {
-                    let mut kubos = self.kubos.lock().await;
-                    if let Some(kubo) = kubos.get_mut(&kn) {
-                        kubo.session_closed();
-                    }
-                }
-
-                // Restore scrollback
-                {
-                    let mut scrollback: Option<String> = None;
-                    {
-                        let kubos = self.kubos.lock().await;
-                        if let Some(k) = kubos.get(kubo_name) {
-                            scrollback = capture_tmux_scrollback(k, &name).await;
-                        }
-                    }
-                    if scrollback.is_none() {
-                        scrollback = bundle::load_scrollback(&worktree_path);
-                    }
-                    if let Some(sb) = scrollback {
-                        let mut sessions = self.sessions.lock().await;
-                        if let Some(s) = sessions.get_mut(&qualified) {
-                            s.buffer.pre_populate(sb);
-                        }
-                    }
-                }
-
-                // Inject credentials
+                // Inject credentials from the bundle
                 if !opened.env.is_empty() {
                     let global_env = self.agent_env.lock().await;
                     let mut merged = global_env.clone();
@@ -511,10 +411,6 @@ impl Engine {
                     if let Some(s) = sessions.get(&qualified) {
                         s.backend.inject_env(&merged);
                     }
-                }
-
-                if let Some(mut rx) = rx {
-                    spawn_output_relay(output_tx, engine, shared_name, reader_name, &mut rx, gen);
                 }
 
                 bundle::add_known_abot(&self.data_dir, &name);
@@ -606,24 +502,21 @@ impl Engine {
 
     pub async fn close_session(&self, session_name: &str, save: bool) -> Result<()> {
         if save {
-            let sessions = self.sessions.lock().await;
-            if let Some(s) = sessions.get(session_name) {
-                if let Some(bundle_path) = &s.bundle_path {
-                    let bundle_path = bundle_path.clone();
-                    let env = s.env.clone();
-                    let name = s.name.clone();
-                    drop(sessions);
-                    let bundle_name = name.split('@').next().unwrap_or(&name);
-                    bundle::save_bundle(&bundle_path, bundle_name, &env).await?;
-                } else {
-                    anyhow::bail!(
-                        "session '{}' has no bundle path (use save-as before close with save)",
-                        session_name
-                    );
+            let (bundle_path, env, name) = {
+                let sessions = self.sessions.lock().await;
+                match sessions.get(session_name) {
+                    Some(s) => match &s.bundle_path {
+                        Some(bp) => (bp.clone(), s.env.clone(), s.name.clone()),
+                        None => anyhow::bail!(
+                            "session '{}' has no bundle path (use save-as before close with save)",
+                            session_name
+                        ),
+                    },
+                    None => anyhow::bail!("session '{}' not found", session_name),
                 }
-            } else {
-                anyhow::bail!("session '{}' not found", session_name);
-            }
+            };
+            let bundle_name = name.split('@').next().unwrap_or(&name);
+            bundle::save_bundle(&bundle_path, bundle_name, &env).await?;
         }
 
         let mut sessions = self.sessions.lock().await;
@@ -763,6 +656,19 @@ impl Engine {
 
         self.close_session_in_kubo(abot_name, kubo_name).await;
 
+        // Kill the tmux session inside the container so it doesn't linger
+        {
+            let kubos = self.kubos.lock().await;
+            if let Some(k) = kubos.get(kubo_name) {
+                if let Some(ref cid) = k.container_id {
+                    if let Ok(docker) = bollard::Docker::connect_with_socket_defaults() {
+                        let tmux_name = kubo_exec::tmux_session_name(abot_name);
+                        kubo_exec::tmux_kill_session(&docker, cid, &tmux_name).await;
+                    }
+                }
+            }
+        }
+
         let kubo_path = {
             let kubos = self.kubos.lock().await;
             match kubos.get(kubo_name) {
@@ -832,6 +738,83 @@ impl Engine {
     pub async fn discard_variant(&self, abot_name: &str, kubo_name: &str) -> Result<()> {
         self.variant_op(abot_name, kubo_name, VariantOp::Discard)
             .await
+    }
+
+    // ── Internal: session registration ────────────────────────
+
+    /// Register a new session: replace any old one, take the reader,
+    /// restore scrollback, and spawn the output relay.
+    async fn register_session(
+        self: &Arc<Self>,
+        qualified: &str,
+        session: Session,
+        kubo_name: &str,
+        abot_name: &str,
+        bundle_path: Option<&std::path::Path>,
+    ) -> String {
+        let session_name = session.name.clone();
+        let output_tx = self.output_tx.clone();
+        let reader_name = session_name.clone();
+        let engine = self.clone();
+
+        let mut sessions = self.sessions.lock().await;
+        let old_kubo_name = if let Some(mut old) = sessions.remove(qualified) {
+            let kn = if old.is_alive() {
+                old.kubo.clone()
+            } else {
+                None
+            };
+            old.backend.kill();
+            let _ = self.output_tx.send(OutputEvent::SessionRemoved {
+                session: qualified.to_string(),
+            });
+            kn
+        } else {
+            None
+        };
+        sessions.insert(qualified.to_string(), session);
+
+        let rx = sessions
+            .get_mut(qualified)
+            .and_then(|s| s.backend.take_reader());
+        let shared_name = sessions.get(qualified).map(|s| s.shared_name.clone());
+        let gen = sessions.get(qualified).map(|s| s.generation).unwrap_or(0);
+        drop(sessions);
+
+        if let Some(kn) = old_kubo_name {
+            let mut kubos = self.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(&kn) {
+                kubo.session_closed();
+            }
+        }
+
+        // Restore scrollback: try tmux capture first, then bundle file
+        {
+            let mut scrollback: Option<String> = None;
+            {
+                let kubos = self.kubos.lock().await;
+                if let Some(k) = kubos.get(kubo_name) {
+                    scrollback = capture_tmux_scrollback(k, abot_name).await;
+                }
+            }
+            if scrollback.is_none() {
+                if let Some(bp) = bundle_path {
+                    scrollback = bundle::load_scrollback(bp);
+                }
+            }
+            if let Some(sb) = scrollback {
+                let mut sessions = self.sessions.lock().await;
+                if let Some(s) = sessions.get_mut(qualified) {
+                    s.buffer.pre_populate(sb);
+                }
+            }
+        }
+
+        if let Some(mut rx) = rx {
+            spawn_output_relay(output_tx, engine, shared_name, reader_name, &mut rx, gen);
+        }
+
+        session_name
     }
 
     // ── Scrollback ──────────────────────────────────────────────
@@ -1016,7 +999,8 @@ impl Engine {
         };
 
         for (name, bundle_path, env, scrollback) in to_save {
-            match bundle::save_bundle(&bundle_path, &name, &env).await {
+            let bundle_name = name.split('@').next().unwrap_or(&name);
+            match bundle::save_bundle(&bundle_path, bundle_name, &env).await {
                 Ok(()) => {
                     bundle::save_scrollback(&bundle_path, &scrollback);
                     if bundle_path.join(".git").exists() {
@@ -1061,10 +1045,10 @@ impl Engine {
 }
 
 /// Capture tmux scrollback for an abot in a kubo container.
-pub async fn capture_tmux_scrollback(kubo: &kubo::Kubo, abot_name: &str) -> Option<String> {
+async fn capture_tmux_scrollback(kubo: &kubo::Kubo, abot_name: &str) -> Option<String> {
     let container_id = kubo.container_id.as_ref()?;
     let docker = bollard::Docker::connect_with_socket_defaults().ok()?;
-    let tmux_name = abot_name.replace(['.', ':'], "_");
+    let tmux_name = kubo_exec::tmux_session_name(abot_name);
     kubo_exec::capture_scrollback(&docker, container_id, &tmux_name).await
 }
 

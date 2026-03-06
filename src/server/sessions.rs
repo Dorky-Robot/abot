@@ -81,6 +81,11 @@ pub async fn rename_session(
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
+    // Update ClientTracker so WebSocket relay continues routing output
+    app.stream_clients
+        .rename_attached_session(&old_name, new_name)
+        .await;
+
     Ok(Json(json!({ "oldName": old_name, "newName": new_name })))
 }
 

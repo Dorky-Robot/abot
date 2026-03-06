@@ -223,7 +223,7 @@ impl Kubo {
     }
 
     /// Stop the kubo container.
-    /// Tries by container ID first, then by container name (handles daemon restart).
+    /// Tries by container ID first, then by container name (handles server restart).
     pub async fn stop(&mut self) -> Result<()> {
         let force_remove = || {
             Some(RemoveContainerOptions {
@@ -257,7 +257,7 @@ impl Kubo {
     }
 
     /// Check if the container is still running via Docker API.
-    /// Checks both by container ID (if known) and by container name (for daemon restarts).
+    /// Checks both by container ID (if known) and by container name (for server restarts).
     pub async fn is_running(&self) -> bool {
         // First try by container ID (fast path)
         if let Some(ref id) = self.container_id {
@@ -265,7 +265,7 @@ impl Kubo {
                 return info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
             }
         }
-        // Fallback: check by container name (handles daemon restart with live container)
+        // Fallback: check by container name (handles server restart with live container)
         let container_name = format!("abot-kubo-{}", self.name);
         if let Ok(info) = self.docker.inspect_container(&container_name, None).await {
             return info.state.as_ref().and_then(|s| s.running).unwrap_or(false);

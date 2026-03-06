@@ -5,7 +5,7 @@
 //! same container but get their own PTY sessions with separate working directories.
 //!
 //! When tmux is available in the container, sessions are wrapped in tmux so the
-//! shell survives daemon restarts and WebSocket disconnects.
+//! shell survives server restarts and WebSocket disconnects.
 
 use anyhow::Result;
 use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecOptions};
@@ -36,7 +36,7 @@ pub struct KuboExecBackend {
 
 /// Sanitize abot name for use as a tmux session name.
 /// tmux disallows `.` and `:` in session names.
-fn tmux_session_name(abot_name: &str) -> String {
+pub(crate) fn tmux_session_name(abot_name: &str) -> String {
     abot_name.replace(['.', ':'], "_")
 }
 
@@ -118,6 +118,13 @@ async fn tmux_new_session(
     let mut env_script = String::new();
     for var in env {
         if let Some((k, v)) = var.split_once('=') {
+            // Validate key: only alphanumeric/underscore, no leading digit
+            if k.is_empty()
+                || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || k.starts_with(|c: char| c.is_ascii_digit())
+            {
+                continue;
+            }
             let escaped = v.replace('\'', "'\\''");
             env_script.push_str(&format!("export {k}='{escaped}'; "));
         }
@@ -233,8 +240,7 @@ pub async fn capture_scrollback(
 }
 
 /// Kill a tmux session. Used when explicitly removing an abot from a kubo.
-#[allow(dead_code)]
-pub async fn tmux_kill_session(docker: &Docker, container_id: &str, session: &str) {
+pub(crate) async fn tmux_kill_session(docker: &Docker, container_id: &str, session: &str) {
     let _ = exec_cmd(
         docker,
         container_id,
@@ -300,46 +306,19 @@ impl KuboExecBackend {
         Self::spawn_raw(&docker, container_id, abot_name, cols, rows, env).await
     }
 
-    /// Spawn via tmux: create or reuse session, then attach.
-    async fn spawn_tmux(
+    /// Attach to a docker exec, spawn the output relay, resize, and return Self.
+    async fn attach_exec(
         docker: &Docker,
         container_id: &str,
+        exec_id: &str,
         abot_name: &str,
-        tmux_name: &str,
         cols: u16,
         rows: u16,
-        env: &[String],
+        tmux_enabled: bool,
     ) -> Result<Self> {
-        let has = tmux_has_session(docker, container_id, tmux_name).await;
-
-        if !has {
-            tmux_new_session(docker, container_id, tmux_name, cols, rows, env, abot_name).await?;
-        } else {
-            // Existing session — resize to match current dimensions
-            tmux_resize(docker, container_id, tmux_name, cols, rows);
-        }
-
-        // Attach to the tmux session via docker exec with PTY
-        let exec = docker
-            .create_exec(
-                container_id,
-                CreateExecOptions {
-                    cmd: Some(vec!["tmux", "attach-session", "-t", tmux_name]),
-                    tty: Some(true),
-                    attach_stdin: Some(true),
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    user: Some("1000:1000"),
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        let exec_id = exec.id.clone();
-
         let attach = docker
             .start_exec(
-                &exec_id,
+                exec_id,
                 Some(StartExecOptions {
                     detach: false,
                     tty: true,
@@ -365,7 +344,7 @@ impl KuboExecBackend {
 
                 let _ = docker
                     .resize_exec(
-                        &exec_id,
+                        exec_id,
                         ResizeExecOptions {
                             width: cols,
                             height: rows,
@@ -376,17 +355,54 @@ impl KuboExecBackend {
                 Ok(Self {
                     docker: docker.clone(),
                     container_id: container_id.to_string(),
-                    exec_id,
+                    exec_id: exec_id.to_string(),
                     stdin_tx,
                     reader_rx: Some(rx),
                     abot_name: abot_name.to_string(),
-                    tmux_enabled: true,
+                    tmux_enabled,
                 })
             }
             bollard::exec::StartExecResults::Detached => {
                 anyhow::bail!("exec started in detached mode unexpectedly")
             }
         }
+    }
+
+    /// Spawn via tmux: create or reuse session, then attach.
+    async fn spawn_tmux(
+        docker: &Docker,
+        container_id: &str,
+        abot_name: &str,
+        tmux_name: &str,
+        cols: u16,
+        rows: u16,
+        env: &[String],
+    ) -> Result<Self> {
+        let has = tmux_has_session(docker, container_id, tmux_name).await;
+
+        if !has {
+            tmux_new_session(docker, container_id, tmux_name, cols, rows, env, abot_name).await?;
+        } else {
+            // Existing session — resize to match current dimensions
+            tmux_resize(docker, container_id, tmux_name, cols, rows);
+        }
+
+        let exec = docker
+            .create_exec(
+                container_id,
+                CreateExecOptions {
+                    cmd: Some(vec!["tmux", "attach-session", "-t", tmux_name]),
+                    tty: Some(true),
+                    attach_stdin: Some(true),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    user: Some("1000:1000"),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        Self::attach_exec(docker, container_id, &exec.id, abot_name, cols, rows, true).await
     }
 
     /// Spawn a raw exec session (no tmux). Original behavior.
@@ -433,58 +449,7 @@ impl KuboExecBackend {
             )
             .await?;
 
-        let exec_id = exec.id.clone();
-
-        let attach = docker
-            .start_exec(
-                &exec_id,
-                Some(StartExecOptions {
-                    detach: false,
-                    tty: true,
-                    ..Default::default()
-                }),
-            )
-            .await?;
-
-        let (tx, rx) = mpsc::channel::<String>(256);
-
-        match attach {
-            bollard::exec::StartExecResults::Attached { mut output, input } => {
-                let stdin_tx = Arc::new(Mutex::new(Some(input)));
-
-                tokio::spawn(async move {
-                    while let Some(Ok(chunk)) = output.next().await {
-                        let data = String::from_utf8_lossy(&chunk.into_bytes()).to_string();
-                        if tx.send(data).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-
-                let _ = docker
-                    .resize_exec(
-                        &exec_id,
-                        ResizeExecOptions {
-                            width: cols,
-                            height: rows,
-                        },
-                    )
-                    .await;
-
-                Ok(Self {
-                    docker: docker.clone(),
-                    container_id: container_id.to_string(),
-                    exec_id,
-                    stdin_tx,
-                    reader_rx: Some(rx),
-                    abot_name: abot_name.to_string(),
-                    tmux_enabled: false,
-                })
-            }
-            bollard::exec::StartExecResults::Detached => {
-                anyhow::bail!("exec started in detached mode unexpectedly")
-            }
-        }
+        Self::attach_exec(docker, container_id, &exec.id, abot_name, cols, rows, false).await
     }
 }
 
@@ -574,34 +539,39 @@ impl SessionBackend for KuboExecBackend {
         let container_id = self.container_id.clone();
         tokio::spawn(async move {
             use bollard::exec::{CreateExecOptions, StartExecOptions};
-            let cmd = format!(
-                "mkdir -p ~/.claude && \
-                 [ -f ~/.claude/settings.json ] || echo '{{\"hasCompletedOnboarding\":true,\"hasCompletedAuthFlow\":true}}' > ~/.claude/settings.json && \
-                 printf '%s' '{}' > ~/.abot_env && \
+
+            // Write env file via stdin to avoid double-escaping fragility
+            let write_cmd = "mkdir -p ~/.claude && \
+                 [ -f ~/.claude/settings.json ] || echo '{\"hasCompletedOnboarding\":true,\"hasCompletedAuthFlow\":true}' > ~/.claude/settings.json && \
+                 cat > ~/.abot_env && \
                  grep -q 'source.*abot_env' ~/.bashrc 2>/dev/null || \
-                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> ~/.bashrc",
-                script.replace('\'', "'\\''")
-            );
+                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> ~/.bashrc";
             let write_exec = docker
                 .create_exec(
                     &container_id,
                     CreateExecOptions {
-                        cmd: Some(vec!["/bin/sh", "-c", &cmd]),
+                        cmd: Some(vec!["/bin/sh", "-c", write_cmd]),
+                        attach_stdin: Some(true),
                         user: Some("1000:1000"),
                         ..Default::default()
                     },
                 )
                 .await;
             if let Ok(exec) = write_exec {
-                let _ = docker
+                let start_result = docker
                     .start_exec(
                         &exec.id,
                         Some(StartExecOptions {
-                            detach: true,
+                            detach: false,
                             ..Default::default()
                         }),
                     )
                     .await;
+                if let Ok(bollard::exec::StartExecResults::Attached { input, .. }) = start_result {
+                    let mut input = input;
+                    let _ = input.write_all(script.as_bytes()).await;
+                    let _ = input.shutdown().await;
+                }
             }
         });
     }

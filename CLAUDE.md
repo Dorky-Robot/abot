@@ -4,22 +4,25 @@ A spatial interface between human and computer intelligence, rendered on canvas,
 
 ## Architecture
 
-- **Rust binary** (`src/`): daemon (PTY session owner) + server (HTTP/WS), single binary with subcommands
+- **Rust binary** (`src/`): single-process server with typed Engine (HTTP/WS + session management)
 - **Flutter client** (`flutter_client/`): Flutter Web (WASM) canvas rendering, facet-based spatial UI
 - **Assets** embedded in binary via rust-embed for single-binary distribution
 
-### Daemon/Server Split
+### Single-Process Architecture
 
-- `abot start` — launches both (daemon first, server 500ms later)
-- `abot daemon` — PTY session owner, Unix socket IPC (NDJSON)
-- `abot serve` — HTTP/WS server, connects to daemon
+- `abot start` — starts the server (Engine + HTTP/WS)
+- `abot serve` — alias for start
 - `abot update` — rolling update: drain server, swap binary, restart
+
+The Engine struct owns sessions, kubos, and abots directly. Sessions run inside tmux
+within Docker containers, so they survive server restarts. No separate daemon process —
+the server reconnects to existing tmux sessions on startup.
 
 ### Module Layout
 
 ```
-src/daemon/     Sessions, ring buffer, NDJSON IPC, Docker + kubo backends, bundle/git ops
-src/server/     HTTP routes, asset serving, daemon client
+src/engine/     Engine struct, session backends, kubos, bundles, ring buffer
+src/server/     HTTP routes, asset serving
 src/auth/       WebAuthn, sessions, setup tokens, lockout, middleware
 src/stream/     WebSocket handler, client tracking, message protocol
 ```
@@ -35,7 +38,7 @@ src/stream/     WebSocket handler, client tracking, message protocol
 
 - **Zero-dependency install** — the binary runs on the host with no prerequisites. Docker is only needed at session creation, not at startup. A setup wizard guides non-technical users through provisioning.
 - Passkey auth (WebAuthn) — no passwords
-- Session persistence across restarts (daemon survives server restarts)
+- Session persistence across restarts (tmux inside Docker survives server restarts)
 - Rolling updates with client reconnection
 - Touch-first design
 - Localhost auto-auth bypass
@@ -259,8 +262,8 @@ exists and decides what to do with it.
 
 ```
 cd flutter_client && flutter build web --wasm   # Build Flutter client
-cargo run -- start                               # Start daemon + server
-cargo run -- serve                               # Server only (daemon must be running)
+cargo run -- start                               # Start server (Engine + HTTP/WS)
+cargo run -- serve                               # Alias for start
 cargo test                                       # Run Rust tests
 npx playwright test                              # Run e2e tests (server must be running)
 ```
