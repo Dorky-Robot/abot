@@ -12,7 +12,8 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 use self::backend::SessionBackend;
-use self::session::Session;
+use self::kubo::KuboSummary;
+use self::session::{Session, SessionSummary};
 
 /// Broadcast events from the engine (sent to all connected WebSocket clients).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -130,15 +131,15 @@ impl Engine {
 
     // ── Session methods ─────────────────────────────────────────
 
-    pub async fn list_sessions(&self) -> Vec<serde_json::Value> {
+    pub async fn list_sessions(&self) -> Vec<SessionSummary> {
         let sessions = self.sessions.lock().await;
-        sessions.values().map(|s| s.to_json()).collect()
+        sessions.values().map(|s| s.summary()).collect()
     }
 
-    pub async fn get_session(&self, name: &str) -> Result<serde_json::Value> {
+    pub async fn get_session(&self, name: &str) -> Result<SessionSummary> {
         let sessions = self.sessions.lock().await;
         match sessions.get(name) {
-            Some(s) => Ok(s.to_json()),
+            Some(s) => Ok(s.summary()),
             None => anyhow::bail!("session '{}' not found", name),
         }
     }
@@ -500,11 +501,11 @@ impl Engine {
 
     // ── Kubo methods ────────────────────────────────────────────
 
-    pub async fn list_kubos(&self) -> Vec<serde_json::Value> {
+    pub async fn list_kubos(&self) -> Vec<KuboSummary> {
         let kubos = self.kubos.lock().await;
         let mut list = Vec::with_capacity(kubos.len());
         for k in kubos.values() {
-            list.push(k.to_json().await);
+            list.push(k.summary().await);
         }
         list
     }
@@ -643,33 +644,26 @@ impl Engine {
 
     // ── Abot methods ────────────────────────────────────────────
 
-    pub async fn list_abots(&self) -> Vec<serde_json::Value> {
+    pub async fn list_abots(&self) -> Vec<bundle::AbotDetail> {
         let session_keys = self.build_session_keys().await;
         let abots = bundle::read_known_abots(&self.data_dir);
         abots
             .iter()
-            .map(|a| match bundle::get_abot_detail(&self.data_dir, &a.name) {
-                Ok(detail) => {
-                    let mut val = serde_json::to_value(&detail)
-                        .unwrap_or_else(|_| serde_json::json!({ "name": a.name }));
-                    if let Some(obj) = val.as_object_mut() {
-                        obj.insert("added_at".to_string(), serde_json::json!(a.added_at));
-                    }
-                    inject_has_session(&mut val, &session_keys);
-                    val
-                }
-                Err(_) => serde_json::json!({ "name": a.name, "added_at": a.added_at }),
+            .filter_map(|a| {
+                let mut detail = bundle::get_abot_detail(&self.data_dir, &a.name).ok()?;
+                detail.added_at = Some(a.added_at.clone());
+                inject_has_session(&mut detail, &session_keys);
+                Some(detail)
             })
             .collect()
     }
 
-    pub async fn get_abot_info(&self, abot_name: &str) -> Result<serde_json::Value> {
+    pub async fn get_abot_info(&self, abot_name: &str) -> Result<bundle::AbotDetail> {
         kubo::validate_name(abot_name)?;
-        let detail = bundle::get_abot_detail(&self.data_dir, abot_name)?;
+        let mut detail = bundle::get_abot_detail(&self.data_dir, abot_name)?;
         let session_keys = self.build_session_keys().await;
-        let mut val = serde_json::to_value(&detail)?;
-        inject_has_session(&mut val, &session_keys);
-        Ok(val)
+        inject_has_session(&mut detail, &session_keys);
+        Ok(detail)
     }
 
     pub async fn remove_known_abot(&self, abot_name: &str) -> Result<()> {
@@ -1061,26 +1055,11 @@ enum VariantOp {
     Discard,
 }
 
-/// Inject `has_session` into each kubo_branch entry.
-fn inject_has_session(val: &mut serde_json::Value, session_keys: &HashSet<String>) {
-    let abot_name = val
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-
-    if let Some(branches) = val.get_mut("kubo_branches").and_then(|v| v.as_array_mut()) {
-        for branch in branches {
-            if let Some(obj) = branch.as_object_mut() {
-                let kubo_name = obj
-                    .get("kubo_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let qualified = format!("{}@{}", abot_name, kubo_name);
-                let active = session_keys.contains(&qualified);
-                obj.insert("has_session".to_string(), serde_json::json!(active));
-            }
-        }
+/// Set `has_session` on each kubo branch entry.
+fn inject_has_session(detail: &mut bundle::AbotDetail, session_keys: &HashSet<String>) {
+    for branch in &mut detail.kubo_branches {
+        let qualified = format!("{}@{}", detail.name, branch.kubo_name);
+        branch.has_session = Some(session_keys.contains(&qualified));
     }
 }
 

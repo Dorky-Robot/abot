@@ -1,6 +1,7 @@
 use super::backend::SessionBackend;
 use super::ring_buffer::RingBuffer;
 use anyhow::Result;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,23 +87,44 @@ impl Session {
         self.status = SessionStatus::Exited(code);
     }
 
-    pub fn to_json(&self) -> serde_json::Value {
+    pub fn summary(&self) -> SessionSummary {
         let (alive, exit_code) = match self.status {
             SessionStatus::Running => (true, None),
             SessionStatus::Exited(code) => (false, Some(code)),
         };
-        serde_json::json!({
-            "name": self.name,
-            "alive": alive,
-            "exitCode": exit_code,
-            "bufferItems": self.buffer.len(),
-            "bufferBytes": self.buffer.bytes(),
-            "envKeys": self.env.len(),
-            "bundlePath": self.bundle_path.as_ref().map(|p| p.to_string_lossy().to_string()),
-            "dirty": self.dirty,
-            "kubo": self.kubo,
-        })
+        SessionSummary {
+            name: self.name.clone(),
+            alive,
+            exit_code,
+            buffer_items: self.buffer.len(),
+            buffer_bytes: self.buffer.bytes(),
+            env_keys: self.env.len(),
+            bundle_path: self
+                .bundle_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            dirty: self.dirty,
+            kubo: self.kubo.clone(),
+        }
     }
+}
+
+/// Typed summary of a session, suitable for JSON serialization.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    pub name: String,
+    pub alive: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<u32>,
+    pub buffer_items: usize,
+    pub buffer_bytes: usize,
+    pub env_keys: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_path: Option<String>,
+    pub dirty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kubo: Option<String>,
 }
 
 #[cfg(test)]
@@ -168,9 +190,9 @@ mod tests {
         assert!(!session.is_alive());
         assert_eq!(session.status, SessionStatus::Exited(42));
 
-        let json = session.to_json();
-        assert_eq!(json["alive"], false);
-        assert_eq!(json["exitCode"], 42);
+        let s = session.summary();
+        assert!(!s.alive);
+        assert_eq!(s.exit_code, Some(42));
     }
 
     #[test]
@@ -214,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn to_json_includes_bundle_path_and_dirty() {
+    fn summary_includes_bundle_path_and_dirty() {
         let path = PathBuf::from("/home/user/project.abot");
         let mut session = Session::new(
             "proj".into(),
@@ -223,17 +245,17 @@ mod tests {
             Some(path),
             None,
         );
-        let json = session.to_json();
-        assert_eq!(json["bundlePath"], "/home/user/project.abot");
-        assert_eq!(json["dirty"], false);
+        let s = session.summary();
+        assert_eq!(s.bundle_path.as_deref(), Some("/home/user/project.abot"));
+        assert!(!s.dirty);
 
         session.dirty = true;
-        let json = session.to_json();
-        assert_eq!(json["dirty"], true);
+        let s = session.summary();
+        assert!(s.dirty);
     }
 
     #[test]
-    fn to_json_bundle_path_null_when_none() {
+    fn summary_bundle_path_none_when_not_set() {
         let session = Session::new(
             "s".into(),
             Box::new(StubBackend),
@@ -241,9 +263,9 @@ mod tests {
             None,
             None,
         );
-        let json = session.to_json();
-        assert!(json["bundlePath"].is_null());
-        assert_eq!(json["dirty"], false);
+        let s = session.summary();
+        assert!(s.bundle_path.is_none());
+        assert!(!s.dirty);
     }
 
     #[test]
@@ -263,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn to_json_kubo_null_when_none() {
+    fn summary_kubo_none_when_not_set() {
         let session = Session::new(
             "s".into(),
             Box::new(StubBackend),
@@ -271,12 +293,12 @@ mod tests {
             None,
             None,
         );
-        let json = session.to_json();
-        assert!(json["kubo"].is_null());
+        let s = session.summary();
+        assert!(s.kubo.is_none());
     }
 
     #[test]
-    fn to_json_kubo_present_when_set() {
+    fn summary_kubo_present_when_set() {
         let session = Session::new(
             "s".into(),
             Box::new(StubBackend),
@@ -284,8 +306,8 @@ mod tests {
             None,
             Some("ml".into()),
         );
-        let json = session.to_json();
-        assert_eq!(json["kubo"], "ml");
+        let s = session.summary();
+        assert_eq!(s.kubo.as_deref(), Some("ml"));
     }
 
     #[test]
@@ -299,8 +321,8 @@ mod tests {
         );
         assert_eq!(session.kubo, Some("default".to_string()));
         assert!(session.is_alive());
-        let json = session.to_json();
-        assert_eq!(json["kubo"], "default");
-        assert_eq!(json["name"], "abot1");
+        let s = session.summary();
+        assert_eq!(s.kubo.as_deref(), Some("default"));
+        assert_eq!(s.name, "abot1");
     }
 }

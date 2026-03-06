@@ -34,7 +34,7 @@ pub async fn get_abot(
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    Ok(Json(abot))
+    Ok(Json(json!(abot)))
 }
 
 /// DELETE /abots/{name} — remove from known list

@@ -1,5 +1,6 @@
 use axum::extract::{Path, State};
 use axum::Json;
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,6 +9,39 @@ use crate::auth::middleware::{Authenticated, CsrfVerified};
 use crate::error::AppError;
 use crate::server::anthropic_oauth;
 use crate::server::AppState;
+
+#[derive(Deserialize)]
+pub(crate) struct CreateSessionBody {
+    name: String,
+    kubo: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RenameBody {
+    name: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ApiKeyBody {
+    api_key: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct OpenBundleBody {
+    path: String,
+    kubo: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SaveAsBody {
+    path: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CloseBody {
+    #[serde(default)]
+    save: bool,
+}
 
 /// GET /sessions — list all sessions
 pub async fn list_sessions(
@@ -22,23 +56,11 @@ pub async fn list_sessions(
 pub async fn create_session(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<CreateSessionBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let name = body
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing name".into()))?
-        .to_string();
-
-    let kubo = body
-        .get("kubo")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing kubo".into()))?
-        .to_string();
-
     let session_name = app
         .engine
-        .create_session(name, 120, 40, HashMap::new(), kubo)
+        .create_session(body.name, 120, 40, HashMap::new(), body.kubo)
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -52,7 +74,7 @@ pub async fn get_session(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     match app.engine.get_session(&name).await {
-        Ok(session) => Ok(Json(session)),
+        Ok(session) => Ok(Json(json!(session))),
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("not found") {
@@ -69,12 +91,9 @@ pub async fn rename_session(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
     Path(old_name): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<RenameBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let new_name = body
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing name".into()))?;
+    let new_name = &body.name;
 
     app.engine
         .rename_session(&old_name, new_name)
@@ -108,14 +127,9 @@ pub async fn set_session_credentials(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<ApiKeyBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let key = body
-        .get("api_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing api_key".into()))?
-        .trim()
-        .to_string();
+    let key = body.api_key.trim().to_string();
 
     if key.is_empty() {
         return Err(AppError::BadRequest("api_key cannot be empty".into()));
@@ -149,9 +163,7 @@ pub async fn session_credentials_status(
         }
     })?;
 
-    let env_keys = session.get("envKeys").and_then(|v| v.as_u64()).unwrap_or(0);
-
-    let status = if env_keys > 0 {
+    let status = if session.env_keys > 0 {
         "connected"
     } else {
         "disconnected"
@@ -182,23 +194,11 @@ pub async fn delete_session_credentials(
 pub async fn open_bundle(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<OpenBundleBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let path = body
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing path".into()))?
-        .to_string();
-
-    let kubo = body
-        .get("kubo")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing kubo".into()))?
-        .to_string();
-
     let (name, bundle_path) = app
         .engine
-        .open_bundle(&path, 120, 40, &kubo)
+        .open_bundle(&body.path, 120, 40, &body.kubo)
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -225,17 +225,11 @@ pub async fn save_session_as(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<SaveAsBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let path = body
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AppError::BadRequest("missing path".into()))?
-        .to_string();
-
     let saved_path = app
         .engine
-        .save_session_as(&name, &path)
+        .save_session_as(&name, &body.path)
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
@@ -247,9 +241,9 @@ pub async fn close_session(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
-    Json(body): Json<serde_json::Value>,
+    Json(body): Json<CloseBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let save = body.get("save").and_then(|v| v.as_bool()).unwrap_or(false);
+    let save = body.save;
 
     app.engine
         .close_session(&name, save)

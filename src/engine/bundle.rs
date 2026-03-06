@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 const BUNDLE_VERSION: u32 = 2;
 const LEGACY_BUNDLE_VERSION: u32 = 1;
-const SESSION_IMAGE: &str = "abot-session";
 
 /// Credential-related env var keys that get stored in credentials.json
 const CREDENTIAL_KEYS: &[&str] = &[
@@ -61,7 +60,6 @@ pub async fn save_bundle(
         "name": name,
         "created_at": existing_created_at.as_deref().unwrap_or(&now),
         "updated_at": now,
-        "image": SESSION_IMAGE,
     });
     write_json(&manifest_path, &manifest)?;
 
@@ -90,9 +88,6 @@ pub async fn save_bundle(
         }
     }
     let config = serde_json::json!({
-        "shell": "/bin/bash",
-        "memory_mb": 2048,
-        "cpu_percent": 50,
         "env": custom_env,
     });
     write_json(&bundle_path.join("config.json"), &config)?;
@@ -808,21 +803,30 @@ pub struct KnownAbot {
 
 /// Detail info for a single abot (git state + kubo employment).
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AbotDetail {
     pub name: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     pub default_branch: String,
     pub kubo_branches: Vec<KuboBranch>,
     pub git_status: String,
+    /// When this abot was added to the known list (set by engine, not by get_abot_detail).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<String>,
 }
 
 /// A kubo branch in an abot's git repo.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KuboBranch {
     pub kubo_name: String,
     pub branch: String,
     pub has_worktree: bool,
+    /// Whether there's a live session for this abot@kubo (set by engine).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_session: Option<bool>,
 }
 
 /// Read the known abots list from `{data_dir}/abots.json`.
@@ -971,6 +975,7 @@ pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
                     kubo_name,
                     has_worktree: worktree_branches.contains(&branch),
                     branch,
+                    has_session: None,
                 }
             })
             .collect()
@@ -985,6 +990,7 @@ pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
         default_branch,
         kubo_branches,
         git_status,
+        added_at: None,
     })
 }
 
