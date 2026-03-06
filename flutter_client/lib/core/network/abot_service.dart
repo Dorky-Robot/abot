@@ -22,14 +22,14 @@ class AbotInfo {
   factory AbotInfo.fromJson(Map<String, dynamic> json) => AbotInfo(
         name: json['name'] as String,
         path: json['path'] as String? ?? '',
-        createdAt: json['created_at'] as String?,
-        defaultBranch: json['default_branch'] as String? ?? 'main',
-        kuboBranches: (json['kubo_branches'] as List?)
+        createdAt: json['createdAt'] as String?,
+        defaultBranch: json['defaultBranch'] as String? ?? 'main',
+        kuboBranches: (json['kuboBranches'] as List?)
                 ?.map((e) =>
                     KuboBranchInfo.fromJson(e as Map<String, dynamic>))
                 .toList() ??
             [],
-        gitStatus: json['git_status'] as String? ?? '',
+        gitStatus: json['gitStatus'] as String? ?? '',
       );
 }
 
@@ -49,10 +49,10 @@ class KuboBranchInfo {
 
   factory KuboBranchInfo.fromJson(Map<String, dynamic> json) =>
       KuboBranchInfo(
-        kuboName: json['kubo_name'] as String,
+        kuboName: json['kuboName'] as String,
         branch: json['branch'] as String,
-        hasWorktree: json['has_worktree'] as bool? ?? false,
-        hasSession: json['has_session'] as bool? ?? false,
+        hasWorktree: json['hasWorktree'] as bool? ?? false,
+        hasSession: json['hasSession'] as bool? ?? false,
       );
 }
 
