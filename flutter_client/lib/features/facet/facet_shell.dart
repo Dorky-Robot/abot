@@ -898,10 +898,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   shift: true): () {
                 _toggleSearch();
               },
-              // Ctrl+B / Cmd+B — toggle sidebar
+              // Cmd+B (macOS) / Ctrl+Shift+B (other) — toggle sidebar
+              // Ctrl+B alone passes through as tmux prefix
               SingleActivator(LogicalKeyboardKey.keyB,
                   control: defaultTargetPlatform != TargetPlatform.macOS,
-                  meta: defaultTargetPlatform == TargetPlatform.macOS):
+                  meta: defaultTargetPlatform == TargetPlatform.macOS,
+                  shift: defaultTargetPlatform != TargetPlatform.macOS):
                   _toggleSidebar,
             },
             child: Focus(

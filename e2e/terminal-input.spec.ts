@@ -98,7 +98,9 @@ async function verifyTmuxSession(page: Page, kubo: string, abot: string): Promis
 }
 
 // macOS uses Meta, others use Control.
-const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+const modKey = process.platform === 'darwin' ? 'Meta' : 'Control';
+// Sidebar toggle: Cmd+B on macOS, Ctrl+Shift+B on others (Ctrl+B is tmux prefix).
+const sidebarToggle = process.platform === 'darwin' ? 'Meta+b' : 'Control+Shift+b';
 
 // Track created resources for cleanup
 const createdKubos: string[] = [];
@@ -219,7 +221,7 @@ test.describe('Terminal input and tmux sessions', () => {
     expect(await sendCommandAndVerify(page, marker1)).toBeTruthy();
 
     // Minimize (Cmd/Ctrl+W)
-    await page.keyboard.press(`${mod}+w`);
+    await page.keyboard.press(`${modKey}+w`);
     await page.waitForTimeout(1000);
 
     // Other abot should now be focused and accept input
@@ -247,12 +249,12 @@ test.describe('Terminal input and tmux sessions', () => {
     expect(await sendCommandAndVerify(page, `PRE_${ts}`)).toBeTruthy();
 
     // Collapse sidebar
-    await page.keyboard.press(`${mod}+b`);
+    await page.keyboard.press(sidebarToggle);
     await page.waitForTimeout(1000);
     expect(await sendCommandAndVerify(page, `COLLAPSED_${ts}`)).toBeTruthy();
 
     // Expand sidebar
-    await page.keyboard.press(`${mod}+b`);
+    await page.keyboard.press(sidebarToggle);
     await page.waitForTimeout(1000);
     expect(await sendCommandAndVerify(page, `EXPANDED_${ts}`)).toBeTruthy();
   });
@@ -288,10 +290,10 @@ test.describe('Terminal input and tmux sessions', () => {
     expect(await sendCommandAndVerify(page, `CLICK_${ts}`)).toBeTruthy();
   });
 
-  test('Ctrl+B " creates a tmux horizontal split', async ({ page }) => {
+  test('tmux prefix (Ctrl+B) supports splits, pane navigation, and pane close', async ({ page }) => {
     const ts = Date.now();
-    const kubo = `e2e-split-${ts}`;
-    const abot = `e2e-splitbot-${ts}`;
+    const kubo = `e2e-tmuxpfx-${ts}`;
+    const abot = `e2e-pfxbot-${ts}`;
     await trackedCreateKubo(page, kubo);
     await trackedAddAbot(page, kubo, abot);
     await waitForApp(page);
@@ -302,67 +304,65 @@ test.describe('Terminal input and tmux sessions', () => {
       return;
     }
 
-    // Warm up — flush any DA response garbage
-    await typeInTerminal(page, `true\n`);
-    await page.waitForTimeout(500);
-
-    // Send Ctrl+B then " to create a horizontal split
-    await page.keyboard.press('Control+b');
-    await page.waitForTimeout(300);
-    await page.keyboard.press('"');
-    await page.waitForTimeout(1500);
-
-    // Verify the split by checking for the tmux pane divider (─) in the terminal
-    const hasDivider = await page.evaluate(() => {
-      const containers = document.querySelectorAll('.xterm-container');
-      for (const c of containers) {
-        if (c.textContent?.includes('─')) return true;
-      }
-      return false;
-    });
-    expect(hasDivider).toBeTruthy();
-
-    // The new pane should accept input
-    const marker = `SPLIT_${ts}`;
-    expect(await sendCommandAndVerify(page, marker)).toBeTruthy();
-  });
-
-  test('Ctrl+B % creates a tmux vertical split', async ({ page }) => {
-    const ts = Date.now();
-    const kubo = `e2e-vsplit-${ts}`;
-    const abot = `e2e-vsbot-${ts}`;
-    await trackedCreateKubo(page, kubo);
-    await trackedAddAbot(page, kubo, abot);
-    await waitForApp(page);
-
-    const ready = await waitForXterm(page);
-    if (!ready) {
-      test.skip();
-      return;
+    /** Send a tmux prefix command: Ctrl+B then the key. */
+    async function tmuxPrefix(key: string) {
+      await page.keyboard.press('Control+b');
+      await page.waitForTimeout(300);
+      await page.keyboard.press(key);
+      await page.waitForTimeout(1500);
     }
 
-    // Warm up
+    /** Check if the terminal contains the given text. */
+    async function terminalContains(text: string): Promise<boolean> {
+      return page.evaluate((t) => {
+        const containers = document.querySelectorAll('.xterm-container');
+        for (const c of containers) {
+          if (c.textContent?.includes(t)) return true;
+        }
+        return false;
+      }, text);
+    }
+
+    // Warm up — flush DA response garbage
     await typeInTerminal(page, `true\n`);
     await page.waitForTimeout(500);
 
-    // Send Ctrl+B then % to create a vertical split
+    // Mark the first pane so we can identify it later
+    const m0 = `PANE0_${ts}`;
+    expect(await sendCommandAndVerify(page, m0)).toBeTruthy();
+
+    // 1) Ctrl+B " — horizontal split (pane below)
+    await tmuxPrefix('"');
+    expect(await terminalContains('─')).toBeTruthy();
+    const m1 = `HSPLIT_${ts}`;
+    expect(await sendCommandAndVerify(page, m1)).toBeTruthy();
+
+    // 2) Ctrl+B % — vertical split (pane to the right, inside bottom pane)
+    await tmuxPrefix('%');
+    expect(await terminalContains('│')).toBeTruthy();
+    const m2 = `VSPLIT_${ts}`;
+    expect(await sendCommandAndVerify(page, m2)).toBeTruthy();
+
+    // 3) Ctrl+B o — cycle to next pane (should land on a different pane)
+    await tmuxPrefix('o');
+    const m3 = `CYCLE_${ts}`;
+    expect(await sendCommandAndVerify(page, m3)).toBeTruthy();
+
+    // 4) Ctrl+B x — close current pane (confirm with 'y')
     await page.keyboard.press('Control+b');
     await page.waitForTimeout(300);
-    await page.keyboard.press('%');
+    await page.keyboard.press('x');
+    await page.waitForTimeout(500);
+    await page.keyboard.press('y');
     await page.waitForTimeout(1500);
 
-    // Verify the split by checking for the tmux vertical divider (│) in the terminal
-    const hasDivider = await page.evaluate(() => {
-      const containers = document.querySelectorAll('.xterm-container');
-      for (const c of containers) {
-        if (c.textContent?.includes('│')) return true;
-      }
-      return false;
-    });
-    expect(hasDivider).toBeTruthy();
+    // After closing one pane, remaining panes should still accept input
+    const m4 = `AFTERCLOSE_${ts}`;
+    expect(await sendCommandAndVerify(page, m4)).toBeTruthy();
 
-    // New pane should accept input
-    const marker = `VSPLIT_${ts}`;
-    expect(await sendCommandAndVerify(page, marker)).toBeTruthy();
+    // 5) Ctrl+B arrow — move between remaining panes
+    await tmuxPrefix('ArrowUp');
+    const m5 = `ARROW_${ts}`;
+    expect(await sendCommandAndVerify(page, m5)).toBeTruthy();
   });
 });
