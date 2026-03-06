@@ -196,9 +196,9 @@ async fn handle_client_message(
     match msg {
         ClientMessage::Attach {
             session,
-            cols: _,
-            rows: _,
-        } => handle_attach(app, client_id, session).await?,
+            cols,
+            rows,
+        } => handle_attach(app, client_id, session, cols, rows).await?,
 
         ClientMessage::Input { data, session } => {
             if let Some(session_name) = session {
@@ -244,9 +244,13 @@ async fn handle_attach(
     app: &Arc<AppState>,
     client_id: &str,
     session: String,
+    cols: u16,
+    rows: u16,
 ) -> anyhow::Result<()> {
     match app.engine.attach(client_id, &session).await {
         Ok(buffer) => {
+            // Resize the session to match the client's terminal dimensions
+            app.engine.resize(&session, cols, rows).await;
             app.stream_clients.attach(client_id, session.clone()).await;
             app.stream_clients
                 .send_to(client_id, ServerMessage::Attached { session, buffer })

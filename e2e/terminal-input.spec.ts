@@ -39,6 +39,8 @@ async function waitForXterm(page: Page, timeout = 15_000): Promise<boolean> {
   try {
     await page.locator('.xterm-container').first().waitFor({ timeout });
     await page.locator('.xterm-helper-textarea').first().waitFor({ timeout: 5_000 });
+    // Let the initial DA (Device Attributes) exchange between tmux and xterm.js settle
+    await page.waitForTimeout(2000);
     return true;
   } catch {
     return false;
@@ -239,16 +241,19 @@ test.describe('Terminal input and tmux sessions', () => {
       return;
     }
 
+    // Send a warm-up command to flush any DA response garbage, then verify
+    await typeInTerminal(page, `true\n`);
+    await page.waitForTimeout(500);
     expect(await sendCommandAndVerify(page, `PRE_${ts}`)).toBeTruthy();
 
     // Collapse sidebar
     await page.keyboard.press(`${mod}+b`);
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000);
     expect(await sendCommandAndVerify(page, `COLLAPSED_${ts}`)).toBeTruthy();
 
     // Expand sidebar
     await page.keyboard.press(`${mod}+b`);
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1000);
     expect(await sendCommandAndVerify(page, `EXPANDED_${ts}`)).toBeTruthy();
   });
 
@@ -272,7 +277,7 @@ test.describe('Terminal input and tmux sessions', () => {
 
     // Click terminal to refocus
     await page.locator('.xterm-container').first().click();
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(1000);
 
     const focused = await page.evaluate(() => {
       const el = document.activeElement;
@@ -281,5 +286,83 @@ test.describe('Terminal input and tmux sessions', () => {
     expect(focused).toBeTruthy();
 
     expect(await sendCommandAndVerify(page, `CLICK_${ts}`)).toBeTruthy();
+  });
+
+  test('Ctrl+B " creates a tmux horizontal split', async ({ page }) => {
+    const ts = Date.now();
+    const kubo = `e2e-split-${ts}`;
+    const abot = `e2e-splitbot-${ts}`;
+    await trackedCreateKubo(page, kubo);
+    await trackedAddAbot(page, kubo, abot);
+    await waitForApp(page);
+
+    const ready = await waitForXterm(page);
+    if (!ready) {
+      test.skip();
+      return;
+    }
+
+    // Warm up — flush any DA response garbage
+    await typeInTerminal(page, `true\n`);
+    await page.waitForTimeout(500);
+
+    // Send Ctrl+B then " to create a horizontal split
+    await page.keyboard.press('Control+b');
+    await page.waitForTimeout(300);
+    await page.keyboard.press('"');
+    await page.waitForTimeout(1500);
+
+    // Verify the split by checking for the tmux pane divider (─) in the terminal
+    const hasDivider = await page.evaluate(() => {
+      const containers = document.querySelectorAll('.xterm-container');
+      for (const c of containers) {
+        if (c.textContent?.includes('─')) return true;
+      }
+      return false;
+    });
+    expect(hasDivider).toBeTruthy();
+
+    // The new pane should accept input
+    const marker = `SPLIT_${ts}`;
+    expect(await sendCommandAndVerify(page, marker)).toBeTruthy();
+  });
+
+  test('Ctrl+B % creates a tmux vertical split', async ({ page }) => {
+    const ts = Date.now();
+    const kubo = `e2e-vsplit-${ts}`;
+    const abot = `e2e-vsbot-${ts}`;
+    await trackedCreateKubo(page, kubo);
+    await trackedAddAbot(page, kubo, abot);
+    await waitForApp(page);
+
+    const ready = await waitForXterm(page);
+    if (!ready) {
+      test.skip();
+      return;
+    }
+
+    // Warm up
+    await typeInTerminal(page, `true\n`);
+    await page.waitForTimeout(500);
+
+    // Send Ctrl+B then % to create a vertical split
+    await page.keyboard.press('Control+b');
+    await page.waitForTimeout(300);
+    await page.keyboard.press('%');
+    await page.waitForTimeout(1500);
+
+    // Verify the split by checking for the tmux vertical divider (│) in the terminal
+    const hasDivider = await page.evaluate(() => {
+      const containers = document.querySelectorAll('.xterm-container');
+      for (const c of containers) {
+        if (c.textContent?.includes('│')) return true;
+      }
+      return false;
+    });
+    expect(hasDivider).toBeTruthy();
+
+    // New pane should accept input
+    const marker = `VSPLIT_${ts}`;
+    expect(await sendCommandAndVerify(page, marker)).toBeTruthy();
   });
 });

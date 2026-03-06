@@ -540,7 +540,9 @@ impl Engine {
             let scrollback = s.get_buffer();
             drop(sessions);
 
-            bundle::save_bundle(&bundle_path, &name, &env).await?;
+            // Use the abot name (before @) for the bundle manifest
+            let bundle_name = name.split('@').next().unwrap_or(&name);
+            bundle::save_bundle(&bundle_path, bundle_name, &env).await?;
             bundle::save_scrollback(&bundle_path, &scrollback);
 
             let mut sessions = self.sessions.lock().await;
@@ -579,13 +581,16 @@ impl Engine {
             let scrollback = s.get_buffer();
             drop(sessions);
 
+            // Use the abot name (before @) for the bundle manifest
+            let bundle_name = name.split('@').next().unwrap_or(&name);
+
             let new_bundle_path = PathBuf::from(path);
 
             if let Some(ref src) = existing_bundle {
                 bundle::copy_dir_recursive(src, &new_bundle_path)?;
             }
 
-            bundle::save_bundle(&new_bundle_path, &name, &env).await?;
+            bundle::save_bundle(&new_bundle_path, bundle_name, &env).await?;
             bundle::save_scrollback(&new_bundle_path, &scrollback);
 
             let mut sessions = self.sessions.lock().await;
@@ -608,7 +613,8 @@ impl Engine {
                     let env = s.env.clone();
                     let name = s.name.clone();
                     drop(sessions);
-                    bundle::save_bundle(&bundle_path, &name, &env).await?;
+                    let bundle_name = name.split('@').next().unwrap_or(&name);
+                    bundle::save_bundle(&bundle_path, bundle_name, &env).await?;
                 } else {
                     anyhow::bail!(
                         "session '{}' has no bundle path (use save-as before close with save)",

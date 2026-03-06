@@ -151,7 +151,7 @@ async fn tmux_new_session(
     )
     .await?;
 
-    // Set generous scrollback
+    // Configure tmux session options
     let _ = exec_cmd(
         docker,
         container_id,
@@ -162,6 +162,25 @@ async fn tmux_new_session(
             session,
             "history-limit",
             "50000",
+        ],
+    )
+    .await;
+
+    // Set default-command so new panes/windows start in the abot's home with env
+    let default_cmd = format!(
+        "cd {} 2>/dev/null; {}if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi",
+        workdir, env_script
+    );
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &[
+            "tmux",
+            "set-option",
+            "-t",
+            session,
+            "default-command",
+            &default_cmd,
         ],
     )
     .await;
