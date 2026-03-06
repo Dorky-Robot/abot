@@ -23,7 +23,7 @@ pub struct StatusResponse {
 
 // --- Handlers ---
 
-/// POST /api/anthropic/key — Save API key or setup token, push to daemon
+/// POST /api/anthropic/key — Save API key or setup token, push to engine
 pub async fn save_key(
     _csrf: CsrfVerified,
     State(state): State<Arc<AppState>>,
@@ -44,9 +44,9 @@ pub async fn save_key(
         state::upsert_anthropic_api_key(&db, &key)?;
     }
 
-    // Push to daemon — detect key type and set the right env var
+    // Push to engine
     let env = build_env_map(Some(&key));
-    push_env_to_daemon(&state, env).await;
+    push_env_to_engine(&state, env).await;
 
     Ok(Json(StatusResponse {
         status: "connected".into(),
@@ -84,9 +84,9 @@ pub async fn delete_key(
         state::delete_anthropic_api_key(&db)?;
     }
 
-    // Remove all credential env vars from daemon
+    // Remove all credential env vars from engine
     let env = build_env_map(None);
-    push_env_to_daemon(&state, env).await;
+    push_env_to_engine(&state, env).await;
 
     Ok(Json(StatusResponse {
         status: "disconnected".into(),
@@ -95,26 +95,23 @@ pub async fn delete_key(
 
 // --- Helpers ---
 
-/// Build the env map for daemon IPC. Detects token type:
+/// Build the env map for engine. Detects token type:
 /// - `sk-ant-*` → ANTHROPIC_API_KEY (API key billing)
 /// - anything else → CLAUDE_CODE_OAUTH_TOKEN (subscription auth from `claude setup-token`)
 pub(crate) fn build_env_map(token: Option<&str>) -> HashMap<String, Option<String>> {
     let mut env = HashMap::new();
     match token {
         Some(t) if t.starts_with("sk-ant-api") => {
-            // API key (sk-ant-api...) — set ANTHROPIC_API_KEY, clear OAuth token
             env.insert("ANTHROPIC_API_KEY".into(), Some(t.to_string()));
             env.insert("CLAUDE_API_KEY".into(), Some(t.to_string()));
             env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), None);
         }
         Some(t) => {
-            // OAuth setup token (sk-ant-oat... or anything else) — set CLAUDE_CODE_OAUTH_TOKEN
             env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), Some(t.to_string()));
             env.insert("ANTHROPIC_API_KEY".into(), None);
             env.insert("CLAUDE_API_KEY".into(), None);
         }
         None => {
-            // Clear everything
             env.insert("ANTHROPIC_API_KEY".into(), None);
             env.insert("CLAUDE_API_KEY".into(), None);
             env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), None);
@@ -123,14 +120,7 @@ pub(crate) fn build_env_map(token: Option<&str>) -> HashMap<String, Option<Strin
     env
 }
 
-/// Push environment update to daemon via IPC (best-effort).
-pub(crate) async fn push_env_to_daemon(state: &AppState, env: HashMap<String, Option<String>>) {
-    use crate::daemon::ipc::DaemonRequest;
-    let req = DaemonRequest::UpdateAgentEnv {
-        id: String::new(),
-        env,
-    };
-    if let Err(e) = state.daemon_client.rpc(req).await {
-        tracing::warn!("failed to push env to daemon: {e}");
-    }
+/// Push environment update to engine (best-effort).
+pub(crate) async fn push_env_to_engine(state: &AppState, env: HashMap<String, Option<String>>) {
+    state.engine.update_agent_env(env).await;
 }

@@ -5,11 +5,7 @@ use axum::Json;
 use serde_json::json;
 use std::sync::Arc;
 
-/// Timeout for kubo operations that may involve Docker (container create/start/stop).
-const DOCKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
 use crate::auth::middleware::{Authenticated, CsrfVerified};
-use crate::daemon::ipc::DaemonRequest;
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -18,14 +14,8 @@ pub async fn list_kubos(
     _auth: Authenticated,
     State(app): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resp = app
-        .daemon_client
-        .rpc(DaemonRequest::ListKubos { id: String::new() })
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let kubos = resp.get("kubos").cloned().unwrap_or(json!([]));
-    Ok(Json(kubos))
+    let kubos = app.engine.list_kubos().await;
+    Ok(Json(json!(kubos)))
 }
 
 /// POST /kubos — create a new kubo
@@ -40,28 +30,13 @@ pub async fn create_kubo(
         .ok_or_else(|| AppError::BadRequest("missing name".into()))?
         .to_string();
 
-    let resp = app
-        .daemon_client
-        .rpc_with_timeout(
-            DaemonRequest::CreateKubo {
-                id: String::new(),
-                name: name.clone(),
-            },
-            DOCKER_TIMEOUT,
-        )
+    let path = app
+        .engine
+        .create_kubo(&name)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        let path = resp
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        Ok(Json(json!({ "name": name, "path": path })))
-    }
+    Ok(Json(json!({ "name": name, "path": path })))
 }
 
 /// POST /kubos/:name/start — start a kubo container
@@ -70,23 +45,12 @@ pub async fn start_kubo(
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resp = app
-        .daemon_client
-        .rpc_with_timeout(
-            DaemonRequest::StartKubo {
-                id: String::new(),
-                name: name.clone(),
-            },
-            DOCKER_TIMEOUT,
-        )
+    app.engine
+        .start_kubo(&name)
         .await
         .map_err(|e| AppError::BadRequest(format!("failed to start kubo: {}", e)))?;
 
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        Ok(Json(json!({ "name": name })))
-    }
+    Ok(Json(json!({ "name": name })))
 }
 
 /// POST /kubos/:name/stop — stop a kubo container
@@ -95,23 +59,12 @@ pub async fn stop_kubo(
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resp = app
-        .daemon_client
-        .rpc_with_timeout(
-            DaemonRequest::StopKubo {
-                id: String::new(),
-                name: name.clone(),
-            },
-            DOCKER_TIMEOUT,
-        )
+    app.engine
+        .stop_kubo(&name)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        Ok(Json(json!({ "name": name })))
-    }
+    Ok(Json(json!({ "name": name })))
 }
 
 /// POST /kubos/open — open a kubo from a path on disk
@@ -126,25 +79,13 @@ pub async fn open_kubo(
         .ok_or_else(|| AppError::BadRequest("missing path".into()))?
         .to_string();
 
-    let resp = app
-        .daemon_client
-        .rpc(DaemonRequest::OpenKubo {
-            id: String::new(),
-            path: path.clone(),
-        })
+    let name = app
+        .engine
+        .open_kubo(&path)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        let name = resp
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        Ok(Json(json!({ "name": name, "path": path })))
-    }
+    Ok(Json(json!({ "name": name, "path": path })))
 }
 
 /// DELETE /kubos/:name/abots/:abot — remove an abot from a kubo
@@ -153,30 +94,15 @@ pub async fn remove_abot_from_kubo(
     State(app): State<Arc<AppState>>,
     Path((kubo_name, abot_name)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let resp = app
-        .daemon_client
-        .rpc_with_timeout(
-            DaemonRequest::RemoveAbotFromKubo {
-                id: String::new(),
-                kubo: kubo_name.clone(),
-                abot: abot_name.clone(),
-            },
-            DOCKER_TIMEOUT,
-        )
+    app.engine
+        .remove_abot_from_kubo(&kubo_name, &abot_name)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        Ok(Json(json!({ "kubo": kubo_name, "abot": abot_name })))
-    }
+    Ok(Json(json!({ "kubo": kubo_name, "abot": abot_name })))
 }
 
 /// POST /kubos/:name/abots — add an abot to a kubo
-///
-/// Body: `{ "abot": "name", "createSession": true, "cols": 120, "rows": 40, "env": {} }`
-/// When `createSession` is true, also creates a terminal session and returns its name.
 pub async fn add_abot_to_kubo(
     _csrf: CsrfVerified,
     State(app): State<Arc<AppState>>,
@@ -195,7 +121,6 @@ pub async fn add_abot_to_kubo(
         .unwrap_or(false);
 
     let cols = body.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
-
     let rows = body.get("rows").and_then(|v| v.as_u64()).unwrap_or(40) as u16;
 
     let env = body
@@ -208,34 +133,15 @@ pub async fn add_abot_to_kubo(
         })
         .unwrap_or_default();
 
-    let resp = app
-        .daemon_client
-        .rpc_with_timeout(
-            DaemonRequest::AddAbotToKubo {
-                id: String::new(),
-                kubo: kubo_name.clone(),
-                abot: abot_name.clone(),
-                create_session,
-                cols,
-                rows,
-                env,
-            },
-            DOCKER_TIMEOUT,
-        )
+    let session = app
+        .engine
+        .add_abot_to_kubo(&kubo_name, &abot_name, create_session, cols, rows, env)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
 
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        Err(AppError::BadRequest(error.to_string()))
-    } else {
-        let session = resp
-            .get("session")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let mut result = json!({ "kubo": kubo_name, "abot": abot_name });
-        if let Some(s) = session {
-            result["session"] = json!(s);
-        }
-        Ok(Json(result))
+    let mut result = json!({ "kubo": kubo_name, "abot": abot_name });
+    if let Some(s) = session {
+        result["session"] = json!(s);
     }
+    Ok(Json(result))
 }

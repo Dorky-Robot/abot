@@ -23,11 +23,6 @@ pub fn read_live_pid(path: &Path) -> Option<i32> {
     }
 }
 
-/// Check if the daemon is running by reading its PID file.
-pub fn daemon_is_running(data_dir: &Path) -> bool {
-    read_live_pid(&data_dir.join("daemon.pid")).is_some()
-}
-
 /// Verify that a PID belongs to an abot process by checking its executable path.
 /// Returns true if we can't determine the path (conservative: assume it's ours).
 #[cfg(target_os = "macos")]
