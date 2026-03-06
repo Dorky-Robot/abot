@@ -29,7 +29,6 @@ pub enum OutputEvent {
 }
 
 /// The engine owns sessions, kubos, and abots directly.
-/// Replaces DaemonState + ipc.rs handler.
 pub struct Engine {
     sessions: Mutex<HashMap<String, Session>>,
     data_dir: PathBuf,
@@ -207,11 +206,7 @@ impl Engine {
             let mut sessions = self.sessions.lock().await;
             if let Some(mut session) = sessions.remove(name) {
                 let bp = session.bundle_path.clone();
-                let kn = if session.is_alive() {
-                    session.kubo.clone()
-                } else {
-                    None
-                };
+                let kn = session.kubo.clone();
                 session.backend.kill();
                 let _ = self.output_tx.send(OutputEvent::SessionRemoved {
                     session: name.to_string(),
@@ -306,21 +301,23 @@ impl Engine {
     // ── Env methods ─────────────────────────────────────────────
 
     pub async fn update_agent_env(&self, env: HashMap<String, Option<String>>) {
-        let mut agent_env = self.agent_env.lock().await;
-        for (key, value) in &env {
-            match value {
-                Some(val) => {
-                    agent_env.insert(key.clone(), val.clone());
-                }
-                None => {
-                    agent_env.remove(key);
+        let snapshot = {
+            let mut agent_env = self.agent_env.lock().await;
+            for (key, value) in &env {
+                match value {
+                    Some(val) => {
+                        agent_env.insert(key.clone(), val.clone());
+                    }
+                    None => {
+                        agent_env.remove(key);
+                    }
                 }
             }
-        }
-        tracing::info!("agent_env updated ({} entries)", agent_env.len());
+            tracing::info!("agent_env updated ({} entries)", agent_env.len());
+            agent_env.clone()
+        };
 
         let sessions = self.sessions.lock().await;
-        let snapshot = agent_env.clone();
         for session in sessions.values() {
             session.backend.inject_env(&snapshot);
         }
@@ -524,7 +521,7 @@ impl Engine {
             if let Some(ref bp) = s.bundle_path {
                 bundle::save_scrollback(bp, &s.get_buffer());
             }
-            let kubo_name = if s.is_alive() { s.kubo.clone() } else { None };
+            let kubo_name = s.kubo.clone();
             s.backend.kill();
             drop(sessions);
             if let Some(kn) = kubo_name {
@@ -679,21 +676,8 @@ impl Engine {
             }
         }
 
-        let kubo_path = {
-            let kubos = self.kubos.lock().await;
-            match kubos.get(kubo_name) {
-                Some(k) => k.path.clone(),
-                None => anyhow::bail!("kubo '{}' not found", kubo_name),
-            }
-        };
-
-        if let Ok(mut manifest) = kubo::Kubo::read_manifest(&kubo_path) {
-            manifest.abots.retain(|a| a != abot_name);
-            manifest.updated_at = Some(chrono::Utc::now().to_rfc3339());
-            if let Err(e) = kubo::Kubo::write_manifest(&kubo_path, &manifest) {
-                tracing::warn!("failed to write kubo manifest for '{}': {}", kubo_name, e);
-            }
-        }
+        self.remove_abot_from_kubo_manifest(kubo_name, abot_name)
+            .await;
 
         Ok(())
     }
@@ -931,11 +915,7 @@ impl Engine {
         let qualified = format!("{}@{}", abot, kubo);
         let mut sessions = self.sessions.lock().await;
         if let Some(mut session) = sessions.remove(&qualified) {
-            let kubo_name = if session.is_alive() {
-                session.kubo.clone()
-            } else {
-                None
-            };
+            let kubo_name = session.kubo.clone();
             session.backend.kill();
             let _ = self
                 .output_tx
