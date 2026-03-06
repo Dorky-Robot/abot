@@ -79,11 +79,14 @@ fn strip_da_responses(data: &[u8]) -> Vec<u8> {
                                   // Check for ? or > (DA1 / DA2 prefix)
                     if matches!(chars.peek(), Some('?' | '>')) {
                         let prefix = chars.next().unwrap();
-                        // Consume parameter bytes (digits and ;)
+                        // Consume parameter bytes (digits and ;), buffering them
+                        // in case this turns out not to be a DA response.
+                        let mut params = String::new();
                         let mut is_da = false;
                         loop {
                             match chars.peek() {
                                 Some(&c) if c.is_ascii_digit() || c == ';' => {
+                                    params.push(c);
                                     chars.next();
                                 }
                                 Some(&'c') => {
@@ -95,10 +98,11 @@ fn strip_da_responses(data: &[u8]) -> Vec<u8> {
                             }
                         }
                         if !is_da {
-                            // Not a DA response — preserve the original sequence
+                            // Not a DA response — replay the full sequence
                             result.push('\x1b');
                             result.push('[');
                             result.push(prefix);
+                            result.push_str(&params);
                         }
                     } else {
                         // Not a DA response — preserve ESC[
@@ -706,5 +710,19 @@ mod tests {
     fn strip_extended_da_response() {
         let input = b"\x1b[?64;1;2;6;9;15;16;17;18;21;22c";
         assert_eq!(strip_da_responses(input), b"");
+    }
+
+    #[test]
+    fn preserve_csi_with_question_prefix() {
+        // ESC[?25h (show cursor) — NOT a DA response, must be preserved intact
+        let input = b"\x1b[?25h";
+        assert_eq!(strip_da_responses(input), input.to_vec());
+    }
+
+    #[test]
+    fn preserve_alt_screen_sequence() {
+        // ESC[?1049h (alt screen) — NOT a DA response
+        let input = b"\x1b[?1049h";
+        assert_eq!(strip_da_responses(input), input.to_vec());
     }
 }

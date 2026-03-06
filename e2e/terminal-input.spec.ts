@@ -98,7 +98,9 @@ async function verifyTmuxSession(page: Page, kubo: string, abot: string): Promis
 }
 
 // macOS uses Meta, others use Control.
-const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+const modKey = process.platform === 'darwin' ? 'Meta' : 'Control';
+// Sidebar toggle: Cmd+B on macOS, Ctrl+Shift+B on others (Ctrl+B is tmux prefix).
+const sidebarToggle = process.platform === 'darwin' ? 'Meta+b' : 'Control+Shift+b';
 
 // Track created resources for cleanup
 const createdKubos: string[] = [];
@@ -219,7 +221,7 @@ test.describe('Terminal input and tmux sessions', () => {
     expect(await sendCommandAndVerify(page, marker1)).toBeTruthy();
 
     // Minimize (Cmd/Ctrl+W)
-    await page.keyboard.press(`${mod}+w`);
+    await page.keyboard.press(`${modKey}+w`);
     await page.waitForTimeout(1000);
 
     // Other abot should now be focused and accept input
@@ -247,12 +249,12 @@ test.describe('Terminal input and tmux sessions', () => {
     expect(await sendCommandAndVerify(page, `PRE_${ts}`)).toBeTruthy();
 
     // Collapse sidebar
-    await page.keyboard.press(`${mod}+b`);
+    await page.keyboard.press(sidebarToggle);
     await page.waitForTimeout(1000);
     expect(await sendCommandAndVerify(page, `COLLAPSED_${ts}`)).toBeTruthy();
 
     // Expand sidebar
-    await page.keyboard.press(`${mod}+b`);
+    await page.keyboard.press(sidebarToggle);
     await page.waitForTimeout(1000);
     expect(await sendCommandAndVerify(page, `EXPANDED_${ts}`)).toBeTruthy();
   });

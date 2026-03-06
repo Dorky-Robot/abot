@@ -55,7 +55,7 @@ async function addAbotToKubo(page: Page, abot: string, kubo: string) {
 }
 
 // macOS uses Meta, others use Control.
-const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+const modKey = process.platform === 'darwin' ? 'Meta' : 'Control';
 
 // Track created resources for cleanup.
 const createdSessions: string[] = [];
@@ -145,7 +145,7 @@ test.describe('Facet lifecycle — minimize & close', () => {
       await page.locator('.xterm-container').first().waitFor({ timeout: 10_000 });
     } catch {
       // No xterm containers — verify session-level behavior only
-      await page.keyboard.press(`${mod}+w`);
+      await page.keyboard.press(`${modKey}+w`);
       await page.waitForTimeout(1000);
       const after = await sessionNames(page);
       expect(after.length).toBe(before.length);
@@ -155,7 +155,7 @@ test.describe('Facet lifecycle — minimize & close', () => {
     const xtermsBefore = await xtermCount(page);
 
     // Ctrl+W — minimize current facet.
-    await page.keyboard.press(`${mod}+w`);
+    await page.keyboard.press(`${modKey}+w`);
     await page.waitForTimeout(1000);
 
     // Session should STILL exist on server (minimize, not close).
@@ -183,7 +183,7 @@ test.describe('Facet lifecycle — minimize & close', () => {
     expect(namesBefore.length).toBe(1);
 
     // With 1 facet, Ctrl+W should be a no-op (can't minimize last facet).
-    await page.keyboard.press(`${mod}+w`);
+    await page.keyboard.press(`${modKey}+w`);
     await page.waitForTimeout(500);
 
     const namesAfter = await sessionNames(page);
@@ -198,7 +198,7 @@ test.describe('Facet lifecycle — minimize & close', () => {
     await waitForApp(page);
 
     const before = await sessionNames(page);
-    await page.keyboard.press(`${mod}+n`);
+    await page.keyboard.press(`${modKey}+n`);
     await page.waitForTimeout(2000);
 
     const after = await sessionNames(page);
