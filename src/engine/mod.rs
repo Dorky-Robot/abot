@@ -1,5 +1,6 @@
 pub(crate) mod backend;
 pub(crate) mod bundle;
+pub(crate) mod credentials;
 pub(crate) mod kubo;
 pub(crate) mod kubo_exec;
 pub(crate) mod ring_buffer;
@@ -194,7 +195,7 @@ impl Engine {
         let rx = sessions
             .get_mut(qualified)
             .and_then(|s| s.backend.take_reader());
-        let shared_name = sessions.get(qualified).map(|s| s.shared_name.clone());
+        let name_rx = sessions.get(qualified).map(|s| s.name_tx.subscribe());
         let gen = sessions.get(qualified).map(|s| s.generation).unwrap_or(0);
         drop(sessions);
 
@@ -223,7 +224,7 @@ impl Engine {
         }
 
         if let Some(mut rx) = rx {
-            spawn_output_relay(output_tx, engine, shared_name, reader_name, &mut rx, gen);
+            spawn_output_relay(output_tx, engine, name_rx, reader_name, &mut rx, gen);
         }
 
         session_name
@@ -242,7 +243,7 @@ async fn capture_tmux_scrollback(kubo: &kubo::Kubo, abot_name: &str) -> Option<S
 fn spawn_output_relay(
     output_tx: broadcast::Sender<OutputEvent>,
     engine: Arc<Engine>,
-    shared_name: Option<std::sync::Arc<std::sync::Mutex<String>>>,
+    name_rx: Option<tokio::sync::watch::Receiver<String>>,
     reader_name: String,
     rx: &mut tokio::sync::mpsc::Receiver<String>,
     generation: u64,
@@ -253,9 +254,9 @@ fn spawn_output_relay(
     };
     tokio::spawn(async move {
         while let Some(data) = rx.recv().await {
-            let current_name = shared_name
+            let current_name = name_rx
                 .as_ref()
-                .map(|sn| sn.lock().unwrap().clone())
+                .map(|rx| rx.borrow().clone())
                 .unwrap_or_else(|| reader_name.clone());
 
             let is_current = {
@@ -279,9 +280,9 @@ fn spawn_output_relay(
             }
         }
 
-        let current_name = shared_name
+        let current_name = name_rx
             .as_ref()
-            .map(|sn| sn.lock().unwrap().clone())
+            .map(|rx| rx.borrow().clone())
             .unwrap_or_else(|| reader_name.clone());
 
         let (code, kubo_name) = {

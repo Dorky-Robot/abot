@@ -95,29 +95,9 @@ pub async fn delete_key(
 
 // --- Helpers ---
 
-/// Build the env map for engine. Detects token type:
-/// - `sk-ant-*` → ANTHROPIC_API_KEY (API key billing)
-/// - anything else → CLAUDE_CODE_OAUTH_TOKEN (subscription auth from `claude setup-token`)
+/// Build the env map for engine. Delegates to the unified credentials module.
 pub(crate) fn build_env_map(token: Option<&str>) -> HashMap<String, Option<String>> {
-    let mut env = HashMap::new();
-    match token {
-        Some(t) if t.starts_with("sk-ant-api") => {
-            env.insert("ANTHROPIC_API_KEY".into(), Some(t.to_string()));
-            env.insert("CLAUDE_API_KEY".into(), Some(t.to_string()));
-            env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), None);
-        }
-        Some(t) => {
-            env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), Some(t.to_string()));
-            env.insert("ANTHROPIC_API_KEY".into(), None);
-            env.insert("CLAUDE_API_KEY".into(), None);
-        }
-        None => {
-            env.insert("ANTHROPIC_API_KEY".into(), None);
-            env.insert("CLAUDE_API_KEY".into(), None);
-            env.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), None);
-        }
-    }
-    env
+    crate::engine::credentials::build_env_update(token)
 }
 
 /// Push environment update to engine (best-effort).

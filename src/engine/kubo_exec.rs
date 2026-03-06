@@ -20,6 +20,24 @@ use super::backend::SessionBackend;
 
 type StdinWriter = Pin<Box<dyn AsyncWrite + Send>>;
 
+/// Shell command to ensure Claude CLI settings exist, skipping interactive
+/// onboarding and auth prompts (credentials are injected via env vars).
+const CLAUDE_SETTINGS_INIT: &str = "mkdir -p ~/.claude && \
+     [ -f ~/.claude/settings.json ] || \
+     echo '{\"hasCompletedOnboarding\":true,\"hasCompletedAuthFlow\":true}' > ~/.claude/settings.json";
+
+/// Check if an env var key is valid for shell export.
+fn is_valid_env_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !key.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// Shell-escape a value for single-quoted assignment.
+fn shell_escape(val: &str) -> String {
+    val.replace('\'', "'\\''")
+}
+
 pub struct KuboExecBackend {
     docker: Docker,
     container_id: String,
@@ -121,14 +139,10 @@ async fn tmux_new_session(
     let mut env_script = String::new();
     for var in env {
         if let Some((k, v)) = var.split_once('=') {
-            // Validate key: only alphanumeric/underscore, no leading digit
-            if k.is_empty()
-                || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                || k.starts_with(|c: char| c.is_ascii_digit())
-            {
+            if !is_valid_env_key(k) {
                 continue;
             }
-            let escaped = v.replace('\'', "'\\''");
+            let escaped = shell_escape(v);
             env_script.push_str(&format!("export {k}='{escaped}'; "));
         }
     }
@@ -551,13 +565,10 @@ impl SessionBackend for KuboExecBackend {
         }
         let mut script = String::new();
         for (k, v) in env {
-            if !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                || k.starts_with(|c: char| c.is_ascii_digit())
-                || k.is_empty()
-            {
+            if !is_valid_env_key(k) {
                 continue;
             }
-            let escaped = v.replace('\'', "'\\''");
+            let escaped = shell_escape(v);
             script.push_str(&format!("export {k}='{escaped}'\n"));
         }
         let docker = self.docker.clone();
@@ -565,17 +576,19 @@ impl SessionBackend for KuboExecBackend {
         tokio::spawn(async move {
             use bollard::exec::{CreateExecOptions, StartExecOptions};
 
-            // Write env file via stdin to avoid double-escaping fragility
-            let write_cmd = "mkdir -p ~/.claude && \
-                 [ -f ~/.claude/settings.json ] || echo '{\"hasCompletedOnboarding\":true,\"hasCompletedAuthFlow\":true}' > ~/.claude/settings.json && \
-                 cat > ~/.abot_env && \
+            // Write env file via stdin + ensure Claude CLI is pre-configured
+            // (skip onboarding/auth prompts since credentials are injected externally)
+            let write_cmd = format!(
+                "{} && cat > ~/.abot_env && \
                  grep -q 'source.*abot_env' ~/.bashrc 2>/dev/null || \
-                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> ~/.bashrc";
+                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> ~/.bashrc",
+                CLAUDE_SETTINGS_INIT
+            );
             let write_exec = docker
                 .create_exec(
                     &container_id,
                     CreateExecOptions {
-                        cmd: Some(vec!["/bin/sh", "-c", write_cmd]),
+                        cmd: Some(vec!["/bin/sh", "-c", &write_cmd]),
                         attach_stdin: Some(true),
                         user: Some("1000:1000"),
                         ..Default::default()

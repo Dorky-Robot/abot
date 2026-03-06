@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use tokio::sync::watch;
 
 /// Global monotonic counter for session generations.
 static GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -21,9 +21,9 @@ pub enum SessionStatus {
 
 pub struct Session {
     pub name: String,
-    /// Shared name that background tasks (output relay) can read.
-    /// Updated on rename so relay tasks always broadcast the current name.
-    pub shared_name: Arc<Mutex<String>>,
+    /// Watch channel for the session name — background tasks (output relay)
+    /// subscribe to get the current name without locking.
+    pub name_tx: watch::Sender<String>,
     pub backend: Box<dyn SessionBackend>,
     pub buffer: RingBuffer,
     pub status: SessionStatus,
@@ -49,10 +49,10 @@ impl Session {
         bundle_path: Option<PathBuf>,
         kubo: Option<String>,
     ) -> Self {
-        let shared_name = Arc::new(Mutex::new(name.clone()));
+        let (name_tx, _) = watch::channel(name.clone());
         Self {
             name,
-            shared_name,
+            name_tx,
             backend,
             buffer: RingBuffer::new(DEFAULT_MAX_BUFFER_ITEMS, DEFAULT_MAX_BUFFER_BYTES),
             status: SessionStatus::Running,
@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_name_tracks_rename() {
+    fn watch_name_tracks_rename() {
         let mut session = Session::new(
             "original".into(),
             Box::new(StubBackend),
@@ -161,17 +161,17 @@ mod tests {
             None,
             None,
         );
-        let task_name = session.shared_name.clone();
+        let task_rx = session.name_tx.subscribe();
 
         // Background task would read this
-        assert_eq!(*task_name.lock().unwrap(), "original");
+        assert_eq!(*task_rx.borrow(), "original");
 
-        // Simulate rename (as done in handle_request)
+        // Simulate rename (as done in session_ops)
         session.name = "renamed".into();
-        *session.shared_name.lock().unwrap() = "renamed".into();
+        session.name_tx.send_replace("renamed".into());
 
         // Background task now reads the updated name
-        assert_eq!(*task_name.lock().unwrap(), "renamed");
+        assert_eq!(*task_rx.borrow(), "renamed");
     }
 
     #[test]

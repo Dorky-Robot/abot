@@ -100,7 +100,7 @@ impl Engine {
         }
         if let Some(mut session) = sessions.remove(old_name) {
             session.name = new_name.to_string();
-            *session.shared_name.lock().unwrap() = new_name.to_string();
+            session.name_tx.send_replace(new_name.to_string());
 
             if let Some(ref bp) = session.bundle_path {
                 let manifest_path = bp.join("manifest.json");

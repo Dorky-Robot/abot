@@ -14,13 +14,6 @@ use std::path::{Path, PathBuf};
 const BUNDLE_VERSION: u32 = 2;
 const LEGACY_BUNDLE_VERSION: u32 = 1;
 
-/// Credential-related env var keys that get stored in credentials.json
-const CREDENTIAL_KEYS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-];
-
 /// Result of opening a bundle — enough info to create a session.
 #[derive(Debug)]
 pub struct OpenedBundle {
@@ -64,17 +57,7 @@ pub async fn save_bundle(
     write_json(&manifest_path, &manifest)?;
 
     // 2. Write credentials.json (extract credential keys from session env)
-    let mut creds = serde_json::Map::new();
-    for key in CREDENTIAL_KEYS {
-        if let Some(val) = session_env.get(*key) {
-            let json_key = match *key {
-                "ANTHROPIC_API_KEY" | "CLAUDE_API_KEY" => "api_key",
-                "CLAUDE_CODE_OAUTH_TOKEN" => "claude_token",
-                _ => *key,
-            };
-            creds.insert(json_key.to_string(), serde_json::Value::String(val.clone()));
-        }
-    }
+    let creds = super::credentials::env_to_credentials_json(session_env);
     write_json(
         &bundle_path.join("credentials.json"),
         &serde_json::Value::Object(creds),
@@ -83,7 +66,7 @@ pub async fn save_bundle(
     // 3. Write config.json with defaults
     let mut custom_env = serde_json::Map::new();
     for (k, v) in session_env {
-        if !CREDENTIAL_KEYS.contains(&k.as_str()) {
+        if !super::credentials::is_credential_key(k) {
             custom_env.insert(k.clone(), serde_json::Value::String(v.clone()));
         }
     }
@@ -182,31 +165,8 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
 }
 
 /// Read a `credentials.json` file and return env vars for container injection.
-///
-/// Maps `api_key` → `ANTHROPIC_API_KEY` + `CLAUDE_API_KEY` (if `sk-ant-api` prefix)
-///       or `CLAUDE_CODE_OAUTH_TOKEN` (otherwise).
-/// Maps `claude_token` → `CLAUDE_CODE_OAUTH_TOKEN`.
-/// Returns an empty map if the file is missing or invalid.
 pub fn read_credentials(path: &Path) -> HashMap<String, String> {
-    let mut env = HashMap::new();
-    let creds = match read_json(path) {
-        Ok(v) => v,
-        Err(_) => return env,
-    };
-    if let Some(obj) = creds.as_object() {
-        if let Some(val) = obj.get("api_key").and_then(|v| v.as_str()) {
-            if val.starts_with("sk-ant-api") {
-                env.insert("ANTHROPIC_API_KEY".to_string(), val.to_string());
-                env.insert("CLAUDE_API_KEY".to_string(), val.to_string());
-            } else {
-                env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-            }
-        }
-        if let Some(val) = obj.get("claude_token").and_then(|v| v.as_str()) {
-            env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-        }
-    }
-    env
+    super::credentials::read_credentials_file(path)
 }
 
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
