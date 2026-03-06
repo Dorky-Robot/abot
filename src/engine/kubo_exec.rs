@@ -173,22 +173,28 @@ async fn tmux_new_session(
     )
     .await;
 
-    // Set default-command so new panes/windows start in the abot's home with env
-    let default_cmd = format!(
-        "cd {} 2>/dev/null; {}if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi",
-        workdir, env_script
-    );
+    // Disable the prefix key entirely — we use tmux only for session
+    // persistence, never for interactive tmux commands. This prevents
+    // escape sequence leakage (DA responses from xterm.js) from
+    // accidentally triggering tmux keybindings like pane splits.
     let _ = exec_cmd(
         docker,
         container_id,
-        &[
-            "tmux",
-            "set-option",
-            "-t",
-            session,
-            "default-command",
-            &default_cmd,
-        ],
+        &["tmux", "set-option", "-t", session, "prefix", "None"],
+    )
+    .await;
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &["tmux", "set-option", "-t", session, "prefix2", "None"],
+    )
+    .await;
+
+    // Also disable mouse (prevents accidental pane creation via mouse events)
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &["tmux", "set-option", "-t", session, "mouse", "off"],
     )
     .await;
 
@@ -391,7 +397,7 @@ impl KuboExecBackend {
             .create_exec(
                 container_id,
                 CreateExecOptions {
-                    cmd: Some(vec!["tmux", "attach-session", "-t", tmux_name]),
+                    cmd: Some(vec!["tmux", "attach-session", "-d", "-t", tmux_name]),
                     tty: Some(true),
                     attach_stdin: Some(true),
                     attach_stdout: Some(true),

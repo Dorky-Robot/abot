@@ -635,6 +635,16 @@ impl Engine {
         bundle::add_known_abot(&self.data_dir, abot_name);
 
         if create_session {
+            // If a session already exists for this abot@kubo, return it
+            // instead of creating a duplicate (e.g. on page reload).
+            let qualified = format!("{}@{}", abot_name, kubo_name);
+            {
+                let sessions = self.sessions.lock().await;
+                if sessions.contains_key(&qualified) {
+                    return Ok(Some(qualified));
+                }
+            }
+
             let session_name = self
                 .create_session(
                     abot_name.to_string(),
