@@ -43,6 +43,17 @@ pub struct KuboManifest {
     pub abots: Vec<String>,
 }
 
+/// Typed summary of a kubo, suitable for JSON serialization.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KuboSummary {
+    pub name: String,
+    pub path: String,
+    pub running: bool,
+    pub active_sessions: usize,
+    pub abots: Vec<String>,
+}
+
 /// Validate that a kubo or abot name is safe for filesystem paths and git refs.
 /// Rejects path traversal, slashes, null bytes, and characters invalid in git branch names.
 pub fn validate_name(name: &str) -> Result<()> {
@@ -396,18 +407,18 @@ impl Kubo {
 
     /// Serialize to JSON for IPC responses.
     /// Queries Docker for live container status instead of relying on in-memory flag.
-    pub async fn to_json(&self) -> serde_json::Value {
+    pub async fn summary(&self) -> KuboSummary {
         let abots = Self::read_manifest(&self.path)
             .map(|m| m.abots)
             .unwrap_or_default();
         let running = self.is_running().await;
-        serde_json::json!({
-            "name": self.name,
-            "path": self.path.to_string_lossy(),
-            "running": running,
-            "activeSessions": self.active_sessions,
-            "abots": abots,
-        })
+        KuboSummary {
+            name: self.name.clone(),
+            path: self.path.to_string_lossy().to_string(),
+            running,
+            active_sessions: self.active_sessions,
+            abots,
+        }
     }
 }
 

@@ -13,14 +13,6 @@ use std::path::{Path, PathBuf};
 
 const BUNDLE_VERSION: u32 = 2;
 const LEGACY_BUNDLE_VERSION: u32 = 1;
-const SESSION_IMAGE: &str = "abot-session";
-
-/// Credential-related env var keys that get stored in credentials.json
-const CREDENTIAL_KEYS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_API_KEY",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-];
 
 /// Result of opening a bundle — enough info to create a session.
 #[derive(Debug)]
@@ -61,22 +53,11 @@ pub async fn save_bundle(
         "name": name,
         "created_at": existing_created_at.as_deref().unwrap_or(&now),
         "updated_at": now,
-        "image": SESSION_IMAGE,
     });
     write_json(&manifest_path, &manifest)?;
 
     // 2. Write credentials.json (extract credential keys from session env)
-    let mut creds = serde_json::Map::new();
-    for key in CREDENTIAL_KEYS {
-        if let Some(val) = session_env.get(*key) {
-            let json_key = match *key {
-                "ANTHROPIC_API_KEY" | "CLAUDE_API_KEY" => "api_key",
-                "CLAUDE_CODE_OAUTH_TOKEN" => "claude_token",
-                _ => *key,
-            };
-            creds.insert(json_key.to_string(), serde_json::Value::String(val.clone()));
-        }
-    }
+    let creds = super::credentials::env_to_credentials_json(session_env);
     write_json(
         &bundle_path.join("credentials.json"),
         &serde_json::Value::Object(creds),
@@ -85,14 +66,11 @@ pub async fn save_bundle(
     // 3. Write config.json with defaults
     let mut custom_env = serde_json::Map::new();
     for (k, v) in session_env {
-        if !CREDENTIAL_KEYS.contains(&k.as_str()) {
+        if !super::credentials::is_credential_key(k) {
             custom_env.insert(k.clone(), serde_json::Value::String(v.clone()));
         }
     }
     let config = serde_json::json!({
-        "shell": "/bin/bash",
-        "memory_mb": 2048,
-        "cpu_percent": 50,
         "env": custom_env,
     });
     write_json(&bundle_path.join("config.json"), &config)?;
@@ -187,31 +165,8 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
 }
 
 /// Read a `credentials.json` file and return env vars for container injection.
-///
-/// Maps `api_key` → `ANTHROPIC_API_KEY` + `CLAUDE_API_KEY` (if `sk-ant-api` prefix)
-///       or `CLAUDE_CODE_OAUTH_TOKEN` (otherwise).
-/// Maps `claude_token` → `CLAUDE_CODE_OAUTH_TOKEN`.
-/// Returns an empty map if the file is missing or invalid.
 pub fn read_credentials(path: &Path) -> HashMap<String, String> {
-    let mut env = HashMap::new();
-    let creds = match read_json(path) {
-        Ok(v) => v,
-        Err(_) => return env,
-    };
-    if let Some(obj) = creds.as_object() {
-        if let Some(val) = obj.get("api_key").and_then(|v| v.as_str()) {
-            if val.starts_with("sk-ant-api") {
-                env.insert("ANTHROPIC_API_KEY".to_string(), val.to_string());
-                env.insert("CLAUDE_API_KEY".to_string(), val.to_string());
-            } else {
-                env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-            }
-        }
-        if let Some(val) = obj.get("claude_token").and_then(|v| v.as_str()) {
-            env.insert("CLAUDE_CODE_OAUTH_TOKEN".to_string(), val.to_string());
-        }
-    }
-    env
+    super::credentials::read_credentials_file(path)
 }
 
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
@@ -808,21 +763,30 @@ pub struct KnownAbot {
 
 /// Detail info for a single abot (git state + kubo employment).
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AbotDetail {
     pub name: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     pub default_branch: String,
     pub kubo_branches: Vec<KuboBranch>,
     pub git_status: String,
+    /// When this abot was added to the known list (set by engine, not by get_abot_detail).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<String>,
 }
 
 /// A kubo branch in an abot's git repo.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KuboBranch {
     pub kubo_name: String,
     pub branch: String,
     pub has_worktree: bool,
+    /// Whether there's a live session for this abot@kubo (set by engine).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_session: Option<bool>,
 }
 
 /// Read the known abots list from `{data_dir}/abots.json`.
@@ -971,6 +935,7 @@ pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
                     kubo_name,
                     has_worktree: worktree_branches.contains(&branch),
                     branch,
+                    has_session: None,
                 }
             })
             .collect()
@@ -985,6 +950,7 @@ pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
         default_branch,
         kubo_branches,
         git_status,
+        added_at: None,
     })
 }
 

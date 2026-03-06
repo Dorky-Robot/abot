@@ -228,7 +228,7 @@ async fn handle_client_message(
             } else {
                 app.stream_clients.detach(client_id).await;
             }
-            app.engine.detach(client_id, session.as_deref()).await;
+            // Attachment state is tracked only in ClientTracker
         }
 
         ClientMessage::P2pSignal { data } => {
@@ -247,7 +247,7 @@ async fn handle_attach(
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<()> {
-    match app.engine.attach(client_id, &session).await {
+    match app.engine.get_session_buffer(&session).await {
         Ok(buffer) => {
             // Resize the session to match the client's terminal dimensions
             app.engine.resize(&session, cols, rows).await;

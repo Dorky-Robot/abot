@@ -20,12 +20,33 @@ use super::backend::SessionBackend;
 
 type StdinWriter = Pin<Box<dyn AsyncWrite + Send>>;
 
+/// Shell command to ensure Claude CLI settings exist, skipping interactive
+/// onboarding and auth prompts (credentials are injected via env vars).
+const CLAUDE_SETTINGS_INIT: &str = "mkdir -p ~/.claude && \
+     [ -f ~/.claude/settings.json ] || \
+     echo '{\"hasCompletedOnboarding\":true,\"hasCompletedAuthFlow\":true}' > ~/.claude/settings.json";
+
+/// Check if an env var key is valid for shell export.
+fn is_valid_env_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !key.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// Shell-escape a value for single-quoted assignment.
+fn shell_escape(val: &str) -> String {
+    val.replace('\'', "'\\''")
+}
+
 pub struct KuboExecBackend {
     docker: Docker,
     container_id: String,
     exec_id: String,
-    /// Sender half of stdin pipe to the exec session
-    stdin_tx: Arc<Mutex<Option<StdinWriter>>>,
+    /// Bounded channel for sending stdin data to the writer task.
+    /// Errors on send mean the writer task is gone (pipe broken / container dead).
+    stdin_chan: mpsc::Sender<Vec<u8>>,
+    /// Handle to close stdin on kill.
+    stdin_closer: Arc<Mutex<Option<StdinWriter>>>,
     /// Receiver half of stdout/stderr from the exec session
     reader_rx: Option<mpsc::Receiver<String>>,
     /// Bare abot name (for tmux session naming)
@@ -118,14 +139,10 @@ async fn tmux_new_session(
     let mut env_script = String::new();
     for var in env {
         if let Some((k, v)) = var.split_once('=') {
-            // Validate key: only alphanumeric/underscore, no leading digit
-            if k.is_empty()
-                || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                || k.starts_with(|c: char| c.is_ascii_digit())
-            {
+            if !is_valid_env_key(k) {
                 continue;
             }
-            let escaped = v.replace('\'', "'\\''");
+            let escaped = shell_escape(v);
             env_script.push_str(&format!("export {k}='{escaped}'; "));
         }
     }
@@ -337,7 +354,29 @@ impl KuboExecBackend {
 
         match attach {
             bollard::exec::StartExecResults::Attached { mut output, input } => {
-                let stdin_tx = Arc::new(Mutex::new(Some(input)));
+                let stdin_closer = Arc::new(Mutex::new(Some(input)));
+
+                // Persistent writer task: drains the channel and writes to Docker stdin.
+                // Errors close the channel, causing future write() calls to fail.
+                let (stdin_chan_tx, mut stdin_chan_rx) = mpsc::channel::<Vec<u8>>(64);
+                {
+                    let stdin_ref = stdin_closer.clone();
+                    tokio::spawn(async move {
+                        while let Some(data) = stdin_chan_rx.recv().await {
+                            let mut guard = stdin_ref.lock().await;
+                            if let Some(ref mut writer) = *guard {
+                                if writer.write_all(&data).await.is_err()
+                                    || writer.flush().await.is_err()
+                                {
+                                    *guard = None;
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    });
+                }
 
                 tokio::spawn(async move {
                     while let Some(Ok(chunk)) = output.next().await {
@@ -362,7 +401,8 @@ impl KuboExecBackend {
                     docker: docker.clone(),
                     container_id: container_id.to_string(),
                     exec_id: exec_id.to_string(),
-                    stdin_tx,
+                    stdin_chan: stdin_chan_tx,
+                    stdin_closer,
                     reader_rx: Some(rx),
                     abot_name: abot_name.to_string(),
                     tmux_enabled,
@@ -461,16 +501,16 @@ impl KuboExecBackend {
 
 impl SessionBackend for KuboExecBackend {
     fn write(&mut self, data: &[u8]) -> Result<()> {
-        let data = data.to_vec();
-        let stdin_tx = self.stdin_tx.clone();
-        tokio::spawn(async move {
-            let mut guard = stdin_tx.lock().await;
-            if let Some(ref mut input) = *guard {
-                let _ = input.write_all(&data).await;
-                let _ = input.flush().await;
-            }
-        });
-        Ok(())
+        self.stdin_chan
+            .try_send(data.to_vec())
+            .map_err(|e| match e {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    anyhow::anyhow!("stdin buffer full (input dropped)")
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    anyhow::anyhow!("stdin channel closed (container may be dead)")
+                }
+            })
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
@@ -511,9 +551,9 @@ impl SessionBackend for KuboExecBackend {
         // Close stdin to detach the docker exec from the tmux session.
         // The tmux session itself is left alive — that's the whole point
         // of tmux persistence. It gets cleaned up when the container stops.
-        let stdin_tx = self.stdin_tx.clone();
+        let stdin_closer = self.stdin_closer.clone();
         tokio::spawn(async move {
-            let mut guard = stdin_tx.lock().await;
+            let mut guard = stdin_closer.lock().await;
             *guard = None;
         });
     }
@@ -532,13 +572,10 @@ impl SessionBackend for KuboExecBackend {
         }
         let mut script = String::new();
         for (k, v) in env {
-            if !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                || k.starts_with(|c: char| c.is_ascii_digit())
-                || k.is_empty()
-            {
+            if !is_valid_env_key(k) {
                 continue;
             }
-            let escaped = v.replace('\'', "'\\''");
+            let escaped = shell_escape(v);
             script.push_str(&format!("export {k}='{escaped}'\n"));
         }
         let docker = self.docker.clone();
@@ -546,17 +583,19 @@ impl SessionBackend for KuboExecBackend {
         tokio::spawn(async move {
             use bollard::exec::{CreateExecOptions, StartExecOptions};
 
-            // Write env file via stdin to avoid double-escaping fragility
-            let write_cmd = "mkdir -p ~/.claude && \
-                 [ -f ~/.claude/settings.json ] || echo '{\"hasCompletedOnboarding\":true,\"hasCompletedAuthFlow\":true}' > ~/.claude/settings.json && \
-                 cat > ~/.abot_env && \
+            // Write env file via stdin + ensure Claude CLI is pre-configured
+            // (skip onboarding/auth prompts since credentials are injected externally)
+            let write_cmd = format!(
+                "{} && cat > ~/.abot_env && \
                  grep -q 'source.*abot_env' ~/.bashrc 2>/dev/null || \
-                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> ~/.bashrc";
+                 echo '[ -f ~/.abot_env ] && source ~/.abot_env' >> ~/.bashrc",
+                CLAUDE_SETTINGS_INIT
+            );
             let write_exec = docker
                 .create_exec(
                     &container_id,
                     CreateExecOptions {
-                        cmd: Some(vec!["/bin/sh", "-c", write_cmd]),
+                        cmd: Some(vec!["/bin/sh", "-c", &write_cmd]),
                         attach_stdin: Some(true),
                         user: Some("1000:1000"),
                         ..Default::default()
