@@ -336,6 +336,25 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
+  Future<void> _createAbotSession(String abotName, String kuboName) async {
+    try {
+      await ref.read(facetManagerProvider.notifier).createAbotInKubo(
+        abotName,
+        kubo: kuboName,
+      );
+      if (!mounted) return;
+      ref.read(kuboServiceProvider.notifier).refresh();
+      ref.read(abotServiceProvider.notifier).refresh();
+    } catch (e) {
+      if (!mounted) return;
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to start abot: $e')),
+        );
+      }
+    }
+  }
+
   void _persistOpenKubos() {
     web.window.localStorage.setItem(
       _openKubosKey,
@@ -1094,24 +1113,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onDismissVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
               },
-              onCreateAbotSession: (abotName, kuboName) async {
-                try {
-                  await ref.read(facetManagerProvider.notifier).createAbotInKubo(
-                    abotName,
-                    kubo: kuboName,
-                  );
-                  if (!mounted) return;
-                  ref.read(kuboServiceProvider.notifier).refresh();
-                  ref.read(abotServiceProvider.notifier).refresh();
-                } catch (e) {
-                  if (!mounted) return;
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to start abot: $e')),
-                    );
-                  }
-                }
-              },
+              onCreateAbotSession: _createAbotSession,
               activeKubo: _activeKubo,
               onActiveKuboChanged: (kubo) {
                 setState(() => _activeKubo = kubo);
@@ -1145,19 +1147,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
       sessionInfoMap: sessionInfoMap,
       kubos: kubos,
       onOpenSession: _onOpenSession,
-      onCreateAbotSession: (name, kubo) async {
-        try {
-          await ref.read(facetManagerProvider.notifier).createAbotInKubo(
-            name,
-            kubo: kubo,
-          );
-        } catch (e) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to create session: $e')),
-          );
-        }
-      },
+      onCreateAbotSession: _createAbotSession,
       onAddAbot: _addAbotToKubo,
       onOpenBundle: _openBundle,
     );

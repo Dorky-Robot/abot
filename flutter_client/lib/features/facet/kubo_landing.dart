@@ -32,10 +32,16 @@ class KuboLandingPage extends StatelessWidget {
     if (kuboSessions.isEmpty) {
       final kuboInfo = kubos.where((k) => k.name == kubo).firstOrNull;
       if (kuboInfo != null && kuboInfo.abots.isNotEmpty) {
-        return _ManifestAbotCardGrid(
+        return __AbotCardGrid(
           kubo: kubo,
-          abotNames: kuboInfo.abots,
-          onCreateAbotSession: onCreateAbotSession,
+          cards: [
+            for (final name in kuboInfo.abots)
+              _AbotCard(
+                name: name,
+                isRunning: false,
+                onTap: () => onCreateAbotSession(name, kubo),
+              ),
+          ],
           onAddAbot: onAddAbot,
           onOpenBundle: onOpenBundle,
         );
@@ -46,10 +52,17 @@ class KuboLandingPage extends StatelessWidget {
         onOpenBundle: onOpenBundle,
       );
     }
-    return _AbotCardGrid(
+    return __AbotCardGrid(
       kubo: kubo,
-      sessions: kuboSessions,
-      onOpenSession: onOpenSession,
+      cards: [
+        for (final session in kuboSessions)
+          _AbotCard(
+            name: session.displayName,
+            isRunning: session.isRunning,
+            isDirty: session.dirty,
+            onTap: () => onOpenSession(session.name),
+          ),
+      ],
       onAddAbot: onAddAbot,
       onOpenBundle: onOpenBundle,
     );
@@ -175,17 +188,15 @@ class _KuboActionButtons extends StatelessWidget {
   }
 }
 
-class _ManifestAbotCardGrid extends StatelessWidget {
+class __AbotCardGrid extends StatelessWidget {
   final String kubo;
-  final List<String> abotNames;
-  final void Function(String abotName, String kubo) onCreateAbotSession;
+  final List<Widget> cards;
   final void Function(String kubo) onAddAbot;
   final VoidCallback onOpenBundle;
 
-  const _ManifestAbotCardGrid({
+  const __AbotCardGrid({
     required this.kubo,
-    required this.abotNames,
-    required this.onCreateAbotSession,
+    required this.cards,
     required this.onAddAbot,
     required this.onOpenBundle,
   });
@@ -208,66 +219,7 @@ class _ManifestAbotCardGrid extends StatelessWidget {
             Wrap(
               spacing: AbotSpacing.md,
               runSpacing: AbotSpacing.md,
-              children: [
-                for (final name in abotNames)
-                  AbotCard(
-                    name: name,
-                    isRunning: false,
-                    onTap: () => onCreateAbotSession(name, kubo),
-                  ),
-              ],
-            ),
-            const SizedBox(height: AbotSpacing.lg),
-            _KuboActionButtons(kubo: kubo, onAddAbot: onAddAbot, onOpenBundle: onOpenBundle),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AbotCardGrid extends StatelessWidget {
-  final String kubo;
-  final List<SessionInfo> sessions;
-  final void Function(String sessionName) onOpenSession;
-  final void Function(String kubo) onAddAbot;
-  final VoidCallback onOpenBundle;
-
-  const _AbotCardGrid({
-    required this.kubo,
-    required this.sessions,
-    required this.onOpenSession,
-    required this.onAddAbot,
-    required this.onOpenBundle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(AbotSpacing.lg),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(kubo,
-              style: TextStyle(
-                color: p.text, fontFamily: AbotFonts.mono,
-                fontSize: 16, fontWeight: FontWeight.w600,
-              )),
-            const SizedBox(height: AbotSpacing.md),
-            Wrap(
-              spacing: AbotSpacing.md,
-              runSpacing: AbotSpacing.md,
-              children: [
-                for (final session in sessions)
-                  AbotCard(
-                    name: session.displayName,
-                    isRunning: session.isRunning,
-                    isDirty: session.dirty,
-                    onTap: () => onOpenSession(session.name),
-                  ),
-              ],
+              children: cards,
             ),
             const SizedBox(height: AbotSpacing.lg),
             _KuboActionButtons(kubo: kubo, onAddAbot: onAddAbot, onOpenBundle: onOpenBundle),
@@ -327,14 +279,13 @@ class _EmptyKuboOnboarding extends StatelessWidget {
 }
 
 /// A card representing an abot in the kubo landing page grid.
-class AbotCard extends StatefulWidget {
+class _AbotCard extends StatefulWidget {
   final String name;
   final bool isRunning;
   final bool isDirty;
   final VoidCallback onTap;
 
-  const AbotCard({
-    super.key,
+  const _AbotCard({
     required this.name,
     required this.isRunning,
     this.isDirty = false,
@@ -342,10 +293,10 @@ class AbotCard extends StatefulWidget {
   });
 
   @override
-  State<AbotCard> createState() => _AbotCardState();
+  State<_AbotCard> createState() => __AbotCardState();
 }
 
-class _AbotCardState extends State<AbotCard> {
+class __AbotCardState extends State<_AbotCard> {
   bool _hovered = false;
 
   @override
