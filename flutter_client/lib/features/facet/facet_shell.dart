@@ -20,6 +20,7 @@ import '../settings/settings_panel.dart';
 import '../settings/session_settings_panel.dart';
 import '../settings/kubo_settings_panel.dart';
 import '../settings/abot_detail_panel.dart';
+import 'kubo_landing.dart';
 
 const double _narrowBreakpoint = 768;
 const String _offscreenTransform = 'translate(-9999px, 0) scale(0.01, 0.01)';
@@ -332,6 +333,25 @@ class _FacetShellState extends ConsumerState<FacetShell>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to add abot: $e')),
       );
+    }
+  }
+
+  Future<void> _createAbotSession(String abotName, String kuboName) async {
+    try {
+      await ref.read(facetManagerProvider.notifier).createAbotInKubo(
+        abotName,
+        kubo: kuboName,
+      );
+      if (!mounted) return;
+      ref.read(kuboServiceProvider.notifier).refresh();
+      ref.read(abotServiceProvider.notifier).refresh();
+    } catch (e) {
+      if (!mounted) return;
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to start abot: $e')),
+        );
+      }
     }
   }
 
@@ -1093,24 +1113,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onDismissVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
               },
-              onCreateAbotSession: (abotName, kuboName) async {
-                try {
-                  await ref.read(facetManagerProvider.notifier).createAbotInKubo(
-                    abotName,
-                    kubo: kuboName,
-                  );
-                  if (!mounted) return;
-                  ref.read(kuboServiceProvider.notifier).refresh();
-                  ref.read(abotServiceProvider.notifier).refresh();
-                } catch (e) {
-                  if (!mounted) return;
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to start abot: $e')),
-                    );
-                  }
-                }
-              },
+              onCreateAbotSession: _createAbotSession,
               activeKubo: _activeKubo,
               onActiveKuboChanged: (kubo) {
                 setState(() => _activeKubo = kubo);
@@ -1133,237 +1136,20 @@ class _FacetShellState extends ConsumerState<FacetShell>
     );
   }
 
-  /// Kubo landing page — shows card grid or empty onboarding for the active kubo.
   Widget _buildKuboLandingPage(String kubo, Map<String, SessionInfo> sessionInfoMap) {
-    final kuboSessions = sessionInfoMap.values
-        .where((s) => s.kubo == kubo)
-        .toList();
-    if (kuboSessions.isEmpty) {
-      // Check if the kubo has abots from the manifest (even without sessions).
-      final kubosAsync = ref.read(kuboServiceProvider);
-      final kuboInfo = kubosAsync.when(
-        data: (list) => list.where((k) => k.name == kubo).firstOrNull,
-        loading: () => null,
-        error: (_, _) => null,
-      );
-      if (kuboInfo != null && kuboInfo.abots.isNotEmpty) {
-        // Show abot cards from manifest (they have no running sessions)
-        return _buildManifestAbotCardGrid(kubo, kuboInfo.abots);
-      }
-      return _buildEmptyKuboOnboarding(kubo);
-    }
-    return _buildAbotCardGrid(kubo, kuboSessions);
-  }
-
-  /// Card grid of abots from kubo manifest (no running sessions).
-  Widget _buildKuboActionButtons(String kubo) {
-    final p = context.palette;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        FilledButton.icon(
-          onPressed: () => _addAbotToKubo(kubo),
-          icon: const Icon(Icons.add, size: 16),
-          label: Text('Add abot',
-            style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
-          style: FilledButton.styleFrom(
-            backgroundColor: p.mauve, foregroundColor: p.base,
-          ),
-        ),
-        const SizedBox(width: AbotSpacing.sm),
-        OutlinedButton.icon(
-          onPressed: _openBundle,
-          icon: const Icon(Icons.folder_open, size: 16),
-          label: Text('Open .abot bundle',
-            style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: p.subtext0,
-            side: BorderSide(color: p.surface1),
-          ),
-        ),
-      ],
+    final kubos = ref.read(kuboServiceProvider).when(
+      data: (list) => list,
+      loading: () => <KuboInfo>[],
+      error: (_, _) => <KuboInfo>[],
     );
-  }
-
-  Widget _buildManifestAbotCardGrid(String kubo, List<String> abotNames) {
-    final p = context.palette;
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(AbotSpacing.lg),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(kubo,
-              style: TextStyle(
-                color: p.text, fontFamily: AbotFonts.mono,
-                fontSize: 16, fontWeight: FontWeight.w600,
-              )),
-            const SizedBox(height: AbotSpacing.md),
-            Wrap(
-              spacing: AbotSpacing.md,
-              runSpacing: AbotSpacing.md,
-              children: [
-                for (final name in abotNames)
-                  _AbotCard(
-                    name: name,
-                    isRunning: false,
-                    onTap: () async {
-                      // Create a session for this manifest-only abot, then open it.
-                      try {
-                        await ref.read(facetManagerProvider.notifier).createAbotInKubo(
-                          name,
-                          kubo: kubo,
-                        );
-                      } catch (e) {
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Failed to create session: $e')),
-                        );
-                      }
-                    },
-                  ),
-              ],
-            ),
-            const SizedBox(height: AbotSpacing.lg),
-            _buildKuboActionButtons(kubo),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Card grid of abots in a kubo — click a card to open its terminal.
-  Widget _buildAbotCardGrid(String kubo, List<SessionInfo> sessions) {
-    final p = context.palette;
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(AbotSpacing.lg),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(kubo,
-              style: TextStyle(
-                color: p.text, fontFamily: AbotFonts.mono,
-                fontSize: 16, fontWeight: FontWeight.w600,
-              )),
-            const SizedBox(height: AbotSpacing.md),
-            Wrap(
-              spacing: AbotSpacing.md,
-              runSpacing: AbotSpacing.md,
-              children: [
-                for (final session in sessions)
-                  _AbotCard(
-                    name: session.displayName,
-                    isRunning: session.isRunning,
-                    isDirty: session.dirty,
-                    onTap: () => _onOpenSession(session.name),
-                  ),
-              ],
-            ),
-            const SizedBox(height: AbotSpacing.lg),
-            _buildKuboActionButtons(kubo),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Empty kubo onboarding — shown when no abots are in the active kubo.
-  Widget _buildEmptyKuboOnboarding(String kubo) {
-    final p = context.palette;
-    return Center(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 360),
-        padding: const EdgeInsets.all(AbotSpacing.lg),
-        decoration: BoxDecoration(
-          color: p.surface0,
-          borderRadius: BorderRadius.circular(AbotRadius.md),
-          border: Border.all(color: p.surface1),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('No abots in $kubo',
-              style: TextStyle(
-                color: p.text, fontFamily: AbotFonts.mono,
-                fontSize: 16, fontWeight: FontWeight.w600,
-              )),
-            const SizedBox(height: AbotSpacing.sm),
-            Text(
-              'Add an abot to get started. Each abot is a git-backed workspace with its own terminal.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: AbotSpacing.md),
-            _buildKuboActionButtons(kubo),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Empty state landing page — no kubos open, show create/open actions.
-  Widget _buildEmptyStateLandingPage() {
-    final p = context.palette;
-    return Center(
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 360),
-        padding: const EdgeInsets.all(AbotSpacing.lg),
-        decoration: BoxDecoration(
-          color: p.surface0,
-          borderRadius: BorderRadius.circular(AbotRadius.md),
-          border: Border.all(color: p.surface1),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.dashboard_outlined, size: 40, color: p.mauve),
-            const SizedBox(height: AbotSpacing.md),
-            Text('Welcome to abot',
-              style: TextStyle(
-                color: p.text, fontFamily: AbotFonts.mono,
-                fontSize: 16, fontWeight: FontWeight.w600,
-              )),
-            const SizedBox(height: AbotSpacing.sm),
-            Text(
-              'A kubo is a shared runtime room. Create one to get started, or open an existing one from disk.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12,
-              ),
-            ),
-            const SizedBox(height: AbotSpacing.md),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _createNewKubo,
-                  icon: const Icon(Icons.add, size: 16),
-                  label: const Text('Create kubo'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: p.mauve,
-                    foregroundColor: p.base,
-                    textStyle: TextStyle(fontFamily: AbotFonts.mono, fontSize: 12),
-                  ),
-                ),
-                const SizedBox(width: AbotSpacing.sm),
-                OutlinedButton.icon(
-                  onPressed: _openKuboFromDisk,
-                  icon: const Icon(Icons.folder_open, size: 16),
-                  label: const Text('Open kubo'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: p.text,
-                    side: BorderSide(color: p.surface1),
-                    textStyle: TextStyle(fontFamily: AbotFonts.mono, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+    return KuboLandingPage(
+      kubo: kubo,
+      sessionInfoMap: sessionInfoMap,
+      kubos: kubos,
+      onOpenSession: _onOpenSession,
+      onCreateAbotSession: _createAbotSession,
+      onAddAbot: _addAbotToKubo,
+      onOpenBundle: _openBundle,
     );
   }
 
@@ -1377,7 +1163,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (_activeKubo != null) {
         return _buildKuboLandingPage(_activeKubo!, sessionInfoMap);
       }
-      return _buildEmptyStateLandingPage();
+      return EmptyStateLandingPage(
+        onCreateKubo: _createNewKubo,
+        onOpenKubo: _openKuboFromDisk,
+      );
     }
 
     for (final id in state.order) {
@@ -1439,101 +1228,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
           ),
         ),
       ],
-    );
-  }
-}
-
-/// A card representing an abot in the kubo landing page grid.
-class _AbotCard extends StatefulWidget {
-  final String name;
-  final bool isRunning;
-  final bool isDirty;
-  final VoidCallback onTap;
-
-  const _AbotCard({
-    required this.name,
-    required this.isRunning,
-    this.isDirty = false,
-    required this.onTap,
-  });
-
-  @override
-  State<_AbotCard> createState() => _AbotCardState();
-}
-
-class _AbotCardState extends State<_AbotCard> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 150),
-          width: 180,
-          padding: const EdgeInsets.all(AbotSpacing.md),
-          decoration: BoxDecoration(
-            color: p.surface0,
-            border: Border.all(
-              color: _hovered ? p.mauve : p.surface1,
-            ),
-            borderRadius: BorderRadius.circular(AbotRadius.md),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      color: widget.isRunning ? p.green : p.overlay0,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: AbotSpacing.sm),
-                  Expanded(
-                    child: Text(
-                      widget.name,
-                      style: TextStyle(
-                        color: p.text,
-                        fontFamily: AbotFonts.mono,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  if (widget.isDirty)
-                    Container(
-                      width: 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: p.yellow,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: AbotSpacing.xs),
-              Text(
-                widget.isRunning ? 'running' : 'stopped',
-                style: TextStyle(
-                  color: p.subtext0,
-                  fontFamily: AbotFonts.mono,
-                  fontSize: 11,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
