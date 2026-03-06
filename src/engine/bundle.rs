@@ -1314,7 +1314,7 @@ mod tests {
         assert_eq!(loaded, Some(terminal_output.to_string()));
 
         // 5. Pre-populate ring buffer (what CreateSession should do)
-        let mut buf = crate::daemon::ring_buffer::RingBuffer::new(5000, 5 * 1024 * 1024);
+        let mut buf = crate::engine::ring_buffer::RingBuffer::new(5000, 5 * 1024 * 1024);
         if let Some(scrollback) = loaded {
             buf.pre_populate(scrollback);
         }
@@ -1501,7 +1501,7 @@ mod tests {
         let abots_dir = dir.join("abots");
         let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
         let kubos_dir = dir.join("kubos");
-        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
+        crate::engine::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
         let kubo_path = kubos_dir.join("lab.kubo");
         worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
 
@@ -1544,7 +1544,7 @@ mod tests {
         let abots_dir = dir.join("abots");
         let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
         let kubos_dir = dir.join("kubos");
-        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
+        crate::engine::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
         let kubo_path = kubos_dir.join("lab.kubo");
         worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
 
@@ -1575,11 +1575,11 @@ mod tests {
 
         // Create a kubo with some abots in its manifest
         let kubos_dir = dir.join("kubos");
-        crate::daemon::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "test-kubo").unwrap();
+        crate::engine::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "test-kubo").unwrap();
         let kubo_path = kubos_dir.join("test-kubo.kubo");
-        let mut manifest = crate::daemon::kubo::Kubo::read_manifest(&kubo_path).unwrap();
+        let mut manifest = crate::engine::kubo::Kubo::read_manifest(&kubo_path).unwrap();
         manifest.abots = vec!["alice".to_string(), "bob".to_string()];
-        crate::daemon::kubo::Kubo::write_manifest(&kubo_path, &manifest).unwrap();
+        crate::engine::kubo::Kubo::write_manifest(&kubo_path, &manifest).unwrap();
 
         // Pre-add alice to known
         add_known_abot(&dir, "alice");

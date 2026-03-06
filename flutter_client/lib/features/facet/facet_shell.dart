@@ -138,7 +138,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
       // Server unreachable — empty state, onboarding page shown.
     }
 
-    // Reconcile localStorage kubos against server — prune stale entries.
+    // Reconcile localStorage kubos against server — prune stale entries,
+    // and auto-create sessions for abots in running kubos.
     try {
       final kubos = await ref.read(kuboServiceProvider.notifier).listKubos();
       if (!mounted) return;
@@ -157,6 +158,21 @@ class _FacetShellState extends ConsumerState<FacetShell>
             web.window.localStorage.removeItem(_activeKuboKey);
           }
         });
+      }
+
+      // Auto-create sessions for abots in open/active kubos.
+      // createAbotInKubo will start the kubo container if needed.
+      for (final kubo in kubos) {
+        if (!_openKubos.contains(kubo.name) && kubo.name != _activeKubo) continue;
+        if (kubo.abots.isEmpty) continue;
+        for (final abot in kubo.abots) {
+          try {
+            await facetManager.createAbotInKubo(abot, kubo: kubo.name);
+            if (!mounted) return;
+          } catch (e) {
+            debugPrint('[FacetShell] Auto-start $abot in ${kubo.name}: $e');
+          }
+        }
       }
     } catch (_) {}
 
@@ -244,6 +260,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
         _updateSidebarTransforms();
       });
     }
+    // Re-focus the terminal after sidebar toggle
+    final focusedId = ref.read(facetManagerProvider).focusedId;
+    if (focusedId != null) {
+      TerminalRegistry.instance.focusTerminal(focusedId);
+    }
   }
 
   /// Move all non-focused terminals (and the mirror) offscreen via CSS transform.
@@ -257,8 +278,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
         animate: false,
       );
     }
-    // Also hide the mirror of the focused terminal
     if (state.focusedId != null) {
+      // Clear the focused terminal's transform so it renders full-size.
+      // Without this, a terminal that was previously offscreen (unfocused)
+      // would keep its offscreen transform after gaining focus.
+      TerminalRegistry.instance
+          .clearGenieTransform(state.focusedId!, animate: false);
+      // Hide the mirror of the focused terminal
       TerminalRegistry.instance.setGenieTransform(
         '${state.focusedId!}_mirror',
         _offscreenTransform,
@@ -535,11 +561,25 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
     // Instant swap — change focus and recompute transforms without animation.
     ref.read(facetManagerProvider.notifier).focus(facetId);
+
+    // Re-focus the terminal after focus switch (didUpdateWidget may not fire
+    // if xterm.js initialized after the widget was built).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) TerminalRegistry.instance.focusTerminal(facetId);
+    });
   }
 
   /// Open or focus a server session from the strip.
   void _onOpenSession(String sessionName) {
     ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
+    // Re-focus the terminal after the facet is created or focused
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final focusedId = ref.read(facetManagerProvider).focusedId;
+      if (focusedId != null) {
+        TerminalRegistry.instance.focusTerminal(focusedId);
+      }
+    });
   }
 
   /// Delete a server session (with confirmation).
@@ -1036,6 +1076,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onTabChanged: (tab) {
                 setState(() => _sidebarTab = tab);
                 _updateSidebarTransforms();
+                // Re-focus the terminal after tab switch
+                final focusedId = ref.read(facetManagerProvider).focusedId;
+                if (focusedId != null) {
+                  TerminalRegistry.instance.focusTerminal(focusedId);
+                }
               },
               knownAbots: knownAbots,
               onAbotDetail: (name) => _showAbotDetail(name),
@@ -1047,6 +1092,24 @@ class _FacetShellState extends ConsumerState<FacetShell>
               },
               onDismissVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
+              },
+              onCreateAbotSession: (abotName, kuboName) async {
+                try {
+                  await ref.read(facetManagerProvider.notifier).createAbotInKubo(
+                    abotName,
+                    kubo: kuboName,
+                  );
+                  if (!mounted) return;
+                  ref.read(kuboServiceProvider.notifier).refresh();
+                  ref.read(abotServiceProvider.notifier).refresh();
+                } catch (e) {
+                  if (!mounted) return;
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to start abot: $e')),
+                    );
+                  }
+                }
               },
               activeKubo: _activeKubo,
               onActiveKuboChanged: (kubo) {

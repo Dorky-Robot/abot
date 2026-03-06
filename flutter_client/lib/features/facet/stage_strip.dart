@@ -46,6 +46,8 @@ class StageStrip extends StatefulWidget {
   final void Function(String abotName, String kuboName)? onIntegrateVariant;
   final void Function(String abotName, String kuboName)? onDiscardVariant;
   final void Function(String abotName, String kuboName)? onDismissVariant;
+  /// Create a session for an abot that's in a kubo manifest but has no session yet.
+  final void Function(String abotName, String kuboName)? onCreateAbotSession;
 
   const StageStrip({
     super.key,
@@ -81,6 +83,7 @@ class StageStrip extends StatefulWidget {
     this.onIntegrateVariant,
     this.onDiscardVariant,
     this.onDismissVariant,
+    this.onCreateAbotSession,
   });
 
   @override
@@ -437,7 +440,9 @@ class _StageStripState extends State<StageStrip> {
                       name: abotName,
                       isRunning: false,
                       isFocused: false,
-                      onTap: () => widget.onOpenSession(abotName),
+                      onTap: widget.onCreateAbotSession != null
+                          ? () => widget.onCreateAbotSession!(abotName, kuboName)
+                          : () => widget.onOpenSession(abotName),
                       onRemove: widget.onRemoveAbot != null
                           ? () => widget.onRemoveAbot!(kuboName, abotName)
                           : null,

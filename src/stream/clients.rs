@@ -112,6 +112,16 @@ impl ClientTracker {
         }
     }
 
+    /// Rename a session across all client attachments
+    pub async fn rename_attached_session(&self, old_name: &str, new_name: &str) {
+        let mut clients = self.clients.write().await;
+        for info in clients.values_mut() {
+            if info.attached_sessions.remove(old_name) {
+                info.attached_sessions.insert(new_name.to_string());
+            }
+        }
+    }
+
     /// Check if a client is attached to a specific session
     pub async fn is_attached(&self, client_id: &str, session_id: &str) -> bool {
         let clients = self.clients.read().await;

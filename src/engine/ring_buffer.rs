@@ -46,6 +46,11 @@ impl RingBuffer {
         self.items.len()
     }
 
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     pub fn bytes(&self) -> usize {
         self.current_bytes
     }

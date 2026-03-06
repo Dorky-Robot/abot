@@ -77,6 +77,10 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     return sb.toString();
   }
 
+  /// Matches DA (Device Attributes) responses from xterm.js:
+  /// Primary DA: ESC[?Ps;...c  Secondary DA: ESC[>Ps;...c
+  static final _daResponsePattern = RegExp(r'\x1b\[\??[\d;]*c|\x1b\[>[\d;]*c');
+
   static int _viewIdCounter = 0;
   late final String _viewId;
   XtermTerminal? _terminal;
@@ -190,8 +194,8 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
         if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key == 'F') {
           return false.toJS;
         }
-        // Ctrl+B / Cmd+B — toggle sidebar
-        if ((event.ctrlKey || event.metaKey) && event.key == 'b') {
+        // Cmd+B — toggle sidebar (Ctrl+B must pass through as tmux prefix)
+        if (event.metaKey && !event.ctrlKey && event.key == 'b') {
           return false.toJS;
         }
 
@@ -242,8 +246,15 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 
       // Wire up data handler -> send input to server
       _terminal!.onData(((JSString data) {
+        var text = data.toDart;
+        // Filter out Device Attributes responses that xterm.js generates
+        // in response to DA queries from tmux. Without this filter, the
+        // responses (e.g. ESC[?1;2c, ESC[>0;276;0c) arrive at the shell
+        // as garbage text at the prompt.
+        text = text.replaceAll(_daResponsePattern, '');
+        if (text.isEmpty) return;
         final wsService = ref.read(wsServiceProvider.notifier);
-        wsService.sendInput(data.toDart, session: widget.sessionName);
+        wsService.sendInput(text, session: widget.sessionName);
       }).toJS);
 
       // Wire up resize handler -> notify server
@@ -276,6 +287,12 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 
     // Register this terminal with the facet registry
     TerminalRegistry.instance.register(widget.facetId, this);
+
+    // Focus the terminal if this facet is the focused one.
+    // didUpdateWidget won't fire on initial creation, so we must do it here.
+    if (widget.isFocused && !widget.isMirror) {
+      _terminal!.focus();
+    }
 
     // Populate mirror from the main terminal's current viewport
     if (widget.isMirror) {
@@ -613,6 +630,14 @@ class TerminalRegistry {
       if (sink != null && !sink.isMirror) return sink.getBufferContent();
     }
     return null;
+  }
+
+  /// Focus the xterm.js terminal for a given facet.
+  void focusTerminal(String facetId) {
+    final sink = _terminals[facetId];
+    if (sink is _TerminalFacetState) {
+      sink._terminal?.focus();
+    }
   }
 
   /// Apply a CSS transform to a facet's terminal container (GPU-accelerated).

@@ -11,7 +11,6 @@ use tokio::sync::{mpsc, Mutex};
 use super::messages::{ClientMessage, ServerMessage};
 use super::p2p::{P2pEvent, ServerPeer};
 use crate::auth::{middleware, state as auth_state};
-use crate::daemon::ipc::DaemonRequest;
 use crate::server::AppState;
 
 /// WebSocket upgrade handler with auth + origin check
@@ -89,72 +88,50 @@ async fn handle_socket(socket: WebSocket, app: Arc<AppState>, credential_id: Opt
     // P2P peers for this client connection
     let peers: PeerMap = Arc::new(Mutex::new(HashMap::new()));
 
-    // Subscribe to daemon broadcast events
-    let mut daemon_rx = app.daemon_client.subscribe();
+    // Subscribe to engine broadcast events
+    let mut engine_rx = app.engine.subscribe();
     let clients = app.stream_clients.clone();
 
-    // Task: relay daemon events → this client only
+    // Task: relay engine events → this client only
     let relay_client_id = client_id.clone();
     let relay_handle = tokio::spawn(async move {
         loop {
-            match daemon_rx.recv().await {
-                Ok(msg) => {
-                    if let Some(msg_type) = msg.get("type").and_then(|v| v.as_str()) {
-                        match msg_type {
-                            "output" => {
-                                if let (Some(session), Some(data)) = (
-                                    msg.get("session").and_then(|v| v.as_str()),
-                                    msg.get("data").and_then(|v| v.as_str()),
-                                ) {
-                                    if !clients.is_attached(&relay_client_id, session).await {
-                                        continue;
-                                    }
-                                    clients
-                                        .send_to_prefer_p2p(
-                                            &relay_client_id,
-                                            ServerMessage::Output {
-                                                data: data.to_string(),
-                                                session: Some(session.to_string()),
-                                            },
-                                        )
-                                        .await;
-                                }
-                            }
-                            "exit" => {
-                                if let (Some(session), Some(code)) = (
-                                    msg.get("session").and_then(|v| v.as_str()),
-                                    msg.get("code").and_then(|v| v.as_u64()),
-                                ) {
-                                    if !clients.is_attached(&relay_client_id, session).await {
-                                        continue;
-                                    }
-                                    clients
-                                        .send_to(
-                                            &relay_client_id,
-                                            ServerMessage::Exit {
-                                                code: code as u32,
-                                                session: Some(session.to_string()),
-                                            },
-                                        )
-                                        .await;
-                                }
-                            }
-                            "session-removed" => {
-                                if let Some(session) = msg.get("session").and_then(|v| v.as_str()) {
-                                    clients
-                                        .send_to(
-                                            &relay_client_id,
-                                            ServerMessage::SessionRemoved {
-                                                session: session.to_string(),
-                                            },
-                                        )
-                                        .await;
-                                }
-                            }
-                            _ => {}
+            match engine_rx.recv().await {
+                Ok(event) => match event {
+                    crate::engine::OutputEvent::Output { session, data } => {
+                        if !clients.is_attached(&relay_client_id, &session).await {
+                            continue;
                         }
+                        clients
+                            .send_to_prefer_p2p(
+                                &relay_client_id,
+                                ServerMessage::Output {
+                                    data,
+                                    session: Some(session),
+                                },
+                            )
+                            .await;
                     }
-                }
+                    crate::engine::OutputEvent::Exit { session, code } => {
+                        if !clients.is_attached(&relay_client_id, &session).await {
+                            continue;
+                        }
+                        clients
+                            .send_to(
+                                &relay_client_id,
+                                ServerMessage::Exit {
+                                    code,
+                                    session: Some(session),
+                                },
+                            )
+                            .await;
+                    }
+                    crate::engine::OutputEvent::SessionRemoved { session } => {
+                        clients
+                            .send_to(&relay_client_id, ServerMessage::SessionRemoved { session })
+                            .await;
+                    }
+                },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -224,13 +201,13 @@ async fn handle_client_message(
         } => handle_attach(app, client_id, session, cols, rows).await?,
 
         ClientMessage::Input { data, session } => {
-            app.daemon_client
-                .send(&DaemonRequest::Input {
-                    client_id: client_id.to_string(),
-                    session,
-                    data,
-                })
-                .await?;
+            if let Some(session_name) = session {
+                if let Err(e) = app.engine.write_input(&session_name, &data).await {
+                    tracing::warn!("write to session '{}' failed: {}", session_name, e);
+                }
+            } else {
+                tracing::warn!("no session specified for input from client '{}'", client_id);
+            }
         }
 
         ClientMessage::Resize {
@@ -238,36 +215,20 @@ async fn handle_client_message(
             rows,
             session,
         } => {
-            app.daemon_client
-                .send(&DaemonRequest::Resize {
-                    client_id: client_id.to_string(),
-                    session,
-                    cols,
-                    rows,
-                })
-                .await?;
+            if let Some(session_name) = session {
+                app.engine.resize(&session_name, cols, rows).await;
+            }
         }
 
         ClientMessage::Detach { session } => {
-            if let Some(session_name) = session {
+            if let Some(session_name) = &session {
                 app.stream_clients
-                    .detach_session(client_id, &session_name)
+                    .detach_session(client_id, session_name)
                     .await;
-                app.daemon_client
-                    .send(&DaemonRequest::Detach {
-                        client_id: client_id.to_string(),
-                        session: Some(session_name),
-                    })
-                    .await?;
             } else {
                 app.stream_clients.detach(client_id).await;
-                app.daemon_client
-                    .send(&DaemonRequest::Detach {
-                        client_id: client_id.to_string(),
-                        session: None,
-                    })
-                    .await?;
             }
+            app.engine.detach(client_id, session.as_deref()).await;
         }
 
         ClientMessage::P2pSignal { data } => {
@@ -278,8 +239,7 @@ async fn handle_client_message(
     Ok(())
 }
 
-/// Attach the client to an existing session. Returns an error if the session
-/// doesn't exist — sessions must be created explicitly via AddAbotToKubo.
+/// Attach the client to an existing session.
 async fn handle_attach(
     app: &Arc<AppState>,
     client_id: &str,
@@ -287,37 +247,25 @@ async fn handle_attach(
     cols: u16,
     rows: u16,
 ) -> anyhow::Result<()> {
-    let resp = app
-        .daemon_client
-        .rpc(DaemonRequest::Attach {
-            id: String::new(),
-            client_id: client_id.to_string(),
-            session: session.clone(),
-            cols,
-            rows,
-        })
-        .await?;
-
-    if let Some(error) = resp.get("error").and_then(|v| v.as_str()) {
-        app.stream_clients
-            .send_to(
-                client_id,
-                ServerMessage::Error {
-                    message: error.to_string(),
-                },
-            )
-            .await;
-    } else {
-        let buffer = resp
-            .get("buffer")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        app.stream_clients.attach(client_id, session.clone()).await;
-        app.stream_clients
-            .send_to(client_id, ServerMessage::Attached { session, buffer })
-            .await;
+    match app.engine.attach(client_id, &session).await {
+        Ok(buffer) => {
+            // Resize the session to match the client's terminal dimensions
+            app.engine.resize(&session, cols, rows).await;
+            app.stream_clients.attach(client_id, session.clone()).await;
+            app.stream_clients
+                .send_to(client_id, ServerMessage::Attached { session, buffer })
+                .await;
+        }
+        Err(e) => {
+            app.stream_clients
+                .send_to(
+                    client_id,
+                    ServerMessage::Error {
+                        message: e.to_string(),
+                    },
+                )
+                .await;
+        }
     }
 
     Ok(())
@@ -367,7 +315,7 @@ async fn handle_p2p_signal(
                                 clients.send_to(&cid, ServerMessage::P2pReady).await;
                             }
                             P2pEvent::Data(text) => {
-                                handle_p2p_data(&app_clone, &cid, &text).await;
+                                handle_p2p_data(&app_clone, &text).await;
                             }
                             P2pEvent::Closed => {
                                 tracing::info!("P2P DataChannel closed for client {}", cid);
@@ -408,7 +356,7 @@ async fn handle_p2p_signal(
 }
 
 /// Handle a message received over the P2P DataChannel.
-async fn handle_p2p_data(app: &Arc<AppState>, client_id: &str, text: &str) {
+async fn handle_p2p_data(app: &Arc<AppState>, text: &str) {
     let parsed = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(v) => v,
         Err(_) => return,
@@ -420,29 +368,18 @@ async fn handle_p2p_data(app: &Arc<AppState>, client_id: &str, text: &str) {
         "input" => {
             if let Some(input_data) = parsed.get("data").and_then(|v| v.as_str()) {
                 let session = parsed.get("session").and_then(|v| v.as_str());
-                let _ = app
-                    .daemon_client
-                    .send(&DaemonRequest::Input {
-                        client_id: client_id.to_string(),
-                        session: session.map(|s| s.to_string()),
-                        data: input_data.to_string(),
-                    })
-                    .await;
+                if let Some(session_name) = session {
+                    let _ = app.engine.write_input(session_name, input_data).await;
+                }
             }
         }
         "resize" => {
             let cols = parsed.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
             let rows = parsed.get("rows").and_then(|v| v.as_u64()).unwrap_or(40) as u16;
             let session = parsed.get("session").and_then(|v| v.as_str());
-            let _ = app
-                .daemon_client
-                .send(&DaemonRequest::Resize {
-                    client_id: client_id.to_string(),
-                    session: session.map(|s| s.to_string()),
-                    cols,
-                    rows,
-                })
-                .await;
+            if let Some(session_name) = session {
+                app.engine.resize(session_name, cols, rows).await;
+            }
         }
         _ => {
             tracing::debug!("unknown DC message type: {}", msg_type);
