@@ -83,6 +83,14 @@ impl DaemonState {
     }
 }
 
+/// Capture tmux scrollback for an abot in a kubo container (if available).
+pub async fn capture_tmux_scrollback(kubo: &kubo::Kubo, abot_name: &str) -> Option<String> {
+    let container_id = kubo.container_id.as_ref()?;
+    let docker = bollard::Docker::connect_with_socket_defaults().ok()?;
+    let tmux_name = abot_name.replace(['.', ':'], "_");
+    kubo_exec::capture_scrollback(&docker, container_id, &tmux_name).await
+}
+
 pub async fn run(data_dir: &Path) -> Result<()> {
     let sock_path = data_dir.join("daemon.sock");
     let pid_path = data_dir.join("daemon.pid");

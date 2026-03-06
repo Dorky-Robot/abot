@@ -277,6 +277,12 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     // Register this terminal with the facet registry
     TerminalRegistry.instance.register(widget.facetId, this);
 
+    // Focus the terminal if this facet is the focused one.
+    // didUpdateWidget won't fire on initial creation, so we must do it here.
+    if (widget.isFocused && !widget.isMirror) {
+      _terminal!.focus();
+    }
+
     // Populate mirror from the main terminal's current viewport
     if (widget.isMirror) {
       final content = TerminalRegistry.instance
@@ -613,6 +619,14 @@ class TerminalRegistry {
       if (sink != null && !sink.isMirror) return sink.getBufferContent();
     }
     return null;
+  }
+
+  /// Focus the xterm.js terminal for a given facet.
+  void focusTerminal(String facetId) {
+    final sink = _terminals[facetId];
+    if (sink is _TerminalFacetState) {
+      sink._terminal?.focus();
+    }
   }
 
   /// Apply a CSS transform to a facet's terminal container (GPU-accelerated).

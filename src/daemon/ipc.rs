@@ -785,12 +785,26 @@ pub async fn handle_request(
                                 }
                             }
 
-                            // Restore saved scrollback into the ring buffer
-                            if let Some(scrollback) = super::bundle::load_scrollback(&worktree_path)
+                            // Restore scrollback: try tmux capture first, fall back to file-based
                             {
-                                let mut sessions = state.sessions.lock().await;
-                                if let Some(s) = sessions.get_mut(&qualified) {
-                                    s.buffer.pre_populate(scrollback);
+                                let mut scrollback: Option<String> = None;
+
+                                {
+                                    let kubos = state.kubos.lock().await;
+                                    if let Some(k) = kubos.get(&kubo_name) {
+                                        scrollback = super::capture_tmux_scrollback(k, &name).await;
+                                    }
+                                }
+
+                                if scrollback.is_none() {
+                                    scrollback = super::bundle::load_scrollback(&worktree_path);
+                                }
+
+                                if let Some(sb) = scrollback {
+                                    let mut sessions = state.sessions.lock().await;
+                                    if let Some(s) = sessions.get_mut(&qualified) {
+                                        s.buffer.pre_populate(sb);
+                                    }
                                 }
                             }
 
@@ -1799,6 +1813,7 @@ async fn handle_create_session(
                 }
             }
 
+            let kubo_name_for_scrollback = kubo.clone();
             let session = Session::new(
                 qualified.clone(),
                 backend,
@@ -1843,12 +1858,29 @@ async fn handle_create_session(
                 }
             }
 
-            // Restore saved scrollback from a previous session (e.g. after close + restart)
-            if let Some(ref bp) = bundle_path {
-                if let Some(scrollback) = super::bundle::load_scrollback(bp) {
+            // Restore scrollback: try tmux capture first, fall back to file-based
+            {
+                let mut scrollback: Option<String> = None;
+
+                // Try tmux scrollback from running container
+                {
+                    let kubos = state.kubos.lock().await;
+                    if let Some(k) = kubos.get(&kubo_name_for_scrollback) {
+                        scrollback = super::capture_tmux_scrollback(k, &name).await;
+                    }
+                }
+
+                // Fall back to file-based scrollback
+                if scrollback.is_none() {
+                    if let Some(ref bp) = bundle_path {
+                        scrollback = super::bundle::load_scrollback(bp);
+                    }
+                }
+
+                if let Some(sb) = scrollback {
                     let mut sessions = state.sessions.lock().await;
                     if let Some(s) = sessions.get_mut(&qualified) {
-                        s.buffer.pre_populate(scrollback);
+                        s.buffer.pre_populate(sb);
                     }
                 }
             }
