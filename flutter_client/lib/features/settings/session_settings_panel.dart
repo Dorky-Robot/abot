@@ -82,16 +82,20 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
       return;
     }
     try {
-      await _api.put(
+      final resp = await _api.put(
         '/sessions/${Uri.encodeComponent(_currentName)}',
         {'name': newName},
       );
       if (!mounted) return;
+      // Server returns the qualified name (e.g. "bob@default")
+      final qualifiedName = (resp is Map && resp['newName'] != null)
+          ? resp['newName'] as String
+          : newName;
       setState(() {
-        _currentName = newName;
+        _currentName = qualifiedName;
         _renaming = false;
       });
-      widget.onRenamed?.call(newName);
+      widget.onRenamed?.call(qualifiedName);
     } catch (e) {
       if (!mounted) return;
       setState(() => _renaming = false);
