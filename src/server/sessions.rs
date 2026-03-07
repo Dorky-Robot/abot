@@ -62,7 +62,7 @@ pub async fn create_session(
         .engine
         .create_session(body.name, 120, 40, HashMap::new(), body.kubo)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "name": session_name })))
 }
@@ -93,7 +93,7 @@ pub async fn rename_session(
     app.engine
         .rename_session(&old_name, new_name)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     // Update ClientTracker so WebSocket relay continues routing output
     app.stream_clients
@@ -112,7 +112,7 @@ pub async fn delete_session(
     app.engine
         .delete_session(&name)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "name": name })))
 }
@@ -138,7 +138,7 @@ pub async fn set_session_credentials(
     app.engine
         .update_session_env(&name, session_env)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "session": name, "status": "connected" })))
 }
@@ -177,7 +177,7 @@ pub async fn delete_session_credentials(
     app.engine
         .update_session_env(&name, session_env)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "session": name, "status": "disconnected" })))
 }
@@ -192,7 +192,7 @@ pub async fn open_bundle(
         .engine
         .open_bundle(&body.path, 120, 40, &body.kubo)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "name": name, "path": bundle_path })))
 }
@@ -207,7 +207,7 @@ pub async fn save_session(
         .engine
         .save_session(&name)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "session": name, "path": path })))
 }
@@ -223,7 +223,7 @@ pub async fn save_session_as(
         .engine
         .save_session_as(&name, &body.path)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "session": name, "path": saved_path })))
 }
@@ -240,7 +240,7 @@ pub async fn close_session(
     app.engine
         .close_session(&name, save)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "session": name })))
 }
