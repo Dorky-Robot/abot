@@ -60,7 +60,7 @@ pub async fn create_kubo(
         .engine
         .create_kubo(&body.name)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "name": body.name, "path": path })))
 }
@@ -74,7 +74,7 @@ pub async fn start_kubo(
     app.engine
         .start_kubo(&name)
         .await
-        .map_err(|e| AppError::BadRequest(format!("failed to start kubo: {}", e)))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "name": name })))
 }
@@ -88,7 +88,7 @@ pub async fn stop_kubo(
     app.engine
         .stop_kubo(&name)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "name": name })))
 }
@@ -103,7 +103,7 @@ pub async fn open_kubo(
         .engine
         .open_kubo(&body.path)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "name": name, "path": body.path })))
 }
@@ -117,7 +117,7 @@ pub async fn remove_abot_from_kubo(
     app.engine
         .remove_abot_from_kubo(&kubo_name, &abot_name)
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "kubo": kubo_name, "abot": abot_name })))
 }
@@ -140,7 +140,7 @@ pub async fn add_abot_to_kubo(
             body.env,
         )
         .await
-        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     let mut result = json!({ "kubo": kubo_name, "abot": body.abot });
     if let Some(s) = session {

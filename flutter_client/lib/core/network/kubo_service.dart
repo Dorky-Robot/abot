@@ -56,7 +56,7 @@ class KuboServiceNotifier extends AsyncNotifier<List<KuboInfo>> {
     state = AsyncData(await listKubos());
   }
 
-  /// Open a kubo from a path on disk (register in daemon).
+  /// Open a kubo from a path on disk.
   Future<Map<String, dynamic>> openKubo(String path) async {
     final data = await _api.post('/kubos/open', {'path': path});
     state = AsyncData(await listKubos());
