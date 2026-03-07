@@ -46,7 +46,7 @@ pub async fn remove_abot(
     app.engine
         .remove_known_abot(&name)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(AppError::from_engine)?;
 
     Ok(Json(json!({ "removed": name })))
 }
