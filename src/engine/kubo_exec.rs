@@ -787,10 +787,6 @@ impl SessionBackend for KuboExecBackend {
         });
     }
 
-    fn is_alive(&mut self) -> bool {
-        true
-    }
-
     fn try_exit_code(&mut self) -> Option<u32> {
         None
     }

@@ -28,7 +28,7 @@ pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
     let db_path = data_dir.join("abot.db");
     let db = auth::state::init_db(&db_path)?;
 
-    // Create the engine (replaces daemon)
+    // Create the engine
     let engine = Engine::new(data_dir).await?;
 
     let state = Arc::new(AppState {

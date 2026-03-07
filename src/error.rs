@@ -31,6 +31,18 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
 }
 
+impl AppError {
+    /// Map an anyhow error to NotFound or BadRequest based on message content.
+    pub fn from_engine(e: anyhow::Error) -> Self {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            AppError::NotFound
+        } else {
+            AppError::BadRequest(msg)
+        }
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {

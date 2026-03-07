@@ -1091,7 +1091,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
             ),
           ),
         // Mirror of the focused terminal — a second read-only xterm.js instance
-        // connected to the same daemon session, CSS-transformed to the focused
+        // connected to the same server session, CSS-transformed to the focused
         // sidebar card. Recreated on focus change via ValueKey.
         if (state.count > 1)
           Positioned.fill(

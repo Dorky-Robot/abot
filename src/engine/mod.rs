@@ -60,7 +60,9 @@ impl Engine {
 
         // Initialize kubos from existing kubo directories
         let kubos_dir = bundle::resolve_kubos_dir(data_dir);
-        let _ = std::fs::create_dir_all(&kubos_dir);
+        if let Err(e) = std::fs::create_dir_all(&kubos_dir) {
+            tracing::warn!("failed to create kubos dir: {}", e);
+        }
         let mut kubos_map = HashMap::new();
         for (name, _) in kubo::list_kubo_dirs(&kubos_dir) {
             match kubo::Kubo::ensure_kubo_dir(&kubos_dir, &name) {

@@ -73,17 +73,12 @@ pub async fn get_session(
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    match app.engine.get_session(&name).await {
-        Ok(session) => Ok(Json(json!(session))),
-        Err(e) => {
-            let msg = e.to_string();
-            if msg.contains("not found") {
-                Err(AppError::NotFound)
-            } else {
-                Err(AppError::BadRequest(msg))
-            }
-        }
-    }
+    let session = app
+        .engine
+        .get_session(&name)
+        .await
+        .map_err(AppError::from_engine)?;
+    Ok(Json(json!(session)))
 }
 
 /// PUT /sessions/:name — rename a session
@@ -154,14 +149,11 @@ pub async fn session_credentials_status(
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let session = app.engine.get_session(&name).await.map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("not found") {
-            AppError::NotFound
-        } else {
-            AppError::BadRequest(msg)
-        }
-    })?;
+    let session = app
+        .engine
+        .get_session(&name)
+        .await
+        .map_err(AppError::from_engine)?;
 
     let status = if session.env_keys > 0 {
         "connected"

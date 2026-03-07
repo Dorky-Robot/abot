@@ -1271,7 +1271,7 @@ mod tests {
         save_scrollback(bundle_path, terminal_output);
         assert!(bundle_path.join("scrollback").exists());
 
-        // 3. Daemon restarts, ensure_bundle_home again (idempotent)
+        // 3. Server restarts, ensure_bundle_home again (idempotent)
         let home2 = ensure_bundle_home(&dir, "main").unwrap();
         let bundle_path2 = home2.parent().unwrap();
 

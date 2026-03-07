@@ -19,11 +19,6 @@ pub trait SessionBackend: Send {
     /// Terminate the process.
     fn kill(&mut self);
 
-    /// Check if the process is still running.
-    /// Session tracks status independently via mark_exited; kept for backend parity.
-    #[allow(dead_code)]
-    fn is_alive(&mut self) -> bool;
-
     /// Try to retrieve the exit code without blocking.
     /// Returns Some(code) if the process has exited, None if still running or unknown.
     fn try_exit_code(&mut self) -> Option<u32>;
