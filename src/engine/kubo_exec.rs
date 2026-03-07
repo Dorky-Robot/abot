@@ -317,7 +317,10 @@ fn unescape_tmux_output(s: &str) -> String {
             let d0 = bytes[i + 1];
             let d1 = bytes[i + 2];
             let d2 = bytes[i + 3];
-            if d0.is_ascii_digit() && d1.is_ascii_digit() && d2.is_ascii_digit() {
+            if (b'0'..=b'7').contains(&d0)
+                && (b'0'..=b'7').contains(&d1)
+                && (b'0'..=b'7').contains(&d2)
+            {
                 let val = (d0 - b'0') as u16 * 64 + (d1 - b'0') as u16 * 8 + (d2 - b'0') as u16;
                 if val <= 255 {
                     result.push(val as u8);
@@ -396,6 +399,37 @@ pub(crate) async fn tmux_kill_session(docker: &Docker, container_id: &str, sessi
         &["tmux", "kill-session", "-t", session],
     )
     .await;
+}
+
+/// Spawn the persistent stdin writer task. Returns the sender half of the channel.
+/// The task drains the channel and writes to Docker stdin. Errors close the writer,
+/// causing future sends to fail with `TrySendError::Closed`.
+fn spawn_stdin_writer(stdin: Arc<Mutex<Option<StdinWriter>>>) -> mpsc::Sender<Vec<u8>> {
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+    tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            let mut guard = stdin.lock().await;
+            if let Some(ref mut writer) = *guard {
+                if writer.write_all(&data).await.is_err() || writer.flush().await.is_err() {
+                    *guard = None;
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    });
+    tx
+}
+
+/// Send data through the stdin channel, mapping errors to anyhow.
+fn try_send_stdin(chan: &mpsc::Sender<Vec<u8>>, data: Vec<u8>) -> Result<()> {
+    chan.try_send(data).map_err(|e| match e {
+        mpsc::error::TrySendError::Full(_) => anyhow::anyhow!("stdin buffer full (input dropped)"),
+        mpsc::error::TrySendError::Closed(_) => {
+            anyhow::anyhow!("stdin channel closed (container may be dead)")
+        }
+    })
 }
 
 impl KuboExecBackend {
@@ -480,28 +514,7 @@ impl KuboExecBackend {
         match attach {
             bollard::exec::StartExecResults::Attached { mut output, input } => {
                 let stdin_closer = Arc::new(Mutex::new(Some(input)));
-
-                // Persistent writer task: drains the channel and writes to Docker stdin.
-                // Errors close the channel, causing future write() calls to fail.
-                let (stdin_chan_tx, mut stdin_chan_rx) = mpsc::channel::<Vec<u8>>(64);
-                {
-                    let stdin_ref = stdin_closer.clone();
-                    tokio::spawn(async move {
-                        while let Some(data) = stdin_chan_rx.recv().await {
-                            let mut guard = stdin_ref.lock().await;
-                            if let Some(ref mut writer) = *guard {
-                                if writer.write_all(&data).await.is_err()
-                                    || writer.flush().await.is_err()
-                                {
-                                    *guard = None;
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                    });
-                }
+                let stdin_chan_tx = spawn_stdin_writer(stdin_closer.clone());
 
                 tokio::spawn(async move {
                     while let Some(Ok(chunk)) = output.next().await {
@@ -562,38 +575,24 @@ impl KuboExecBackend {
         let (tx, rx) = mpsc::channel::<String>(256);
 
         match attach {
-            bollard::exec::StartExecResults::Attached { mut output, input } => {
+            bollard::exec::StartExecResults::Attached {
+                mut output,
+                mut input,
+            } => {
                 // Set client size and force a full screen redraw so tmux sends the
                 // current pane content as %output lines. This replaces the
                 // capture-pane scrollback mechanism used in TTY mode.
-                let mut input = input;
                 let init_cmds = format!("refresh-client -C {}x{}\nrefresh-client -S\n", cols, rows);
-                let _ = input.write_all(init_cmds.as_bytes()).await;
-                let _ = input.flush().await;
+                if let Err(e) = input.write_all(init_cmds.as_bytes()).await {
+                    tracing::warn!("control mode init write failed: {}", e);
+                }
+                if let Err(e) = input.flush().await {
+                    tracing::warn!("control mode init flush failed: {}", e);
+                }
 
                 let stdin_closer: Arc<Mutex<Option<StdinWriter>>> =
                     Arc::new(Mutex::new(Some(input)));
-
-                // Writer task: drains the channel and writes to Docker stdin.
-                let (stdin_chan_tx, mut stdin_chan_rx) = mpsc::channel::<Vec<u8>>(64);
-                {
-                    let stdin_ref = stdin_closer.clone();
-                    tokio::spawn(async move {
-                        while let Some(data) = stdin_chan_rx.recv().await {
-                            let mut guard = stdin_ref.lock().await;
-                            if let Some(ref mut writer) = *guard {
-                                if writer.write_all(&data).await.is_err()
-                                    || writer.flush().await.is_err()
-                                {
-                                    *guard = None;
-                                    break;
-                                }
-                            } else {
-                                break;
-                            }
-                        }
-                    });
-                }
+                let stdin_chan_tx = spawn_stdin_writer(stdin_closer.clone());
 
                 // Reader task: parse tmux control mode protocol lines.
                 // Only `%output %pane_id data` lines carry terminal output.
@@ -762,14 +761,7 @@ impl SessionBackend for KuboExecBackend {
             }
             filtered
         };
-        self.stdin_chan.try_send(payload).map_err(|e| match e {
-            tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                anyhow::anyhow!("stdin buffer full (input dropped)")
-            }
-            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                anyhow::anyhow!("stdin channel closed (container may be dead)")
-            }
-        })
+        try_send_stdin(&self.stdin_chan, payload)
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
@@ -777,17 +769,7 @@ impl SessionBackend for KuboExecBackend {
             // In control mode, resize by telling tmux the client's terminal size.
             // tmux uses this (with window-size=latest) to resize the pane.
             let cmd = format!("refresh-client -C {}x{}\n", cols, rows);
-            return self
-                .stdin_chan
-                .try_send(cmd.into_bytes())
-                .map_err(|e| match e {
-                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                        anyhow::anyhow!("stdin buffer full (resize dropped)")
-                    }
-                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                        anyhow::anyhow!("stdin channel closed (container may be dead)")
-                    }
-                });
+            return try_send_stdin(&self.stdin_chan, cmd.into_bytes());
         }
 
         // TTY mode: resize both the Docker exec PTY and the tmux window.
@@ -983,6 +965,12 @@ mod tests {
     fn unescape_partial_octal_preserved() {
         // Not enough digits after backslash — preserved as-is
         assert_eq!(unescape_tmux_output("a\\01z"), "a\\01z");
+    }
+
+    #[test]
+    fn unescape_rejects_non_octal_digits() {
+        // 8 and 9 are not valid octal digits — preserved as-is
+        assert_eq!(unescape_tmux_output("a\\189"), "a\\189");
     }
 
     #[test]
