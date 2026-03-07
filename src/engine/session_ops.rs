@@ -103,7 +103,7 @@ impl Engine {
         };
 
         // Rename in the sessions map (fast, no I/O).
-        let bundle_path = {
+        let (bundle_path, kubo_name) = {
             let mut sessions = self.sessions.lock().await;
             if sessions.contains_key(&new_qualified) {
                 return Err(EngineError::AlreadyExists(format!(
@@ -116,9 +116,19 @@ impl Engine {
             session.name = new_qualified.clone();
             session.name_tx.send_replace(new_qualified.clone());
             let bp = session.bundle_path.clone();
+            let kn = session.kubo.clone();
             sessions.insert(new_qualified.clone(), session);
-            bp
+            (bp, kn)
         };
+
+        // Update kubo's active_sessions set so idle timeout tracks correctly.
+        if let Some(ref kn) = kubo_name {
+            let mut kubos = self.kubos.lock().await;
+            if let Some(kubo) = kubos.get_mut(kn) {
+                kubo.active_sessions.remove(old_name);
+                kubo.active_sessions.insert(new_qualified.clone());
+            }
+        }
 
         // Update the on-disk manifest outside the lock (blocking I/O).
         if let Some(bp) = bundle_path {

@@ -189,9 +189,14 @@ pub fn read_credentials(path: &Path) -> HashMap<String, String> {
     super::credentials::read_credentials_file(path)
 }
 
+/// Write JSON atomically: write to a temp file then rename to avoid partial reads on crash.
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, json)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &json)
+        .with_context(|| format!("failed to write tmp file: {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("failed to rename {} → {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
