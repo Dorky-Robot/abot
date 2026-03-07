@@ -1,5 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'api_client.dart';
+import 'kubo_service.dart';
+import 'session_service.dart';
 
 /// A known abot from the registry (now includes detail inline).
 class AbotInfo {
@@ -92,6 +94,8 @@ class AbotServiceNotifier extends AsyncNotifier<List<AbotInfo>> {
       'kubo': kuboName,
     });
     state = AsyncData(await listAbots());
+    ref.invalidate(kuboServiceProvider);
+    ref.invalidate(sessionServiceProvider);
   }
 
   /// Integrate a kubo variant into the abot's default branch.
@@ -100,6 +104,7 @@ class AbotServiceNotifier extends AsyncNotifier<List<AbotInfo>> {
       'kubo': kuboName,
     });
     state = AsyncData(await listAbots());
+    ref.invalidate(kuboServiceProvider);
   }
 
   /// Discard a kubo variant (delete branch + worktree).
@@ -108,6 +113,7 @@ class AbotServiceNotifier extends AsyncNotifier<List<AbotInfo>> {
       'kubo': kuboName,
     });
     state = AsyncData(await listAbots());
+    ref.invalidate(kuboServiceProvider);
   }
 
   /// Refresh the abots list.

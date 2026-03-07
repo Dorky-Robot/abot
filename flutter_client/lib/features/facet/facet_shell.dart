@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
@@ -14,6 +13,8 @@ import '../../core/theme/abot_theme.dart';
 import '../terminal/terminal_facet.dart';
 import 'facet.dart';
 import 'facet_manager.dart';
+import 'overlay_provider.dart';
+import 'sidebar_provider.dart';
 import 'stage_strip.dart';
 import '../../core/network/api_client.dart';
 import '../settings/settings_panel.dart';
@@ -21,6 +22,7 @@ import '../settings/session_settings_panel.dart';
 import '../settings/kubo_settings_panel.dart';
 import '../settings/abot_detail_panel.dart';
 import 'kubo_landing.dart';
+import 'workspace_provider.dart';
 
 const double _narrowBreakpoint = 768;
 const String _offscreenTransform = 'translate(-9999px, 0) scale(0.01, 0.01)';
@@ -36,73 +38,19 @@ class FacetShell extends ConsumerStatefulWidget {
 
 class _FacetShellState extends ConsumerState<FacetShell>
     with WidgetsBindingObserver {
-  /// GlobalKeys per facet — ensures Flutter reuses the same State when a facet
-  /// moves between focused/offstage, preserving the HtmlElementView (xterm).
+  // ── Framework-level state (keys, DOM, timers) ──────────────
   final Map<String, GlobalKey> _facetKeys = {};
-
-  /// Card position keys for CSS transform calculation.
   final Map<String, GlobalKey> _cardKeys = {};
   final GlobalKey _mainAreaKey = GlobalKey();
-
-  /// Timer for post-sidebar-toggle cleanup (cancelled on rapid re-toggle).
   Timer? _animationCleanup;
-
-  /// DOM label overlays positioned above the CSS-transformed terminal layer.
   final Map<String, web.HTMLElement> _labelOverlays = {};
-
-  /// Subscription from ref.listenManual — cancelled in dispose.
   ProviderSubscription? _wsSubscription;
-
-  /// Whether the sidebar is collapsed to a thin sliver.
-  bool _sidebarCollapsed = false;
-
-  /// Active sidebar tab — controls whether terminal previews render.
-  SidebarTab _sidebarTab = SidebarTab.abots;
-
-  /// Whether the settings panel overlay is visible.
-  bool _showSettings = false;
-
-  /// Session name for per-session settings overlay (null = hidden).
-  String? _sessionSettingsName;
-
-  /// Kubo name for per-kubo settings overlay (null = hidden).
-  String? _kuboSettingsName;
-
-  /// Abot name for abot detail overlay (null = hidden).
-  String? _abotDetailName;
-
-  /// Active kubo shown in main area landing page (null = none selected).
-  String? _activeKubo;
-
-  /// Which kubos are visible in the sidebar (persisted in localStorage).
-  Set<String> _openKubos = {};
-
-  static const _activeKuboKey = 'abot_active_kubo';
-  static const _openKubosKey = 'abot_open_kubos';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-
-    // Restore active kubo from localStorage.
-    final stored = web.window.localStorage.getItem(_activeKuboKey);
-    if (stored != null && stored.isNotEmpty) {
-      _activeKubo = stored;
-    }
-
-    // Restore open kubos from localStorage.
-    final openKubosJson = web.window.localStorage.getItem(_openKubosKey);
-    if (openKubosJson != null) {
-      try {
-        final list = (jsonDecode(openKubosJson) as List).cast<String>();
-        _openKubos = {...list};
-      } catch (_) {}
-    }
-
-    // When a terminal finishes initializing, re-apply sidebar transforms.
     TerminalRegistry.instance.onRegistered = _onTerminalReady;
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initialize();
     });
@@ -139,32 +87,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
       // Server unreachable — empty state, onboarding page shown.
     }
 
-    // Reconcile localStorage kubos against server — prune stale entries,
+    // Reconcile workspace kubos against server — prune stale entries,
     // and auto-create sessions for abots in running kubos.
     try {
       final kubos = await ref.read(kuboServiceProvider.notifier).listKubos();
       if (!mounted) return;
       final serverKuboNames = kubos.map((k) => k.name).toSet();
-      final stale = _openKubos.difference(serverKuboNames);
-      if (stale.isNotEmpty) {
-        setState(() {
-          _openKubos.removeAll(stale);
-          if (_activeKubo != null && !serverKuboNames.contains(_activeKubo)) {
-            _activeKubo = _openKubos.isNotEmpty ? _openKubos.first : null;
-          }
-          _persistOpenKubos();
-          if (_activeKubo != null) {
-            web.window.localStorage.setItem(_activeKuboKey, _activeKubo!);
-          } else {
-            web.window.localStorage.removeItem(_activeKuboKey);
-          }
-        });
-      }
+      ref.read(workspaceProvider.notifier).pruneStale(serverKuboNames);
 
-      // Auto-create sessions for abots in open/active kubos.
-      // createAbotInKubo will start the kubo container if needed.
+      final workspace = ref.read(workspaceProvider);
       for (final kubo in kubos) {
-        if (!_openKubos.contains(kubo.name) && kubo.name != _activeKubo) continue;
+        if (!workspace.openKubos.contains(kubo.name) && kubo.name != workspace.activeKubo) continue;
         if (kubo.abots.isEmpty) continue;
         for (final abot in kubo.abots) {
           try {
@@ -245,12 +178,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
   // --- Sidebar collapse ---
 
   void _showAbotDetail(String name) {
-    setState(() => _abotDetailName = name);
+    ref.read(overlayProvider.notifier).showAbotDetail(name);
   }
 
   void _toggleSidebar() {
-    setState(() => _sidebarCollapsed = !_sidebarCollapsed);
-    if (_sidebarCollapsed) {
+    ref.read(sidebarProvider.notifier).toggleCollapsed();
+    if (ref.read(sidebarProvider).collapsed) {
       _hideOffstageTerminals();
     } else {
       // Wait for animation + layout settle, then recalculate transforms
@@ -304,13 +237,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
     try {
       await ref.read(kuboServiceProvider.notifier).createKubo(name);
       if (!mounted) return;
-      setState(() {
-        _openKubos.add(name);
-        _activeKubo = name;
-      });
-      web.window.localStorage.setItem(_activeKuboKey, name);
-      _persistOpenKubos();
-      ref.read(kuboServiceProvider.notifier).refresh();
+      ref.invalidate(kuboServiceProvider);
+      ref.read(workspaceProvider.notifier).openKubo(name);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -323,17 +251,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   Future<void> _addAbotToKubo(String kubo) async {
     final name = await _showNewAbotDialog(kubo);
     if (name == null || name.isEmpty || !mounted) return;
-    try {
-      await ref.read(facetManagerProvider.notifier).createAbotInKubo(name, kubo: kubo);
-      if (!mounted) return;
-      ref.read(kuboServiceProvider.notifier).refresh();
-      ref.read(abotServiceProvider.notifier).refresh();
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to add abot: $e')),
-      );
-    }
+    await _createAbotSession(name, kubo);
   }
 
   Future<void> _createAbotSession(String abotName, String kuboName) async {
@@ -343,23 +261,14 @@ class _FacetShellState extends ConsumerState<FacetShell>
         kubo: kuboName,
       );
       if (!mounted) return;
-      ref.read(kuboServiceProvider.notifier).refresh();
-      ref.read(abotServiceProvider.notifier).refresh();
+      ref.invalidate(kuboServiceProvider);
+      ref.invalidate(abotServiceProvider);
     } catch (e) {
       if (!mounted) return;
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to start abot: $e')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to start abot: $e')),
+      );
     }
-  }
-
-  void _persistOpenKubos() {
-    web.window.localStorage.setItem(
-      _openKubosKey,
-      jsonEncode(_openKubos.toList()),
-    );
   }
 
   /// Open a .kubo directory via native OS directory picker.
@@ -377,12 +286,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
       final name = result['name'] as String?;
       if (name != null && name.isNotEmpty) {
-        setState(() {
-          _openKubos.add(name);
-          _activeKubo = name;
-        });
-        web.window.localStorage.setItem(_activeKuboKey, name);
-        _persistOpenKubos();
+        ref.read(workspaceProvider.notifier).openKubo(name);
       }
     } catch (e) {
       if (!mounted) return;
@@ -437,7 +341,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
           .read(kuboServiceProvider.notifier)
           .removeAbotFromKubo(kuboName, abotName);
       if (!mounted) return;
-      ref.read(sessionServiceProvider.notifier).refresh();
+      ref.invalidate(sessionServiceProvider);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -638,8 +542,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   /// Open a .abot bundle via native OS file picker (into active kubo).
   Future<void> _openBundle() async {
-    if (_activeKubo == null) return;
-    await _openBundleInKubo(_activeKubo!);
+    final activeKubo = ref.read(workspaceProvider).activeKubo;
+    if (activeKubo == null) return;
+    await _openBundleInKubo(activeKubo);
   }
 
   /// Open a .abot bundle via native OS file picker into a specific kubo.
@@ -659,8 +564,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
         ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
       }
       if (!mounted) return;
-      ref.read(kuboServiceProvider.notifier).refresh();
-      ref.read(abotServiceProvider.notifier).refresh();
+      ref.invalidate(kuboServiceProvider);
+      ref.invalidate(abotServiceProvider);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -705,7 +610,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
   /// Compute and apply CSS transforms for all non-focused terminals so they
   /// appear at their sidebar card positions. Called after each layout.
   void _updateSidebarTransforms() {
-    if (_sidebarCollapsed || _sidebarTab == SidebarTab.kubos) {
+    final sidebar = ref.read(sidebarProvider);
+    if (sidebar.collapsed || sidebar.tab == SidebarTab.kubos) {
       _hideOffstageTerminals();
       return;
     }
@@ -866,11 +772,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
     final wsState = ref.watch(wsServiceProvider);
     final kubosAsync = ref.watch(kuboServiceProvider);
     final abotsAsync = ref.watch(abotServiceProvider);
+    final overlay = ref.watch(overlayProvider);
 
     return Scaffold(
       backgroundColor: context.palette.base,
-      // Remove any system-inferred bottom padding (e.g. virtual keyboard,
-      // browser chrome) so the terminal fills to the window edge.
       resizeToAvoidBottomInset: false,
       body: MediaQuery.removePadding(
         context: context,
@@ -879,13 +784,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
         children: [
           CallbackShortcuts(
             bindings: {
-              // Ctrl+` — cycle focus
               const SingleActivator(LogicalKeyboardKey.backquote,
                   control: true): _cycleFocus,
-              // Ctrl+Tab — cycle focus (alias)
               const SingleActivator(LogicalKeyboardKey.tab,
                   control: true): _cycleFocus,
-              // Ctrl+W — minimize current facet (detach, keep session alive)
               SingleActivator(LogicalKeyboardKey.keyW,
                   control: defaultTargetPlatform != TargetPlatform.macOS,
                   meta: defaultTargetPlatform == TargetPlatform.macOS): () {
@@ -897,15 +799,12 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   }
                 }
               },
-              // Ctrl+Shift+F / Cmd+Shift+F — toggle search
               SingleActivator(LogicalKeyboardKey.keyF,
                   control: defaultTargetPlatform != TargetPlatform.macOS,
                   meta: defaultTargetPlatform == TargetPlatform.macOS,
                   shift: true): () {
                 _toggleSearch();
               },
-              // Cmd+B (macOS) / Ctrl+Shift+B (other) — toggle sidebar
-              // Ctrl+B alone passes through as tmux prefix
               SingleActivator(LogicalKeyboardKey.keyB,
                   control: defaultTargetPlatform != TargetPlatform.macOS,
                   meta: defaultTargetPlatform == TargetPlatform.macOS,
@@ -917,80 +816,69 @@ class _FacetShellState extends ConsumerState<FacetShell>
               child: _buildFacetLayout(facetState, sessionsAsync, wsState, kubosAsync, abotsAsync),
             ),
           ),
-          if (_showSettings)
+          if (overlay.showSettings)
             SettingsPanel(
-              onClose: () => setState(() => _showSettings = false),
+              onClose: () => ref.read(overlayProvider.notifier).closeAll(),
             ),
-          if (_sessionSettingsName != null)
+          if (overlay.sessionSettings != null)
             SessionSettingsPanel(
-              sessionName: _sessionSettingsName!,
-              onClose: () =>
-                  setState(() => _sessionSettingsName = null),
+              sessionName: overlay.sessionSettings!,
+              onClose: () => ref.read(overlayProvider.notifier).closeAll(),
               onRenamed: (newName) {
-                final oldName = _sessionSettingsName!;
-                setState(() => _sessionSettingsName = newName);
-                // Update facet data so terminal I/O uses the new name
+                final oldName = overlay.sessionSettings!;
+                ref.read(overlayProvider.notifier).renameSession(newName);
                 ref
                     .read(facetManagerProvider.notifier)
                     .renameSessionInFacets(oldName, newName);
-                // Refresh session list to pick up the new name
-                ref.read(sessionServiceProvider.notifier).refresh();
+                ref.invalidate(sessionServiceProvider);
               },
             ),
-          if (_abotDetailName != null)
+          if (overlay.abotDetail != null)
             Builder(builder: (context) {
-              final abots = ref.read(abotServiceProvider).when(
+              final abots = abotsAsync.when(
                 data: (list) => list,
                 loading: () => <AbotInfo>[],
                 error: (_, _) => <AbotInfo>[],
               );
-              final abot = abots.where((a) => a.name == _abotDetailName).firstOrNull
-                  ?? AbotInfo(name: _abotDetailName!);
+              final abotName = overlay.abotDetail!;
+              final abot = abots.where((a) => a.name == abotName).firstOrNull
+                  ?? AbotInfo(name: abotName);
               return AbotDetailPanel(
                 detail: abot,
-                onClose: () => setState(() => _abotDetailName = null),
+                onClose: () => ref.read(overlayProvider.notifier).closeAll(),
                 onRemove: () async {
-                  final name = _abotDetailName!;
-                  await ref.read(abotServiceProvider.notifier).removeAbot(name);
+                  await ref.read(abotServiceProvider.notifier).removeAbot(abotName);
                   if (!mounted) return;
-                  setState(() => _abotDetailName = null);
+                  ref.read(overlayProvider.notifier).closeAll();
                 },
                 onSwitchToKubo: (kuboName) {
-                  setState(() {
-                    _activeKubo = kuboName;
-                    _abotDetailName = null;
-                  });
-                  web.window.localStorage.setItem(_activeKuboKey, kuboName);
+                  ref.read(workspaceProvider.notifier).setActiveKubo(kuboName);
+                  ref.read(overlayProvider.notifier).closeAll();
                 },
                 onIntegrate: (kuboName) async {
-                  final name = _abotDetailName!;
-                  await ref.read(abotServiceProvider.notifier).integrateVariant(name, kuboName);
-                  if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
+                  await ref.read(abotServiceProvider.notifier).integrateVariant(abotName, kuboName);
                 },
                 onDiscard: (kuboName) async {
-                  final name = _abotDetailName!;
-                  await ref.read(abotServiceProvider.notifier).discardVariant(name, kuboName);
-                  if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
+                  await ref.read(abotServiceProvider.notifier).discardVariant(abotName, kuboName);
                 },
                 onDismiss: (kuboName) async {
-                  final name = _abotDetailName!;
-                  await ref.read(abotServiceProvider.notifier).dismissVariant(name, kuboName);
-                  if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
+                  await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
                 },
               );
             }),
-          if (_kuboSettingsName != null)
+          if (overlay.kuboSettings != null)
             Builder(builder: (context) {
-              final kubos = ref.read(kuboServiceProvider).when(
+              final kubos = kubosAsync.when(
                 data: (list) => list,
                 loading: () => <KuboInfo>[],
                 error: (_, _) => <KuboInfo>[],
               );
-              final kubo = kubos.where((k) => k.name == _kuboSettingsName).firstOrNull
-                  ?? KuboInfo(name: _kuboSettingsName!, running: false);
+              final kuboName = overlay.kuboSettings!;
+              final kubo = kubos.where((k) => k.name == kuboName).firstOrNull
+                  ?? KuboInfo(name: kuboName, running: false);
               return KuboSettingsPanel(
                 kubo: kubo,
-                onClose: () => setState(() => _kuboSettingsName = null),
+                onClose: () => ref.read(overlayProvider.notifier).closeAll(),
                 onStart: !kubo.running ? () async {
                   final messenger = ScaffoldMessenger.of(context);
                   try {
@@ -1001,8 +889,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
                       SnackBar(content: Text('Failed to start kubo: $e')),
                     );
                   }
-                  if (!mounted) return;
-                  setState(() {}); // rebuild with fresh kubo state
                 } : null,
                 onShutdown: kubo.running ? () async {
                   final messenger = ScaffoldMessenger.of(context);
@@ -1014,8 +900,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
                       SnackBar(content: Text('Failed to stop kubo: $e')),
                     );
                   }
-                  if (!mounted) return;
-                  setState(() {}); // rebuild with fresh kubo state
                 } : null,
               );
             }),
@@ -1058,6 +942,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
       error: (_, _) => <AbotInfo>[],
     );
 
+    final workspace = ref.watch(workspaceProvider);
+    final sidebar = ref.watch(sidebarProvider);
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final narrow = constraints.maxWidth < _narrowBreakpoint;
@@ -1067,11 +954,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
         };
 
         if (narrow) {
-          // Narrow: focused facet fullscreen only
           return _buildFocusedArea(state, sessionInfoMap);
         }
 
-        // Wide: StageStrip always visible on left + focused area
         return Row(
           children: [
             StageStrip(
@@ -1084,8 +969,11 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onOpenSession: _onOpenSession,
               onDeleteSession: _onDeleteSession,
               onSessionSettings: (name) =>
-                  setState(() => _sessionSettingsName = name),
-              onNewSession: () { if (_activeKubo != null) _addAbotToKubo(_activeKubo!); },
+                  ref.read(overlayProvider.notifier).showSessionSettings(name),
+              onNewSession: () {
+                final ak = ref.read(workspaceProvider).activeKubo;
+                if (ak != null) _addAbotToKubo(ak);
+              },
               onNewSessionInKubo: (kubo) => _addAbotToKubo(kubo),
               onNewKubo: _createNewKubo,
               onOpenBundle: _openBundle,
@@ -1093,19 +981,18 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onOpenKubo: _openKuboFromDisk,
               onRemoveAbot: _removeAbotFromKubo,
               onKuboSettings: (name) =>
-                  setState(() => _kuboSettingsName = name),
+                  ref.read(overlayProvider.notifier).showKuboSettings(name),
               connectionState: wsState.connectionState,
               sessionInfoMap: sessionInfoMap,
-              kubos: kubos.where((k) => _openKubos.contains(k.name)).toList(),
-              collapsed: _sidebarCollapsed,
+              kubos: kubos.where((k) => workspace.openKubos.contains(k.name)).toList(),
+              collapsed: sidebar.collapsed,
               onToggleCollapse: _toggleSidebar,
               onSettingsTap: () =>
-                  setState(() => _showSettings = !_showSettings),
+                  ref.read(overlayProvider.notifier).toggleSettings(),
               onScroll: _updateSidebarTransforms,
               onTabChanged: (tab) {
-                setState(() => _sidebarTab = tab);
+                ref.read(sidebarProvider.notifier).setTab(tab);
                 _updateSidebarTransforms();
-                // Re-focus the terminal after tab switch
                 final focusedId = ref.read(facetManagerProvider).focusedId;
                 if (focusedId != null) {
                   TerminalRegistry.instance.focusTerminal(focusedId);
@@ -1115,22 +1002,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onAbotDetail: (name) => _showAbotDetail(name),
               onIntegrateVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).integrateVariant(abotName, kuboName);
-                if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
               },
               onDiscardVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).discardVariant(abotName, kuboName);
-                if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
               },
               onDismissVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
-                if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
               },
               onCreateAbotSession: _createAbotSession,
-              activeKubo: _activeKubo,
+              activeKubo: workspace.activeKubo,
               onActiveKuboChanged: (kubo) {
-                setState(() => _activeKubo = kubo);
-                web.window.localStorage.setItem(_activeKuboKey, kubo);
-                // Unfocus if the focused facet doesn't belong to the new kubo.
+                ref.read(workspaceProvider.notifier).setActiveKubo(kubo);
                 final focusedId = ref.read(facetManagerProvider).focusedId;
                 if (focusedId != null) {
                   final focusedSession = ref.read(facetManagerProvider).facets[focusedId]?.sessionName;
@@ -1172,8 +1054,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
   Widget _buildFocusedArea(FacetManagerState state, Map<String, SessionInfo> sessionInfoMap) {
     final focusedId = state.focusedId;
     if (focusedId == null) {
-      if (_activeKubo != null) {
-        return _buildKuboLandingPage(_activeKubo!, sessionInfoMap);
+      final activeKubo = ref.read(workspaceProvider).activeKubo;
+      if (activeKubo != null) {
+        return _buildKuboLandingPage(activeKubo, sessionInfoMap);
       }
       return EmptyStateLandingPage(
         onCreateKubo: _createNewKubo,
@@ -1232,9 +1115,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
             isFocused: true,
             isDirty: sessionInfoMap[state.facets[focusedId]!.sessionName]?.dirty ?? false,
             showTitleBar: true,
-            onSettings: () => setState(() =>
-                _sessionSettingsName =
-                    state.facets[focusedId]!.sessionName),
+            onSettings: () => ref.read(overlayProvider.notifier)
+                .showSessionSettings(state.facets[focusedId]!.sessionName),
             onMinimize: () => _minimizeFacet(focusedId),
             onClose: () => _closeFacet(focusedId),
           ),
