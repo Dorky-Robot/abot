@@ -289,9 +289,7 @@ class _KuboBranchRow extends StatelessWidget {
     final p = context.palette;
     final dotColor = branch.hasSession
         ? p.green
-        : isActive
-            ? p.green.withValues(alpha: 0.5)
-            : p.overlay0;
+        : p.overlay0;
 
     return Padding(
       padding: const EdgeInsets.only(bottom: AbotSpacing.xs),

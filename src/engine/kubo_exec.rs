@@ -191,43 +191,26 @@ async fn tmux_has_session(docker: &Docker, container_id: &str, session: &str) ->
 /// Called for both new sessions and when reattaching to existing ones (to cover
 /// sessions created before these options were added).
 async fn apply_tmux_session_options(docker: &Docker, container_id: &str, session: &str) {
-    // Hide tmux status bar — the browser UI handles session identity.
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &["tmux", "set-option", "-t", session, "status", "off"],
-    )
-    .await;
-
-    // Size the window to match the most recently active client, not the
-    // smallest. Prevents dots when a new client attaches with a different size.
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &["tmux", "set-option", "-t", session, "window-size", "latest"],
-    )
-    .await;
-
-    // Enable aggressive resize so panes resize immediately when clients change.
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &[
-            "tmux",
-            "set-option",
-            "-t",
-            session,
-            "aggressive-resize",
-            "on",
-        ],
-    )
-    .await;
-
-    // Disable tmux pane splits. Pane management through Docker's PTY
-    // indirection causes resize artifacts (dots, garbled content).
-    // Splits will be implemented as browser-side layout when needed.
-    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "\""]).await;
-    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "%"]).await;
+    // Run all tmux option commands in parallel — each is independent.
+    let cmd1 = ["tmux", "set-option", "-t", session, "status", "off"];
+    let cmd2 = ["tmux", "set-option", "-t", session, "window-size", "latest"];
+    let cmd3 = [
+        "tmux",
+        "set-option",
+        "-t",
+        session,
+        "aggressive-resize",
+        "on",
+    ];
+    let cmd4 = ["tmux", "unbind-key", "\""];
+    let cmd5 = ["tmux", "unbind-key", "%"];
+    let _ = tokio::join!(
+        exec_cmd(docker, container_id, &cmd1),
+        exec_cmd(docker, container_id, &cmd2),
+        exec_cmd(docker, container_id, &cmd3),
+        exec_cmd(docker, container_id, &cmd4),
+        exec_cmd(docker, container_id, &cmd5),
+    );
 }
 
 /// Create a new tmux session (detached).
@@ -579,10 +562,10 @@ impl KuboExecBackend {
                 mut output,
                 mut input,
             } => {
-                // Set client size and force a full screen redraw so tmux sends the
-                // current pane content as %output lines. This replaces the
-                // capture-pane scrollback mechanism used in TTY mode.
-                let init_cmds = format!("refresh-client -C {}x{}\nrefresh-client -S\n", cols, rows);
+                // Set control mode client size to match the terminal dimensions.
+                // Scrollback restoration is handled by the engine's capture-pane
+                // mechanism (not by control mode's %output stream).
+                let init_cmds = format!("refresh-client -C {}x{}\n", cols, rows);
                 if let Err(e) = input.write_all(init_cmds.as_bytes()).await {
                     tracing::warn!("control mode init write failed: {}", e);
                 }
@@ -656,17 +639,11 @@ impl KuboExecBackend {
         if !has {
             tmux_new_session(docker, container_id, tmux_name, cols, rows, env, abot_name).await?;
         } else {
-            // Existing session — resize to match current dimensions
             tmux_resize(docker, container_id, tmux_name, cols, rows);
         }
 
-        // Ensure options are set (covers sessions created before this change)
         apply_tmux_session_options(docker, container_id, tmux_name).await;
 
-        // Use tmux control mode (-C): text-based protocol instead of a PTY.
-        // Output arrives as `%output %pane_id octal_data\n` lines.
-        // Input is sent via `send-keys -H hex\n` commands on stdin.
-        // No TTY needed — avoids DA response issues and double-resize complexity.
         let exec = docker
             .create_exec(
                 container_id,
@@ -819,7 +796,11 @@ impl SessionBackend for KuboExecBackend {
     }
 
     fn restores_own_scrollback(&self) -> bool {
-        self.control_mode
+        // Control mode does NOT restore its own scrollback — refresh-client -S
+        // only syncs the protocol stream, it doesn't resend existing screen
+        // content for idle sessions. Let the engine's capture-pane mechanism
+        // handle scrollback restoration.
+        false
     }
 
     fn inject_env(&self, env: &std::collections::HashMap<String, String>) {

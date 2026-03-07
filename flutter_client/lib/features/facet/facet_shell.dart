@@ -966,16 +966,19 @@ class _FacetShellState extends ConsumerState<FacetShell>
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).integrateVariant(name, kuboName);
                   if (!mounted) return;
+                  ref.read(kuboServiceProvider.notifier).refresh();
                 },
                 onDiscard: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).discardVariant(name, kuboName);
                   if (!mounted) return;
+                  ref.read(kuboServiceProvider.notifier).refresh();
                 },
                 onDismiss: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).dismissVariant(name, kuboName);
                   if (!mounted) return;
+                  ref.read(kuboServiceProvider.notifier).refresh();
                 },
               );
             }),
@@ -1115,12 +1118,15 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onAbotDetail: (name) => _showAbotDetail(name),
               onIntegrateVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).integrateVariant(abotName, kuboName);
+                if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
               },
               onDiscardVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).discardVariant(abotName, kuboName);
+                if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
               },
               onDismissVariant: (abotName, kuboName) async {
                 await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
+                if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
               },
               onCreateAbotSession: _createAbotSession,
               activeKubo: _activeKubo,

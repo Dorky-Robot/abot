@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::HashSet;
 
-use super::{bundle, kubo, Engine};
+use super::{bundle, kubo, kubo_exec, Engine};
 
 impl Engine {
     // ── Abot CRUD ────────────────────────────────────────────
@@ -64,6 +64,19 @@ impl Engine {
         let kubo_branch = format!("kubo/{kubo}");
 
         self.close_session_in_kubo(abot, kubo).await;
+
+        // Kill the tmux session in the container so it doesn't linger.
+        {
+            let kubos = self.kubos.lock().await;
+            if let Some(k) = kubos.get(kubo) {
+                if let Some(ref cid) = k.container_id {
+                    if let Ok(docker) = bollard::Docker::connect_with_socket_defaults() {
+                        let tmux_name = kubo_exec::tmux_session_name(abot);
+                        kubo_exec::tmux_kill_session(&docker, cid, &tmux_name).await;
+                    }
+                }
+            }
+        }
 
         match op {
             VariantOp::Dismiss => bundle::dismiss_variant(&canonical_path, &kubo_branch)?,
