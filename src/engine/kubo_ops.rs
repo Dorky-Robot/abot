@@ -123,28 +123,11 @@ impl Engine {
         }
     }
 
+    /// Remove an abot from a kubo — equivalent to dismissing the variant.
+    /// Closes the session, kills the tmux session, cleans up the git worktree
+    /// (keeping the branch as "past work"), and removes from the kubo manifest.
     pub async fn remove_abot_from_kubo(&self, kubo_name: &str, abot_name: &str) -> Result<()> {
-        kubo::validate_name(abot_name)?;
-        kubo::validate_name(kubo_name)?;
-
-        self.close_session_in_kubo(abot_name, kubo_name).await;
-
-        {
-            let kubos = self.kubos.lock().await;
-            if let Some(k) = kubos.get(kubo_name) {
-                if let Some(ref cid) = k.container_id {
-                    if let Ok(docker) = bollard::Docker::connect_with_socket_defaults() {
-                        let tmux_name = kubo_exec::tmux_session_name(abot_name);
-                        kubo_exec::tmux_kill_session(&docker, cid, &tmux_name).await;
-                    }
-                }
-            }
-        }
-
-        self.remove_abot_from_kubo_manifest(kubo_name, abot_name)
-            .await;
-
-        Ok(())
+        self.dismiss_variant(abot_name, kubo_name).await
     }
 
     // ── Internal: kubo backend ──────────────────────────────

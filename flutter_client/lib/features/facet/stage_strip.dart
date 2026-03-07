@@ -202,7 +202,6 @@ class _StageStripState extends State<StageStrip> {
           _SidebarFooter(
             connectionState: widget.connectionState,
             onSettingsTap: widget.onSettingsTap,
-            onOpenBundle: widget.onOpenBundle,
             collapsed: widget.collapsed,
           ),
         ],
@@ -567,9 +566,10 @@ class _StageStripState extends State<StageStrip> {
                     kuboName: branch.kuboName,
                     hasSession: branch.hasSession,
                     isActive: true,
-                    onTap: widget.onActiveKuboChanged != null
-                        ? () => widget.onActiveKuboChanged!(branch.kuboName)
-                        : null,
+                    onTap: () {
+                      widget.onActiveKuboChanged?.call(branch.kuboName);
+                      widget.onCreateAbotSession?.call(abot.name, branch.kuboName);
+                    },
                     onDismiss: widget.onDismissVariant != null
                         ? () => widget.onDismissVariant!(abot.name, branch.kuboName)
                         : null,
@@ -727,12 +727,10 @@ class _KuboBranchRowState extends State<_KuboBranchRow> {
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    // Dot color: bright green if session active, dim green if worktree only, grey if past
+    // Dot color: green if session active, grey if worktree only or past
     final dotColor = widget.hasSession
         ? p.green
-        : widget.isActive
-            ? p.green.withValues(alpha: 0.5)
-            : p.overlay0;
+        : p.overlay0;
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -1143,13 +1141,11 @@ class _IconBtn extends StatelessWidget {
 class _SidebarFooter extends StatelessWidget {
   final WsConnectionState connectionState;
   final VoidCallback? onSettingsTap;
-  final VoidCallback? onOpenBundle;
   final bool collapsed;
 
   const _SidebarFooter({
     required this.connectionState,
     this.onSettingsTap,
-    this.onOpenBundle,
     required this.collapsed,
   });
 
@@ -1180,14 +1176,6 @@ class _SidebarFooter extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: AbotSpacing.sm),
             child: Column(
               children: [
-                if (onOpenBundle != null)
-                  _IconBtn(
-                    icon: Icons.folder_open_outlined,
-                    size: 16,
-                    color: p.overlay1,
-                    tooltip: 'Open .abot',
-                    onTap: onOpenBundle,
-                  ),
                 _IconBtn(
                   icon: Icons.settings,
                   size: 18,
@@ -1223,14 +1211,6 @@ class _SidebarFooter extends StatelessWidget {
           padding: const EdgeInsets.all(AbotSpacing.sm),
           child: Row(
             children: [
-              if (onOpenBundle != null)
-                _IconBtn(
-                  icon: Icons.folder_open_outlined,
-                  size: 18,
-                  color: p.overlay1,
-                  tooltip: 'Open .abot',
-                  onTap: onOpenBundle,
-                ),
               _IconBtn(
                 icon: Icons.settings,
                 size: 16,
