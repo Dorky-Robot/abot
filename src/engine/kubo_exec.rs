@@ -181,6 +181,51 @@ async fn tmux_has_session(docker: &Docker, container_id: &str, session: &str) ->
     }
 }
 
+/// Apply standard tmux session options: hide status bar, size window to latest
+/// client, enable aggressive resize, and disable pane splits.
+///
+/// Called for both new sessions and when reattaching to existing ones (to cover
+/// sessions created before these options were added).
+async fn apply_tmux_session_options(docker: &Docker, container_id: &str, session: &str) {
+    // Hide tmux status bar — the browser UI handles session identity.
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &["tmux", "set-option", "-t", session, "status", "off"],
+    )
+    .await;
+
+    // Size the window to match the most recently active client, not the
+    // smallest. Prevents dots when a new client attaches with a different size.
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &["tmux", "set-option", "-t", session, "window-size", "latest"],
+    )
+    .await;
+
+    // Enable aggressive resize so panes resize immediately when clients change.
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &[
+            "tmux",
+            "set-option",
+            "-t",
+            session,
+            "aggressive-resize",
+            "on",
+        ],
+    )
+    .await;
+
+    // Disable tmux pane splits. Pane management through Docker's PTY
+    // indirection causes resize artifacts (dots, garbled content).
+    // Splits will be implemented as browser-side layout when needed.
+    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "\""]).await;
+    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "%"]).await;
+}
+
 /// Create a new tmux session (detached).
 async fn tmux_new_session(
     docker: &Docker,
@@ -252,43 +297,7 @@ async fn tmux_new_session(
     // DA response filtering happens client-side (terminal_facet.dart) and
     // server-side (stdin writer strips DA responses before forwarding).
 
-    // Hide tmux status bar — the browser UI handles session identity.
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &["tmux", "set-option", "-t", session, "status", "off"],
-    )
-    .await;
-
-    // Size the window to match the most recently active client, not the
-    // smallest. Prevents dots when a new client attaches with a different size.
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &["tmux", "set-option", "-t", session, "window-size", "latest"],
-    )
-    .await;
-
-    // Enable aggressive resize so panes resize immediately when clients change.
-    let _ = exec_cmd(
-        docker,
-        container_id,
-        &[
-            "tmux",
-            "set-option",
-            "-t",
-            session,
-            "aggressive-resize",
-            "on",
-        ],
-    )
-    .await;
-
-    // Disable tmux pane splits. Pane management through Docker's PTY
-    // indirection causes resize artifacts (dots, garbled content).
-    // Splits will be implemented as browser-side layout when needed.
-    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "\""]).await;
-    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "%"]).await;
+    apply_tmux_session_options(docker, container_id, session).await;
 
     Ok(())
 }
@@ -507,38 +516,7 @@ impl KuboExecBackend {
         }
 
         // Ensure options are set (covers sessions created before this change)
-        let _ = exec_cmd(
-            docker,
-            container_id,
-            &["tmux", "set-option", "-t", tmux_name, "status", "off"],
-        )
-        .await;
-        let _ = exec_cmd(
-            docker,
-            container_id,
-            &[
-                "tmux",
-                "set-option",
-                "-t",
-                tmux_name,
-                "window-size",
-                "latest",
-            ],
-        )
-        .await;
-        let _ = exec_cmd(
-            docker,
-            container_id,
-            &[
-                "tmux",
-                "set-option",
-                "-t",
-                tmux_name,
-                "aggressive-resize",
-                "on",
-            ],
-        )
-        .await;
+        apply_tmux_session_options(docker, container_id, tmux_name).await;
 
         let exec = docker
             .create_exec(
