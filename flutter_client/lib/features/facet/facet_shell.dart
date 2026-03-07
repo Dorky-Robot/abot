@@ -869,7 +869,13 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
     return Scaffold(
       backgroundColor: context.palette.base,
-      body: Stack(
+      // Remove any system-inferred bottom padding (e.g. virtual keyboard,
+      // browser chrome) so the terminal fills to the window edge.
+      resizeToAvoidBottomInset: false,
+      body: MediaQuery.removePadding(
+        context: context,
+        removeBottom: true,
+        child: Stack(
         children: [
           CallbackShortcuts(
             bindings: {
@@ -1014,6 +1020,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               );
             }),
         ],
+      ),
       ),
     );
   }

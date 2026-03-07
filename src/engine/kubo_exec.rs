@@ -42,6 +42,8 @@ pub struct KuboExecBackend {
     docker: Docker,
     container_id: String,
     exec_id: String,
+    /// tmux session name (if tmux-backed). Used for resize commands.
+    tmux_name: Option<String>,
     /// Bounded channel for sending stdin data to the writer task.
     /// Errors on send mean the writer task is gone (pipe broken / container dead).
     stdin_chan: mpsc::Sender<Vec<u8>>,
@@ -49,10 +51,6 @@ pub struct KuboExecBackend {
     stdin_closer: Arc<Mutex<Option<StdinWriter>>>,
     /// Receiver half of stdout/stderr from the exec session
     reader_rx: Option<mpsc::Receiver<String>>,
-    /// Bare abot name (for tmux session naming)
-    abot_name: String,
-    /// Whether this session is tmux-backed
-    tmux_enabled: bool,
 }
 
 /// Sanitize abot name for use as a tmux session name.
@@ -254,6 +252,44 @@ async fn tmux_new_session(
     // DA response filtering happens client-side (terminal_facet.dart) and
     // server-side (stdin writer strips DA responses before forwarding).
 
+    // Hide tmux status bar — the browser UI handles session identity.
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &["tmux", "set-option", "-t", session, "status", "off"],
+    )
+    .await;
+
+    // Size the window to match the most recently active client, not the
+    // smallest. Prevents dots when a new client attaches with a different size.
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &["tmux", "set-option", "-t", session, "window-size", "latest"],
+    )
+    .await;
+
+    // Enable aggressive resize so panes resize immediately when clients change.
+    let _ = exec_cmd(
+        docker,
+        container_id,
+        &[
+            "tmux",
+            "set-option",
+            "-t",
+            session,
+            "aggressive-resize",
+            "on",
+        ],
+    )
+    .await;
+
+    // Disable tmux pane splits. Pane management through Docker's PTY
+    // indirection causes resize artifacts (dots, garbled content).
+    // Splits will be implemented as browser-side layout when needed.
+    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "\""]).await;
+    let _ = exec_cmd(docker, container_id, &["tmux", "unbind-key", "%"]).await;
+
     Ok(())
 }
 
@@ -373,10 +409,9 @@ impl KuboExecBackend {
         docker: &Docker,
         container_id: &str,
         exec_id: &str,
-        abot_name: &str,
         cols: u16,
         rows: u16,
-        tmux_enabled: bool,
+        tmux_name: Option<String>,
     ) -> Result<Self> {
         let attach = docker
             .start_exec(
@@ -440,11 +475,10 @@ impl KuboExecBackend {
                     docker: docker.clone(),
                     container_id: container_id.to_string(),
                     exec_id: exec_id.to_string(),
+                    tmux_name,
                     stdin_chan: stdin_chan_tx,
                     stdin_closer,
                     reader_rx: Some(rx),
-                    abot_name: abot_name.to_string(),
-                    tmux_enabled,
                 })
             }
             bollard::exec::StartExecResults::Detached => {
@@ -472,6 +506,40 @@ impl KuboExecBackend {
             tmux_resize(docker, container_id, tmux_name, cols, rows);
         }
 
+        // Ensure options are set (covers sessions created before this change)
+        let _ = exec_cmd(
+            docker,
+            container_id,
+            &["tmux", "set-option", "-t", tmux_name, "status", "off"],
+        )
+        .await;
+        let _ = exec_cmd(
+            docker,
+            container_id,
+            &[
+                "tmux",
+                "set-option",
+                "-t",
+                tmux_name,
+                "window-size",
+                "latest",
+            ],
+        )
+        .await;
+        let _ = exec_cmd(
+            docker,
+            container_id,
+            &[
+                "tmux",
+                "set-option",
+                "-t",
+                tmux_name,
+                "aggressive-resize",
+                "on",
+            ],
+        )
+        .await;
+
         let exec = docker
             .create_exec(
                 container_id,
@@ -487,7 +555,15 @@ impl KuboExecBackend {
             )
             .await?;
 
-        Self::attach_exec(docker, container_id, &exec.id, abot_name, cols, rows, true).await
+        Self::attach_exec(
+            docker,
+            container_id,
+            &exec.id,
+            cols,
+            rows,
+            Some(tmux_name.to_string()),
+        )
+        .await
     }
 
     /// Spawn a raw exec session (no tmux). Original behavior.
@@ -534,7 +610,7 @@ impl KuboExecBackend {
             )
             .await?;
 
-        Self::attach_exec(docker, container_id, &exec.id, abot_name, cols, rows, false).await
+        Self::attach_exec(docker, container_id, &exec.id, cols, rows, None).await
     }
 }
 
@@ -558,10 +634,12 @@ impl SessionBackend for KuboExecBackend {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
-        // Resize the docker exec PTY
         let docker = self.docker.clone();
         let exec_id = self.exec_id.clone();
+        let container_id = self.container_id.clone();
+        let tmux_name = self.tmux_name.clone();
         tokio::spawn(async move {
+            // Resize the Docker exec PTY
             let _ = docker
                 .resize_exec(
                     &exec_id,
@@ -571,18 +649,13 @@ impl SessionBackend for KuboExecBackend {
                     },
                 )
                 .await;
+            // Also resize the tmux window to match. Without this, tmux may
+            // not detect the PTY size change through Docker's indirection,
+            // leaving dots in the unused space.
+            if let Some(ref session) = tmux_name {
+                tmux_resize(&docker, &container_id, session, cols, rows);
+            }
         });
-
-        // Also resize the tmux window so the inner shell matches
-        if self.tmux_enabled {
-            tmux_resize(
-                &self.docker,
-                &self.container_id,
-                &tmux_session_name(&self.abot_name),
-                cols,
-                rows,
-            );
-        }
 
         Ok(())
     }

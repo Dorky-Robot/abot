@@ -47,6 +47,14 @@
     .xterm-container .xterm {
       height: 100%;
     }
+    /* Fill the pixel remainder below xterm rows so no gap is visible */
+    .xterm-container .xterm .xterm-screen {
+      height: 100% !important;
+    }
+    /* Ensure Flutter platform view wrappers don't clip height */
+    flt-platform-view {
+      height: 100% !important;
+    }
   </style>
 </head>
 <body>
