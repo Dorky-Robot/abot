@@ -47,6 +47,16 @@
     .xterm-container .xterm {
       height: 100%;
     }
+    /* Fill the pixel remainder below xterm rows so no gap is visible */
+    .xterm-container .xterm .xterm-screen {
+      height: 100% !important;
+    }
+    /* Ensure Flutter platform view wrappers don't clip height.
+       Targets Flutter WASM's internal element — may need updating across
+       Flutter versions if the renderer changes its DOM structure. */
+    flt-platform-view {
+      height: 100% !important;
+    }
   </style>
 </head>
 <body>

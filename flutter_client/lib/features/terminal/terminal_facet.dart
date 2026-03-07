@@ -121,6 +121,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     if (!mounted) return;
     _container = container;
     final xtermTheme = ref.read(xtermThemeProvider);
+    container.style.backgroundColor = xtermTheme.background;
     final themeJs = createXtermThemeJs(
       background: xtermTheme.background,
       foreground: xtermTheme.foreground,
@@ -211,7 +212,17 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
             'c', 'v', 'a', 'x', 'z', // clipboard / undo
             'r', 'l', 't', 'q', // browser navigation
             'b', // sidebar toggle
+            'k', // clear screen (handled below)
           };
+          // Cmd+K — clear scrollback + screen (like iTerm2/Warp)
+          if (key == 'k') {
+            _terminal?.clear();
+            final wsService = ref.read(wsServiceProvider.notifier);
+            // Send Ctrl+L to redraw the prompt
+            wsService.sendInput('\x0c', session: widget.sessionName);
+            event.preventDefault();
+            return false.toJS;
+          }
           if (key.length == 1 && !browserReserved.contains(key)) {
             final code = key.codeUnitAt(0);
             if (code >= 97 && code <= 122) {
@@ -292,6 +303,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     // didUpdateWidget won't fire on initial creation, so we must do it here.
     if (widget.isFocused && !widget.isMirror) {
       _terminal!.focus();
+      _clearAncestorAriaHidden();
     }
 
     // Populate mirror from the main terminal's current viewport
@@ -306,7 +318,7 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
 
   void _debouncedFit() {
     _fitDebounce?.cancel();
-    _fitDebounce = Timer(const Duration(milliseconds: 50), () {
+    _fitDebounce = Timer(const Duration(milliseconds: 100), () {
       _fitAddon?.fit();
     });
   }
@@ -376,11 +388,26 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
     }
   }
 
+  /// Remove aria-hidden from the `<flt-platform-view>` ancestor so that
+  /// focusing the xterm textarea doesn't trigger a browser warning about
+  /// focused elements inside aria-hidden containers.
+  void _clearAncestorAriaHidden() {
+    web.Element? el = _container?.parentElement;
+    for (var i = 0; i < _ancestorOverflowDepth && el != null; i++) {
+      if (el.tagName.toLowerCase() == 'flt-platform-view') {
+        el.removeAttribute('aria-hidden');
+        break;
+      }
+      el = el.parentElement;
+    }
+  }
+
   @override
   void didUpdateWidget(TerminalFacet oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.isFocused && !oldWidget.isFocused) {
       _terminal?.focus();
+      _clearAncestorAriaHidden();
     }
   }
 
@@ -397,7 +424,10 @@ class _TerminalFacetState extends ConsumerState<TerminalFacet>
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => _terminal?.focus(),
+      onTap: () {
+        _terminal?.focus();
+        _clearAncestorAriaHidden();
+      },
       child: Column(
         children: [
           // Always reserve title bar height for consistent xterm rows.
@@ -637,6 +667,7 @@ class TerminalRegistry {
     final sink = _terminals[facetId];
     if (sink is _TerminalFacetState) {
       sink._terminal?.focus();
+      sink._clearAncestorAriaHidden();
     }
   }
 

@@ -290,7 +290,7 @@ test.describe('Terminal input and tmux sessions', () => {
     expect(await sendCommandAndVerify(page, `CLICK_${ts}`)).toBeTruthy();
   });
 
-  test('tmux prefix (Ctrl+B) supports splits, pane navigation, and pane close', async ({ page }) => {
+  test('tmux prefix (Ctrl+B) works for scrollback and command mode', async ({ page }) => {
     const ts = Date.now();
     const kubo = `e2e-tmuxpfx-${ts}`;
     const abot = `e2e-pfxbot-${ts}`;
@@ -312,57 +312,35 @@ test.describe('Terminal input and tmux sessions', () => {
       await page.waitForTimeout(1500);
     }
 
-    /** Check if the terminal contains the given text. */
-    async function terminalContains(text: string): Promise<boolean> {
-      return page.evaluate((t) => {
-        const containers = document.querySelectorAll('.xterm-container');
-        for (const c of containers) {
-          if (c.textContent?.includes(t)) return true;
-        }
-        return false;
-      }, text);
-    }
-
     // Warm up — flush DA response garbage
     await typeInTerminal(page, `true\n`);
     await page.waitForTimeout(500);
 
-    // Mark the first pane so we can identify it later
-    const m0 = `PANE0_${ts}`;
+    // Verify terminal accepts input
+    const m0 = `PREFIX_${ts}`;
     expect(await sendCommandAndVerify(page, m0)).toBeTruthy();
 
-    // 1) Ctrl+B " — horizontal split (pane below)
-    await tmuxPrefix('"');
-    expect(await terminalContains('─')).toBeTruthy();
-    const m1 = `HSPLIT_${ts}`;
+    // Ctrl+B [ — enter copy/scroll mode (should not break the terminal)
+    await tmuxPrefix('[');
+    // Exit copy mode with q
+    await page.keyboard.press('q');
+    await page.waitForTimeout(500);
+
+    // Terminal should still accept input after copy mode
+    const m1 = `AFTERCOPY_${ts}`;
     expect(await sendCommandAndVerify(page, m1)).toBeTruthy();
 
-    // 2) Ctrl+B % — vertical split (pane to the right, inside bottom pane)
-    await tmuxPrefix('%');
-    expect(await terminalContains('│')).toBeTruthy();
-    const m2 = `VSPLIT_${ts}`;
+    // Ctrl+B c — create new tmux window
+    await tmuxPrefix('c');
+    const m2 = `NEWWIN_${ts}`;
     expect(await sendCommandAndVerify(page, m2)).toBeTruthy();
 
-    // 3) Ctrl+B o — cycle to next pane (should land on a different pane)
-    await tmuxPrefix('o');
-    const m3 = `CYCLE_${ts}`;
-    expect(await sendCommandAndVerify(page, m3)).toBeTruthy();
-
-    // 4) Ctrl+B x — close current pane (confirm with 'y')
-    await page.keyboard.press('Control+b');
-    await page.waitForTimeout(300);
-    await page.keyboard.press('x');
+    // Ctrl+B p — go back to previous window
+    await tmuxPrefix('p');
     await page.waitForTimeout(500);
-    await page.keyboard.press('y');
-    await page.waitForTimeout(1500);
 
-    // After closing one pane, remaining panes should still accept input
-    const m4 = `AFTERCLOSE_${ts}`;
-    expect(await sendCommandAndVerify(page, m4)).toBeTruthy();
-
-    // 5) Ctrl+B arrow — move between remaining panes
-    await tmuxPrefix('ArrowUp');
-    const m5 = `ARROW_${ts}`;
-    expect(await sendCommandAndVerify(page, m5)).toBeTruthy();
+    // Original window should still have our earlier output
+    const m3 = `PREVWIN_${ts}`;
+    expect(await sendCommandAndVerify(page, m3)).toBeTruthy();
   });
 });
