@@ -12,6 +12,7 @@ use bollard::image::{BuildImageOptions, CreateImageOptions};
 use bollard::models::{HostConfig, Mount, MountTypeEnum};
 use bollard::Docker;
 use futures_util::TryStreamExt;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_KUBO_IMAGE: &str = "abot-kubo";
@@ -24,8 +25,8 @@ pub struct Kubo {
     pub path: PathBuf,
     pub container_id: Option<String>,
     pub docker: Docker,
-    /// Number of active sessions using this kubo.
-    pub active_sessions: usize,
+    /// Names of active sessions using this kubo.
+    pub active_sessions: HashSet<String>,
     /// Timestamp of last session close (for idle timeout).
     pub last_session_close: Option<std::time::Instant>,
 }
@@ -286,7 +287,7 @@ impl Kubo {
 
     /// Check if this kubo should be stopped due to idle timeout.
     pub fn should_idle_stop(&self) -> bool {
-        if self.active_sessions > 0 {
+        if !self.active_sessions.is_empty() {
             return false;
         }
         if let Some(last_close) = self.last_session_close {
@@ -297,15 +298,15 @@ impl Kubo {
     }
 
     /// Record that a session was opened in this kubo.
-    pub fn session_opened(&mut self) {
-        self.active_sessions += 1;
+    pub fn session_opened(&mut self, session_name: &str) {
+        self.active_sessions.insert(session_name.to_string());
         self.last_session_close = None;
     }
 
     /// Record that a session was closed in this kubo.
-    pub fn session_closed(&mut self) {
-        self.active_sessions = self.active_sessions.saturating_sub(1);
-        if self.active_sessions == 0 {
+    pub fn session_closed(&mut self, session_name: &str) {
+        self.active_sessions.remove(session_name);
+        if self.active_sessions.is_empty() {
             self.last_session_close = Some(std::time::Instant::now());
         }
     }
@@ -416,7 +417,7 @@ impl Kubo {
             name: self.name.clone(),
             path: self.path.to_string_lossy().to_string(),
             running,
-            active_sessions: self.active_sessions,
+            active_sessions: self.active_sessions.len(),
             abots,
         }
     }
@@ -430,7 +431,7 @@ pub fn new_kubo(name: String, path: PathBuf) -> Result<Kubo> {
         path,
         container_id: None,
         docker,
-        active_sessions: 0,
+        active_sessions: HashSet::new(),
         last_session_close: None,
     })
 }
@@ -543,7 +544,7 @@ mod tests {
             path: PathBuf::from("/tmp"),
             container_id: None,
             docker,
-            active_sessions: 0,
+            active_sessions: HashSet::new(),
             last_session_close: None,
         };
 
@@ -551,12 +552,11 @@ mod tests {
         assert!(!kubo.should_idle_stop());
 
         // Active session → don't stop
-        kubo.active_sessions = 1;
+        kubo.session_opened("s1");
         assert!(!kubo.should_idle_stop());
 
         // Closed recently → don't stop
-        kubo.active_sessions = 0;
-        kubo.last_session_close = Some(std::time::Instant::now());
+        kubo.session_closed("s1");
         assert!(!kubo.should_idle_stop());
 
         // Closed long ago → stop

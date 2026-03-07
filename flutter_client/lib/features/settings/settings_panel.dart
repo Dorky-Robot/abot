@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import '../../core/auth/device_utils.dart' show isLocalhost;
 import '../../core/network/api_client.dart';
+import '../../core/theme/abot_widgets.dart';
 import '../../core/network/config_service.dart';
 import '../../core/theme/abot_theme.dart';
 import '../../core/theme/theme_provider.dart';
@@ -253,7 +254,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
       padding: const EdgeInsets.all(AbotSpacing.lg),
       children: [
         // Instance name
-        _SectionLabel(label: 'Instance Name'),
+        AbotSectionLabel(label: 'Instance Name'),
         const SizedBox(height: AbotSpacing.xs),
         _buildTextField(
           controller: _nameController,
@@ -264,7 +265,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         const SizedBox(height: AbotSpacing.lg),
 
         // Abots location
-        _SectionLabel(label: 'Abots Location'),
+        AbotSectionLabel(label: 'Abots Location'),
         const SizedBox(height: AbotSpacing.xs),
         _buildDirPicker(
           p,
@@ -277,7 +278,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         const SizedBox(height: AbotSpacing.lg),
 
         // Kubos location
-        _SectionLabel(label: 'Kubos Location'),
+        AbotSectionLabel(label: 'Kubos Location'),
         const SizedBox(height: AbotSpacing.xs),
         _buildDirPicker(
           p,
@@ -290,7 +291,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         const SizedBox(height: AbotSpacing.lg),
 
         // Theme toggle
-        _SectionLabel(label: 'Appearance'),
+        AbotSectionLabel(label: 'Appearance'),
         const SizedBox(height: AbotSpacing.xs),
         _ThemeToggle(),
       ],
@@ -426,7 +427,7 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     return ListView(
       padding: const EdgeInsets.all(AbotSpacing.lg),
       children: [
-        _SectionLabel(label: 'Paired Devices'),
+        AbotSectionLabel(label: 'Paired Devices'),
         const SizedBox(height: AbotSpacing.sm),
         const TokenManager(),
       ],
@@ -514,26 +515,6 @@ class _TabButton extends StatelessWidget {
             fontFamily: AbotFonts.mono,
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _SectionLabel extends StatelessWidget {
-  final String label;
-  const _SectionLabel({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    return Text(
-      label,
-      style: TextStyle(
-        fontSize: 10,
-        color: p.subtext0,
-        fontFamily: AbotFonts.mono,
-        fontWeight: FontWeight.w600,
-        letterSpacing: 0.5,
       ),
     );
   }

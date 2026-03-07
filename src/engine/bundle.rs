@@ -7,12 +7,21 @@
 //!   - home/           (bind-mounted as /home/dev in Docker container)
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const BUNDLE_VERSION: u32 = 2;
+pub(crate) const BUNDLE_VERSION: u32 = 2;
 const LEGACY_BUNDLE_VERSION: u32 = 1;
+
+// Re-export from submodules so callers can continue using `bundle::`.
+pub use super::git_ops::{
+    auto_commit_abot, create_canonical_abot, discard_variant, dismiss_variant, git_init_abot,
+    integrate_variant, worktree_add_abot,
+};
+pub use super::known_abots::{
+    add_known_abot, get_abot_detail, read_known_abots, remove_known_abot, sync_known_abots,
+    AbotDetail,
+};
 
 /// Result of opening a bundle — enough info to create a session.
 #[derive(Debug)]
@@ -29,138 +38,142 @@ pub struct OpenedBundle {
 pub async fn save_bundle(
     bundle_path: &Path,
     name: &str,
-    session_env: &HashMap<String, String>,
+    env: &HashMap<String, String>,
 ) -> Result<()> {
+    // Ensure directory exists
     std::fs::create_dir_all(bundle_path)
         .with_context(|| format!("failed to create bundle dir: {}", bundle_path.display()))?;
 
     // Read existing manifest to preserve created_at
-    let manifest_path = bundle_path.join("manifest.json");
-    let existing_created_at = if manifest_path.exists() {
-        read_json(&manifest_path).ok().and_then(|m| {
-            m.get("created_at")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        })
-    } else {
-        None
-    };
+    let existing = read_json(&bundle_path.join("manifest.json")).ok();
+    let created_at = existing
+        .as_ref()
+        .and_then(|m| m.get("created_at"))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
 
-    // 1. Write manifest.json
-    let now = chrono::Utc::now().to_rfc3339();
     let manifest = serde_json::json!({
         "version": BUNDLE_VERSION,
         "name": name,
-        "created_at": existing_created_at.as_deref().unwrap_or(&now),
-        "updated_at": now,
+        "created_at": created_at,
+        "updated_at": chrono::Utc::now().to_rfc3339(),
     });
-    write_json(&manifest_path, &manifest)?;
+    write_json(&bundle_path.join("manifest.json"), &manifest)?;
 
-    // 2. Write credentials.json (extract credential keys from session env)
-    let creds = super::credentials::env_to_credentials_json(session_env);
-    write_json(
-        &bundle_path.join("credentials.json"),
-        &serde_json::Value::Object(creds),
-    )?;
-
-    // 3. Write config.json with defaults
-    let mut custom_env = serde_json::Map::new();
-    for (k, v) in session_env {
-        if !super::credentials::is_credential_key(k) {
-            custom_env.insert(k.clone(), serde_json::Value::String(v.clone()));
-        }
+    // credentials.json — extract known credential env vars
+    let mut creds = serde_json::Map::new();
+    if let Some(key) = env.get("ANTHROPIC_API_KEY") {
+        creds.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(key.clone()),
+        );
     }
-    let config = serde_json::json!({
-        "env": custom_env,
-    });
-    write_json(&bundle_path.join("config.json"), &config)?;
-
-    // Set directory permissions to 0o700
+    if let Some(token) = env.get("CLAUDE_CODE_OAUTH_TOKEN") {
+        creds.insert(
+            "claude_token".to_string(),
+            serde_json::Value::String(token.clone()),
+        );
+    }
+    let creds_path = bundle_path.join("credentials.json");
+    write_json(&creds_path, &serde_json::Value::Object(creds))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(bundle_path, std::fs::Permissions::from_mode(0o700))?;
-        let creds_path = bundle_path.join("credentials.json");
-        if creds_path.exists() {
-            std::fs::set_permissions(&creds_path, std::fs::Permissions::from_mode(0o600))?;
-        }
+        let _ = std::fs::set_permissions(&creds_path, std::fs::Permissions::from_mode(0o600));
     }
+
+    // config.json — env vars (minus credentials), shell settings
+    let config_env: HashMap<&str, &str> = env
+        .iter()
+        .filter(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "ANTHROPIC_API_KEY" | "CLAUDE_API_KEY" | "CLAUDE_CODE_OAUTH_TOKEN"
+            )
+        })
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    let config = serde_json::json!({
+        "shell": "/bin/bash",
+        "env": config_env,
+    });
+    write_json(&bundle_path.join("config.json"), &config)?;
 
     Ok(())
 }
 
 /// Open a `.abot` bundle directory, returning the session name, env, and path.
 pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
-    let bundle_dir = PathBuf::from(path);
-
-    if !bundle_dir.exists() {
-        anyhow::bail!("bundle path does not exist: {}", path);
+    let bundle_path = PathBuf::from(path);
+    if !bundle_path.exists() {
+        anyhow::bail!("bundle does not exist: {}", path);
     }
 
-    // 1. Read and validate manifest.json
-    let manifest_path = bundle_dir.join("manifest.json");
-    let manifest: serde_json::Value =
-        read_json(&manifest_path).with_context(|| "failed to read manifest.json")?;
+    // Read manifest
+    let manifest_path = bundle_path.join("manifest.json");
+    let manifest = if manifest_path.exists() {
+        read_json(&manifest_path)?
+    } else {
+        // Minimal manifest from directory name
+        let name = bundle_path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unnamed");
+        serde_json::json!({"version": 1, "name": name})
+    };
 
     let version = manifest
         .get("version")
         .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-    if version != BUNDLE_VERSION && version != LEGACY_BUNDLE_VERSION {
-        anyhow::bail!(
-            "unsupported bundle version {} (expected {} or {})",
-            version,
-            LEGACY_BUNDLE_VERSION,
-            BUNDLE_VERSION
-        );
-    }
-
-    // Auto-migrate v1 → v2 (init git repo)
-    if version == LEGACY_BUNDLE_VERSION {
-        if let Err(e) = git_init_abot(&bundle_dir) {
-            tracing::warn!("failed to auto-migrate abot to git: {}", e);
-        }
+        .unwrap_or(1);
+    if version != BUNDLE_VERSION as u64 && version != LEGACY_BUNDLE_VERSION as u64 {
+        anyhow::bail!("unsupported bundle version: {}", version);
     }
 
     let name = manifest
         .get("name")
         .and_then(|v| v.as_str())
-        .unwrap_or("imported")
+        .unwrap_or("unnamed")
         .to_string();
 
-    // 2. Read credentials.json → session env
-    let creds_path = bundle_dir.join("credentials.json");
-    let mut env = read_credentials(&creds_path);
+    // Read credentials
+    let creds_path = bundle_path.join("credentials.json");
+    let env_from_creds = read_credentials(&creds_path);
 
-    // 3. Read config.json → merge custom env
-    let config_path = bundle_dir.join("config.json");
-    if config_path.exists() {
-        let config: serde_json::Value = read_json(&config_path)?;
-        if let Some(custom_env) = config.get("env").and_then(|v| v.as_object()) {
-            for (k, v) in custom_env {
-                if let Some(val) = v.as_str() {
-                    env.insert(k.clone(), val.to_string());
-                }
+    // Read config
+    let config_path = bundle_path.join("config.json");
+    let config = read_json(&config_path).unwrap_or(serde_json::json!({}));
+
+    let mut env = HashMap::new();
+    env.extend(env_from_creds);
+
+    // Config env vars
+    if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in env_obj {
+            if let Some(val) = v.as_str() {
+                env.insert(k.clone(), val.to_string());
             }
         }
     }
 
-    // 4. Ensure home/ directory exists; migrate from legacy filesystem.tar.zst if needed
-    let home_dir = bundle_dir.join("home");
-    if !home_dir.exists() {
-        let snapshot_path = bundle_dir.join("filesystem.tar.zst");
-        if snapshot_path.exists() {
-            migrate_archive_to_home(&snapshot_path, &home_dir).await?;
-        } else {
-            std::fs::create_dir_all(&home_dir)
-                .with_context(|| "failed to create home/ in bundle")?;
+    // Migrate archive to home/ if needed
+    let archive_path = bundle_path.join("filesystem.tar.zst");
+    let home_dir = bundle_path.join("home");
+    if archive_path.exists() && !home_dir.exists() {
+        if let Err(e) = migrate_archive_to_home(&archive_path, &home_dir).await {
+            tracing::warn!("failed to migrate archive: {}", e);
         }
     }
+
+    // Ensure home/ exists
+    let _ = std::fs::create_dir_all(bundle_path.join("home"));
 
     Ok(OpenedBundle {
         name,
         env,
-        path: bundle_dir,
+        path: bundle_path,
     })
 }
 
@@ -171,9 +184,7 @@ pub fn read_credentials(path: &Path) -> HashMap<String, String> {
 
 pub(crate) fn write_json(path: &Path, value: &serde_json::Value) -> Result<()> {
     let json = serde_json::to_string_pretty(value)?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &json)?;
-    std::fs::rename(&tmp, path)?;
+    std::fs::write(path, json)?;
     Ok(())
 }
 
@@ -190,20 +201,18 @@ pub fn save_scrollback(bundle_path: &Path, content: &str) {
     if content.is_empty() {
         return;
     }
-    let target = bundle_path.join("scrollback");
-    let tmp = bundle_path.join("scrollback.tmp");
-    if std::fs::write(&tmp, content.as_bytes()).is_ok() {
-        let _ = std::fs::rename(&tmp, &target);
+    let scrollback_path = bundle_path.join("scrollback");
+    let tmp_path = bundle_path.join("scrollback.tmp");
+    if std::fs::write(&tmp_path, content).is_ok() {
+        let _ = std::fs::rename(&tmp_path, &scrollback_path);
     }
 }
 
 /// Load terminal scrollback from a bundle directory.
 /// Returns `None` if the file is missing or unreadable.
 pub fn load_scrollback(bundle_path: &Path) -> Option<String> {
-    let path = bundle_path.join("scrollback");
-    std::fs::read(&path)
-        .ok()
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+    let scrollback_path = bundle_path.join("scrollback");
+    std::fs::read_to_string(scrollback_path).ok()
 }
 
 /// Ensure a bundle's `home/` directory exists, creating the full bundle structure.
@@ -212,27 +221,24 @@ pub fn load_scrollback(bundle_path: &Path) -> Option<String> {
 /// Used by CreateSession and tests; will be superseded by worktree model for kubo sessions.
 #[allow(dead_code)]
 pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
-    super::kubo::validate_name(name)?;
-
-    // Check v2 path first (respects bundleDir config), then legacy v1 path
     let abots_dir = resolve_abots_dir(data_dir);
-    let v2_dir = abots_dir.join(format!("{name}.abot"));
-    let v1_dir = data_dir.join("bundles").join(format!("{name}.abot"));
+    let bundle_path = abots_dir.join(format!("{name}.abot"));
+    let home_dir = bundle_path.join("home");
 
-    let bundle_dir = if v1_dir.exists() && !v2_dir.exists() {
-        // Legacy location still in use
-        v1_dir
-    } else {
-        v2_dir
-    };
-
-    let home_dir = bundle_dir.join("home");
     std::fs::create_dir_all(&home_dir)
         .with_context(|| format!("failed to create bundle home: {}", home_dir.display()))?;
 
-    // Init git if not already a repo or worktree (.git can be a file for worktrees)
-    if !bundle_dir.join(".git").exists() {
-        let _ = git_init_abot(&bundle_dir);
+    // Write minimal manifest if missing
+    let manifest_path = bundle_path.join("manifest.json");
+    if !manifest_path.exists() {
+        let now = chrono::Utc::now().to_rfc3339();
+        let manifest = serde_json::json!({
+            "version": BUNDLE_VERSION,
+            "name": name,
+            "created_at": now,
+            "updated_at": now,
+        });
+        write_json(&manifest_path, &manifest)?;
     }
 
     Ok(home_dir)
@@ -241,32 +247,23 @@ pub fn ensure_bundle_home(data_dir: &Path, name: &str) -> Result<PathBuf> {
 /// Recursively copy a directory tree from `src` to `dst`.
 /// Symlinks are skipped to prevent following links outside the bundle.
 pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)
-        .with_context(|| format!("failed to create dir: {}", dst.display()))?;
-
-    for entry in
-        std::fs::read_dir(src).with_context(|| format!("failed to read dir: {}", src.display()))?
-    {
+    if !src.is_dir() {
+        anyhow::bail!("source is not a directory: {}", src.display());
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
+        let path = entry.path();
+        let dest = dst.join(entry.file_name());
 
-        // Skip symlinks to prevent following links outside the bundle
-        if src_path.symlink_metadata()?.file_type().is_symlink() {
-            continue;
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            continue; // skip symlinks for safety
         }
-
-        if metadata.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+        if ft.is_dir() {
+            copy_dir_recursive(&path, &dest)?;
         } else {
-            std::fs::copy(&src_path, &dst_path).with_context(|| {
-                format!(
-                    "failed to copy {} → {}",
-                    src_path.display(),
-                    dst_path.display()
-                )
-            })?;
+            std::fs::copy(&path, &dest)?;
         }
     }
     Ok(())
@@ -274,112 +271,52 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
 /// Migrate a legacy `filesystem.tar.zst` archive into a `home/` directory.
 async fn migrate_archive_to_home(archive_path: &Path, home_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(home_dir)
-        .with_context(|| format!("failed to create home dir: {}", home_dir.display()))?;
+    let data = std::fs::read(archive_path)?;
+    let decoder = zstd::Decoder::new(std::io::Cursor::new(data))?;
+    let mut archive = tar::Archive::new(decoder);
 
-    let compressed = std::fs::read(archive_path)?;
-    let decompressed =
-        zstd::decode_all(compressed.as_slice()).with_context(|| "zstd decompression failed")?;
+    std::fs::create_dir_all(home_dir)?;
+    archive.unpack(home_dir)?;
 
-    // Extract tar into home/
-    let mut child = tokio::process::Command::new("tar")
-        .args(["xf", "-", "-C"])
-        .arg(home_dir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| "failed to spawn tar for migration")?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin.write_all(&decompressed).await?;
-        drop(stdin);
-    }
-
-    let output = child.wait_with_output().await?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("archive migration failed: {}", stderr);
-    }
-
-    tracing::info!(
-        "migrated legacy filesystem.tar.zst → {}",
-        home_dir.display()
-    );
+    // Remove the archive after successful migration
+    let _ = std::fs::remove_file(archive_path);
+    tracing::info!("migrated archive to home/: {}", archive_path.display());
     Ok(())
 }
 
-// ── Git-based abot repo ──────────────────────────────────────────
+// ── Data directory & path resolution ────────────────────────────
 
-/// Default .gitignore for an abot repo.
-const ABOT_GITIGNORE: &str = "\
-credentials.json
-scrollback
-scrollback.tmp
-home/.cache/
-home/.local/share/
-home/.claude/
-home/.bash_history
-home/.zsh_history
-home/.node_repl_history
-home/.python_history
-";
+/// Read the data-dir config.json, returning {} on any failure.
+fn read_data_config(data_dir: &Path) -> serde_json::Value {
+    let config_path = data_dir.join("config.json");
+    std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({}))
+}
 
-/// Initialize an abot directory as a git repo with .gitignore and initial commit.
-/// No-op if `.git` already exists (as directory for regular repos, or file for worktrees).
-pub fn git_init_abot(abot_path: &Path) -> Result<()> {
-    if abot_path.join(".git").exists() {
-        return Ok(());
-    }
-
-    // Write .gitignore
-    let gitignore_path = abot_path.join(".gitignore");
-    if !gitignore_path.exists() {
-        std::fs::write(&gitignore_path, ABOT_GITIGNORE)
-            .with_context(|| "failed to write .gitignore")?;
-    }
-
-    // Update manifest version to 2
-    let manifest_path = abot_path.join("manifest.json");
-    if manifest_path.exists() {
-        if let Ok(mut manifest) = read_json(&manifest_path) {
-            manifest["version"] = serde_json::Value::Number(BUNDLE_VERSION.into());
-            let _ = write_json(&manifest_path, &manifest);
+/// Resolve the abots directory from config.json `bundleDir`, falling back to `{data_dir}/abots/`.
+pub fn resolve_abots_dir(data_dir: &Path) -> PathBuf {
+    let config = read_data_config(data_dir);
+    if let Some(dir) = config.get("bundleDir").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            return p;
         }
     }
-
-    // git init + initial commit
-    run_git(abot_path, &["init"])?;
-    run_git(abot_path, &["add", "-A"])?;
-    // Check if there's anything to commit
-    let status = run_git(abot_path, &["status", "--porcelain"])?;
-    if !status.trim().is_empty() {
-        run_git(abot_path, &["commit", "-m", "Initial abot snapshot"])?;
-    }
-
-    tracing::info!("initialized git repo at {}", abot_path.display());
-    Ok(())
+    data_dir.join("abots")
 }
 
-/// Auto-commit changes in an abot git repo (used by autosave loop).
-/// Works for both regular repos (.git dir) and worktrees (.git file).
-/// Returns Ok(true) if a commit was made, Ok(false) if nothing to commit.
-pub fn auto_commit_abot(abot_path: &Path) -> Result<bool> {
-    if !abot_path.join(".git").exists() {
-        return Ok(false);
+/// Resolve the kubos directory from config.json `kubosDir`, falling back to `{data_dir}/kubos/`.
+pub fn resolve_kubos_dir(data_dir: &Path) -> PathBuf {
+    let config = read_data_config(data_dir);
+    if let Some(dir) = config.get("kubosDir").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            return p;
+        }
     }
-
-    run_git(abot_path, &["add", "-A"])?;
-    let status = run_git(abot_path, &["status", "--porcelain"])?;
-    if status.trim().is_empty() {
-        return Ok(false);
-    }
-
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-    let msg = format!("autosave {}", now);
-    run_git(abot_path, &["commit", "-m", &msg])?;
-    Ok(true)
+    data_dir.join("kubos")
 }
 
 /// Migrate v1 `bundles/` directory to v2 `abots/` directory.
@@ -456,502 +393,6 @@ pub fn migrate_data_dir(data_dir: &Path) -> Result<()> {
 
     tracing::info!("migration complete: bundles → abots");
     Ok(())
-}
-
-/// Run a git command in the given directory and return stdout.
-pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .with_context(|| format!("failed to run git {:?}", args))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git {:?} failed: {}", args, stderr);
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-// ── Git worktree operations ─────────────────────────────────────
-
-/// Read the data-dir config.json, returning {} on any failure.
-fn read_data_config(data_dir: &Path) -> serde_json::Value {
-    let config_path = data_dir.join("config.json");
-    std::fs::read_to_string(&config_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(serde_json::json!({}))
-}
-
-/// Resolve the abots directory from config.json `bundleDir`, falling back to `{data_dir}/abots/`.
-pub fn resolve_abots_dir(data_dir: &Path) -> PathBuf {
-    let config = read_data_config(data_dir);
-    if let Some(dir) = config.get("bundleDir").and_then(|v| v.as_str()) {
-        let p = PathBuf::from(dir);
-        if p.is_absolute() {
-            return p;
-        }
-    }
-    data_dir.join("abots")
-}
-
-/// Resolve the kubos directory from config.json `kubosDir`, falling back to `{data_dir}/kubos/`.
-pub fn resolve_kubos_dir(data_dir: &Path) -> PathBuf {
-    let config = read_data_config(data_dir);
-    if let Some(dir) = config.get("kubosDir").and_then(|v| v.as_str()) {
-        let p = PathBuf::from(dir);
-        if p.is_absolute() {
-            return p;
-        }
-    }
-    data_dir.join("kubos")
-}
-
-/// Create a canonical `.abot` bundle in the abots directory.
-/// Returns the path to the created bundle (e.g. `{abots_dir}/{name}.abot/`).
-/// Skips if the bundle already exists. Validates name for path and git-ref safety.
-pub fn create_canonical_abot(abots_dir: &Path, name: &str) -> Result<PathBuf> {
-    super::kubo::validate_name(name)?;
-
-    let bundle_path = abots_dir.join(format!("{name}.abot"));
-    if bundle_path.exists() {
-        return Ok(bundle_path);
-    }
-
-    let home_dir = bundle_path.join("home");
-    std::fs::create_dir_all(&home_dir)
-        .with_context(|| format!("failed to create canonical abot: {}", bundle_path.display()))?;
-
-    // Write a minimal manifest so the canonical abot is a valid bundle
-    let now = chrono::Utc::now().to_rfc3339();
-    let manifest = serde_json::json!({
-        "version": BUNDLE_VERSION,
-        "name": name,
-        "created_at": now,
-        "updated_at": now,
-    });
-    write_json(&bundle_path.join("manifest.json"), &manifest)?;
-
-    git_init_abot(&bundle_path)?;
-
-    tracing::info!("created canonical abot at {}", bundle_path.display());
-    Ok(bundle_path)
-}
-
-/// Add an abot as a git worktree in a kubo directory.
-/// Creates a `kubo/<kubo_name>` branch in the canonical abot repo, then
-/// runs `git worktree add` to place it at `{kubo_path}/{abot_name}`.
-/// Validates names for path and git-ref safety.
-pub fn worktree_add_abot(
-    canonical_path: &Path,
-    kubo_path: &Path,
-    abot_name: &str,
-    kubo_name: &str,
-) -> Result<()> {
-    super::kubo::validate_name(abot_name)?;
-    super::kubo::validate_name(kubo_name)?;
-
-    let worktree_path = kubo_path.join(abot_name);
-    if worktree_path.exists() {
-        let git_file = worktree_path.join(".git");
-        if git_file.exists() && !git_file.is_dir() {
-            // .git file exists — verify the gitdir target is still valid
-            if let Ok(content) = std::fs::read_to_string(&git_file) {
-                let gitdir = content.trim().strip_prefix("gitdir: ").unwrap_or("");
-                if !gitdir.is_empty() && std::path::Path::new(gitdir).exists() {
-                    return Ok(()); // Valid worktree, reuse it
-                }
-            }
-            // Stale .git file — remove and recreate
-            tracing::warn!(
-                "removing stale worktree at {} (gitdir target missing)",
-                worktree_path.display()
-            );
-        } else {
-            // Directory exists but isn't a worktree
-            tracing::warn!(
-                "removing non-worktree directory at {} to set up worktree",
-                worktree_path.display()
-            );
-        }
-        std::fs::remove_dir_all(&worktree_path)?;
-    }
-
-    if !canonical_path.join(".git").exists() {
-        anyhow::bail!(
-            "canonical abot is not a git repo: {}",
-            canonical_path.display()
-        );
-    }
-
-    let branch = format!("kubo/{kubo_name}");
-    let worktree_str = worktree_path.to_string_lossy().to_string();
-
-    // Create the branch if it doesn't exist (based on current HEAD)
-    let branches = run_git(canonical_path, &["branch", "--list", &branch])?;
-    if branches.trim().is_empty() {
-        run_git(canonical_path, &["branch", &branch])?;
-    }
-
-    // Create the worktree
-    run_git(canonical_path, &["worktree", "add", &worktree_str, &branch])?;
-
-    tracing::info!(
-        "added worktree for '{}' at {} on branch '{}'",
-        abot_name,
-        worktree_path.display(),
-        branch,
-    );
-    Ok(())
-}
-
-/// Remove an abot's worktree from a kubo directory.
-/// Currently unused — remove-abot keeps worktrees for resume semantics.
-#[allow(dead_code)]
-pub fn worktree_remove_abot(
-    canonical_path: &Path,
-    kubo_path: &Path,
-    abot_name: &str,
-) -> Result<()> {
-    super::kubo::validate_name(abot_name)?;
-    let worktree_path = kubo_path.join(abot_name);
-    if !worktree_path.exists() {
-        return Ok(());
-    }
-
-    let worktree_str = worktree_path.to_string_lossy().to_string();
-    run_git(
-        canonical_path,
-        &["worktree", "remove", &worktree_str, "--force"],
-    )?;
-
-    // Prune stale worktree metadata so the branch can be re-used
-    let _ = run_git(canonical_path, &["worktree", "prune"]);
-
-    tracing::info!(
-        "removed worktree for '{}' from {}",
-        abot_name,
-        kubo_path.display(),
-    );
-    Ok(())
-}
-
-// ── Variant lifecycle ────────────────────────────────────────────
-
-/// Find the filesystem path of a worktree checked out on `kubo_branch`, if any.
-fn find_worktree_path(canonical_path: &Path, kubo_branch: &str) -> Option<String> {
-    let output = run_git(canonical_path, &["worktree", "list", "--porcelain"]).ok()?;
-    let needle = format!("branch refs/heads/{}", kubo_branch);
-    for block in output.split("\n\n") {
-        if block.lines().any(|l| l == needle) {
-            return block
-                .lines()
-                .find(|l| l.starts_with("worktree "))
-                .and_then(|l| l.strip_prefix("worktree "))
-                .map(String::from);
-        }
-    }
-    None
-}
-
-/// Auto-commit any outstanding changes in a worktree, then remove it.
-/// Ensures no work is lost when the worktree is cleaned up.
-fn commit_and_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
-        let wt = std::path::Path::new(&wt_path);
-        match auto_commit_abot(wt) {
-            Ok(true) => tracing::info!("auto-committed changes in worktree '{}'", wt_path),
-            Ok(false) => {}
-            Err(e) => tracing::warn!(
-                "auto-commit failed in '{}': {} — proceeding with removal",
-                wt_path,
-                e
-            ),
-        }
-        run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"])
-            .with_context(|| format!("failed to remove worktree '{}'", wt_path))?;
-        let _ = run_git(canonical_path, &["worktree", "prune"]);
-    }
-    Ok(())
-}
-
-/// Force-remove a worktree without committing (for discard).
-fn force_remove_worktree(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    if let Some(wt_path) = find_worktree_path(canonical_path, kubo_branch) {
-        if let Err(e) = run_git(canonical_path, &["worktree", "remove", &wt_path, "--force"]) {
-            tracing::warn!("force worktree remove failed for '{}': {}", wt_path, e);
-        }
-        if let Err(e) = run_git(canonical_path, &["worktree", "prune"]) {
-            tracing::warn!("worktree prune failed: {}", e);
-        }
-    }
-    Ok(())
-}
-
-/// Integrate a kubo variant into the abot's default branch, then delete the branch.
-/// Commits any outstanding worktree changes before merging.
-/// Returns Err if the merge has conflicts (merge is aborted in that case).
-pub fn integrate_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    commit_and_remove_worktree(canonical_path, kubo_branch)?;
-
-    // Ensure we're on the default branch before merging.
-    // Try symbolic-ref first; if HEAD is detached, fall back to init.defaultBranch config.
-    let default_branch = run_git(canonical_path, &["symbolic-ref", "--short", "HEAD"])
-        .map(|s| s.trim().to_string())
-        .or_else(|_| {
-            run_git(canonical_path, &["config", "--get", "init.defaultBranch"])
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_else(|_| "main".to_string());
-    run_git(canonical_path, &["checkout", &default_branch])
-        .with_context(|| format!("failed to checkout default branch '{}'", default_branch))?;
-
-    // Merge the kubo branch into the default branch
-    let merge_output = run_git(canonical_path, &["merge", kubo_branch, "--no-edit"]);
-    if merge_output.is_err() {
-        let _ = run_git(canonical_path, &["merge", "--abort"]);
-        anyhow::bail!("merge conflict integrating variant '{}'", kubo_branch);
-    }
-
-    // Delete the branch (it's now merged)
-    run_git(canonical_path, &["branch", "-d", kubo_branch])?;
-
-    tracing::info!(
-        "integrated variant '{}' into {}",
-        kubo_branch,
-        canonical_path.display()
-    );
-    Ok(())
-}
-
-/// Dismiss a kubo variant — commit outstanding changes, remove worktree, keep branch.
-pub fn dismiss_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    commit_and_remove_worktree(canonical_path, kubo_branch)?;
-
-    tracing::info!(
-        "dismissed variant '{}' from {}",
-        kubo_branch,
-        canonical_path.display()
-    );
-    Ok(())
-}
-
-/// Discard a kubo variant — delete the branch and worktree without saving.
-pub fn discard_variant(canonical_path: &Path, kubo_branch: &str) -> Result<()> {
-    force_remove_worktree(canonical_path, kubo_branch)?;
-
-    // Force-delete the branch
-    run_git(canonical_path, &["branch", "-D", kubo_branch])?;
-
-    tracing::info!(
-        "discarded variant '{}' from {}",
-        kubo_branch,
-        canonical_path.display()
-    );
-    Ok(())
-}
-
-// ── Known abots registry ────────────────────────────────────────
-
-/// A known abot entry in `abots.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnownAbot {
-    pub name: String,
-    pub added_at: String,
-}
-
-/// Detail info for a single abot (git state + kubo employment).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AbotDetail {
-    pub name: String,
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<String>,
-    pub default_branch: String,
-    pub kubo_branches: Vec<KuboBranch>,
-    pub git_status: String,
-    /// When this abot was added to the known list (set by engine, not by get_abot_detail).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub added_at: Option<String>,
-}
-
-/// A kubo branch in an abot's git repo.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct KuboBranch {
-    pub kubo_name: String,
-    pub branch: String,
-    pub has_worktree: bool,
-    /// Whether there's a live session for this abot@kubo (set by engine).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub has_session: Option<bool>,
-}
-
-/// Read the known abots list from `{data_dir}/abots.json`.
-pub fn read_known_abots(data_dir: &Path) -> Vec<KnownAbot> {
-    let path = data_dir.join("abots.json");
-    match read_json(&path) {
-        Ok(val) => {
-            if let Some(arr) = val.get("abots").and_then(|v| v.as_array()) {
-                arr.iter()
-                    .filter_map(|v| serde_json::from_value::<KnownAbot>(v.clone()).ok())
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
-/// Write the known abots list to `{data_dir}/abots.json`.
-fn write_known_abots(data_dir: &Path, abots: &[KnownAbot]) -> Result<()> {
-    let val = serde_json::json!({ "abots": abots });
-    write_json(&data_dir.join("abots.json"), &val)
-}
-
-/// Add an abot to the known list (no-op if already present).
-pub fn add_known_abot(data_dir: &Path, name: &str) {
-    let mut abots = read_known_abots(data_dir);
-    if abots.iter().any(|a| a.name == name) {
-        return;
-    }
-    abots.push(KnownAbot {
-        name: name.to_string(),
-        added_at: chrono::Utc::now().to_rfc3339(),
-    });
-    let _ = write_known_abots(data_dir, &abots);
-}
-
-/// Remove an abot from the known list.
-pub fn remove_known_abot(data_dir: &Path, name: &str) {
-    let mut abots = read_known_abots(data_dir);
-    abots.retain(|a| a.name != name);
-    let _ = write_known_abots(data_dir, &abots);
-}
-
-/// Sync known abots with all kubo manifests (union). Called on startup.
-pub fn sync_known_abots(data_dir: &Path) {
-    let kubos_dir = resolve_kubos_dir(data_dir);
-    let mut known = read_known_abots(data_dir);
-    let known_names: std::collections::HashSet<String> =
-        known.iter().map(|a| a.name.clone()).collect();
-
-    if let Ok(entries) = std::fs::read_dir(&kubos_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir()
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("kubo"))
-            {
-                if let Ok(manifest) = super::kubo::Kubo::read_manifest(&path) {
-                    for abot_name in &manifest.abots {
-                        if !known_names.contains(abot_name) {
-                            known.push(KnownAbot {
-                                name: abot_name.clone(),
-                                added_at: chrono::Utc::now().to_rfc3339(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let _ = write_known_abots(data_dir, &known);
-}
-
-/// Get detailed info for a single abot (git branches, worktrees, kubo employment).
-pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
-    let abots_dir = resolve_abots_dir(data_dir);
-    let abot_path = abots_dir.join(format!("{name}.abot"));
-
-    if !abot_path.exists() {
-        anyhow::bail!("abot '{}' not found", name);
-    }
-
-    // Read manifest for created_at
-    let created_at = read_json(&abot_path.join("manifest.json"))
-        .ok()
-        .and_then(|m| {
-            m.get("created_at")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
-
-    // Git info
-    let default_branch = if abot_path.join(".git").exists() {
-        run_git(&abot_path, &["rev-parse", "--abbrev-ref", "HEAD"])
-            .unwrap_or_else(|_| "main".to_string())
-            .trim()
-            .to_string()
-    } else {
-        "main".to_string()
-    };
-
-    let git_status = if abot_path.join(".git").exists() {
-        run_git(&abot_path, &["status", "--short"])
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    } else {
-        String::new()
-    };
-
-    // Kubo branches
-    let kubo_branches = if abot_path.join(".git").exists() {
-        let branches_output =
-            run_git(&abot_path, &["branch", "--list", "kubo/*"]).unwrap_or_default();
-        let worktrees_output =
-            run_git(&abot_path, &["worktree", "list", "--porcelain"]).unwrap_or_default();
-
-        // Parse worktree paths to know which branches have active worktrees
-        let worktree_branches: std::collections::HashSet<String> = worktrees_output
-            .split("\n\n")
-            .filter_map(|block| {
-                block.lines().find(|l| l.starts_with("branch ")).map(|l| {
-                    l.strip_prefix("branch refs/heads/")
-                        .unwrap_or("")
-                        .to_string()
-                })
-            })
-            .collect();
-
-        branches_output
-            .lines()
-            .map(|l| {
-                l.trim()
-                    .trim_start_matches("* ")
-                    .trim_start_matches("+ ")
-                    .to_string()
-            })
-            .filter(|b| b.starts_with("kubo/"))
-            .map(|branch| {
-                let kubo_name = branch.strip_prefix("kubo/").unwrap_or(&branch).to_string();
-                KuboBranch {
-                    kubo_name,
-                    has_worktree: worktree_branches.contains(&branch),
-                    branch,
-                    has_session: None,
-                }
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    Ok(AbotDetail {
-        name: name.to_string(),
-        path: abot_path.to_string_lossy().to_string(),
-        created_at,
-        default_branch,
-        kubo_branches,
-        git_status,
-        added_at: None,
-    })
 }
 
 #[cfg(test)]
@@ -1383,180 +824,6 @@ mod tests {
 
         let env = read_credentials(&path);
         assert!(env.is_empty());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_known_abots_crud() {
-        let dir = std::env::temp_dir().join("abot-known-abots-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Initially empty
-        let abots = read_known_abots(&dir);
-        assert!(abots.is_empty());
-
-        // Add one
-        add_known_abot(&dir, "alice");
-        let abots = read_known_abots(&dir);
-        assert_eq!(abots.len(), 1);
-        assert_eq!(abots[0].name, "alice");
-
-        // Duplicate is a no-op
-        add_known_abot(&dir, "alice");
-        assert_eq!(read_known_abots(&dir).len(), 1);
-
-        // Add another
-        add_known_abot(&dir, "bob");
-        assert_eq!(read_known_abots(&dir).len(), 2);
-
-        // Remove
-        remove_known_abot(&dir, "alice");
-        let abots = read_known_abots(&dir);
-        assert_eq!(abots.len(), 1);
-        assert_eq!(abots[0].name, "bob");
-
-        // Remove non-existent is a no-op
-        remove_known_abot(&dir, "charlie");
-        assert_eq!(read_known_abots(&dir).len(), 1);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_get_abot_detail_not_found() {
-        let dir = std::env::temp_dir().join("abot-detail-notfound-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let result = get_abot_detail(&dir, "nonexistent");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_get_abot_detail_with_git() {
-        let dir = std::env::temp_dir().join("abot-detail-git-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Create a canonical abot
-        let abots_dir = dir.join("abots");
-        let abot_path = create_canonical_abot(&abots_dir, "testbot").unwrap();
-        assert!(abot_path.join(".git").exists());
-
-        let detail = get_abot_detail(&dir, "testbot").unwrap();
-        assert_eq!(detail.name, "testbot");
-        assert!(detail.created_at.is_some());
-        assert!(!detail.default_branch.is_empty());
-        assert!(detail.kubo_branches.is_empty()); // no kubo branches yet
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_integrate_variant_commits_worktree_changes() {
-        let dir = std::env::temp_dir().join("abot-integrate-commit-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Create canonical abot + kubo worktree
-        let abots_dir = dir.join("abots");
-        let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
-        let kubos_dir = dir.join("kubos");
-        crate::engine::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
-        let kubo_path = kubos_dir.join("lab.kubo");
-        worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
-
-        // Create a file in the worktree (simulating terminal work)
-        let wt_path = kubo_path.join("alice");
-        let test_file = wt_path.join("home").join("work.txt");
-        std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
-        std::fs::write(&test_file, "hello from lab").unwrap();
-
-        // Verify file is NOT on default branch yet
-        let default_file = abot_path.join("home").join("work.txt");
-        assert!(!default_file.exists());
-
-        // Integrate — should auto-commit worktree changes, merge into default
-        integrate_variant(&abot_path, "kubo/lab").unwrap();
-
-        // File should now be on the default branch
-        assert!(
-            default_file.exists(),
-            "work.txt should exist on default branch after integrate"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&default_file).unwrap(),
-            "hello from lab"
-        );
-
-        // Kubo branch should be deleted
-        let branches = run_git(&abot_path, &["branch", "--list", "kubo/lab"]).unwrap();
-        assert!(branches.trim().is_empty(), "kubo/lab branch should be gone");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_discard_variant_does_not_commit_changes() {
-        let dir = std::env::temp_dir().join("abot-discard-nocommit-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let abots_dir = dir.join("abots");
-        let abot_path = create_canonical_abot(&abots_dir, "alice").unwrap();
-        let kubos_dir = dir.join("kubos");
-        crate::engine::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "lab").unwrap();
-        let kubo_path = kubos_dir.join("lab.kubo");
-        worktree_add_abot(&abot_path, &kubo_path, "alice", "lab").unwrap();
-
-        // Create a file in the worktree
-        let wt_path = kubo_path.join("alice");
-        let test_file = wt_path.join("home").join("secret.txt");
-        std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
-        std::fs::write(&test_file, "discard me").unwrap();
-
-        // Discard — should NOT commit changes
-        discard_variant(&abot_path, "kubo/lab").unwrap();
-
-        // File should NOT be on the default branch
-        let default_file = abot_path.join("home").join("secret.txt");
-        assert!(
-            !default_file.exists(),
-            "secret.txt should NOT exist after discard"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_sync_known_abots_with_kubos() {
-        let dir = std::env::temp_dir().join("abot-sync-known-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // Create a kubo with some abots in its manifest
-        let kubos_dir = dir.join("kubos");
-        crate::engine::kubo::Kubo::ensure_kubo_dir(&kubos_dir, "test-kubo").unwrap();
-        let kubo_path = kubos_dir.join("test-kubo.kubo");
-        let mut manifest = crate::engine::kubo::Kubo::read_manifest(&kubo_path).unwrap();
-        manifest.abots = vec!["alice".to_string(), "bob".to_string()];
-        crate::engine::kubo::Kubo::write_manifest(&kubo_path, &manifest).unwrap();
-
-        // Pre-add alice to known
-        add_known_abot(&dir, "alice");
-        assert_eq!(read_known_abots(&dir).len(), 1);
-
-        // Sync should add bob
-        sync_known_abots(&dir);
-        let known = read_known_abots(&dir);
-        assert_eq!(known.len(), 2);
-        assert!(known.iter().any(|a| a.name == "alice"));
-        assert!(known.iter().any(|a| a.name == "bob"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

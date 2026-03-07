@@ -1,10 +1,12 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
+use crate::engine::EngineError;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("not found")]
-    NotFound,
+    #[error("not found: {0}")]
+    NotFound(String),
 
     #[error("unauthorized")]
     Unauthorized,
@@ -14,6 +16,9 @@ pub enum AppError {
 
     #[error("bad request: {0}")]
     BadRequest(String),
+
+    #[error("conflict: {0}")]
+    Conflict(String),
 
     #[error("locked out: try again in {0} seconds")]
     LockedOut(u64),
@@ -31,14 +36,13 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
 }
 
-impl AppError {
-    /// Map an anyhow error to NotFound or BadRequest based on message content.
-    pub fn from_engine(e: anyhow::Error) -> Self {
-        let msg = e.to_string();
-        if msg.contains("not found") {
-            AppError::NotFound
-        } else {
-            AppError::BadRequest(msg)
+impl From<EngineError> for AppError {
+    fn from(e: EngineError) -> Self {
+        match e {
+            EngineError::NotFound(msg) => AppError::NotFound(msg),
+            EngineError::AlreadyExists(msg) => AppError::Conflict(msg),
+            EngineError::InvalidInput(msg) => AppError::BadRequest(msg),
+            EngineError::Internal(msg) => AppError::Internal(msg),
         }
     }
 }
@@ -46,10 +50,11 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            AppError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
+            AppError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::Forbidden(_) => (StatusCode::FORBIDDEN, self.to_string()),
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             AppError::LockedOut(_) => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
             AppError::Internal(_) => {
                 tracing::error!("internal error: {}", self);

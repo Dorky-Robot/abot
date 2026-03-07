@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/network/abot_service.dart';
 import '../../core/theme/abot_theme.dart';
+import '../../core/theme/abot_widgets.dart';
 
 /// Per-abot detail overlay — opened from Abots tab in sidebar.
 class AbotDetailPanel extends StatelessWidget {
@@ -95,7 +96,7 @@ class AbotDetailPanel extends StatelessWidget {
                       padding: const EdgeInsets.all(AbotSpacing.lg),
                       children: [
                         // Identity
-                        _SectionLabel(label: 'Identity'),
+                        AbotSectionLabel(label: 'Identity'),
                         const SizedBox(height: AbotSpacing.sm),
                         if (detail.createdAt != null)
                           _InfoRow(
@@ -120,7 +121,7 @@ class AbotDetailPanel extends StatelessWidget {
 
                         // Working in (kubos with live worktrees)
                         if (activeBranches.isNotEmpty) ...[
-                          _SectionLabel(label: 'Working in'),
+                          AbotSectionLabel(label: 'Working in'),
                           const SizedBox(height: AbotSpacing.sm),
                           for (final branch in activeBranches)
                             _KuboBranchRow(
@@ -139,7 +140,7 @@ class AbotDetailPanel extends StatelessWidget {
 
                         // Variants (kubo branches without worktrees)
                         if (pastBranches.isNotEmpty) ...[
-                          _SectionLabel(label: 'Variants'),
+                          AbotSectionLabel(label: 'Variants'),
                           const SizedBox(height: AbotSpacing.sm),
                           for (final branch in pastBranches)
                             _KuboBranchRow(
@@ -157,7 +158,7 @@ class AbotDetailPanel extends StatelessWidget {
 
                         // Remove
                         if (onRemove != null) ...[
-                          _SectionLabel(label: 'Manage'),
+                          AbotSectionLabel(label: 'Manage'),
                           const SizedBox(height: AbotSpacing.sm),
                           _buildRemoveButton(p),
                         ],
@@ -204,26 +205,6 @@ class AbotDetailPanel extends StatelessWidget {
     } catch (_) {
       return iso;
     }
-  }
-}
-
-class _SectionLabel extends StatelessWidget {
-  final String label;
-  const _SectionLabel({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    return Text(
-      label,
-      style: TextStyle(
-        fontSize: 10,
-        color: p.subtext0,
-        fontFamily: AbotFonts.mono,
-        fontWeight: FontWeight.w600,
-        letterSpacing: 0.5,
-      ),
-    );
   }
 }
 

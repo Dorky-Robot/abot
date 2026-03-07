@@ -39,7 +39,9 @@ pub async fn browse_dir(
     };
 
     // Canonicalize to prevent traversal
-    let canonical = expanded.canonicalize().map_err(|_| AppError::NotFound)?;
+    let canonical = expanded
+        .canonicalize()
+        .map_err(|_| AppError::NotFound("path not found".into()))?;
 
     if !canonical.is_dir() {
         return Err(AppError::BadRequest("path is not a directory".into()));

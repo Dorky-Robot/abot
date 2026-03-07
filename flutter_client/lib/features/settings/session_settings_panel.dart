@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/network/api_client.dart';
 import '../../core/network/session_service.dart';
 import '../../core/theme/abot_theme.dart';
+import '../../core/theme/abot_widgets.dart';
 
 /// Per-session settings overlay — opened from session gear icon.
 /// Shows session info, rename, and document save/save-as.
@@ -311,7 +312,7 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
                       padding: const EdgeInsets.all(AbotSpacing.lg),
                       children: [
                         // Document section
-                        _SectionLabel(label: 'Document'),
+                        AbotSectionLabel(label: 'Document'),
                         const SizedBox(height: AbotSpacing.sm),
                         _buildDocumentSection(p),
                       ],
@@ -438,22 +439,3 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
 
 }
 
-class _SectionLabel extends StatelessWidget {
-  final String label;
-  const _SectionLabel({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    return Text(
-      label,
-      style: TextStyle(
-        fontSize: 10,
-        color: p.subtext0,
-        fontFamily: AbotFonts.mono,
-        fontWeight: FontWeight.w600,
-        letterSpacing: 0.5,
-      ),
-    );
-  }
-}

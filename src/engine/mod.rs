@@ -1,6 +1,8 @@
 pub(crate) mod backend;
 pub(crate) mod bundle;
 pub(crate) mod credentials;
+pub(crate) mod git_ops;
+pub(crate) mod known_abots;
 pub(crate) mod kubo;
 pub(crate) mod kubo_exec;
 pub(crate) mod ring_buffer;
@@ -10,14 +12,41 @@ mod abot_ops;
 mod kubo_ops;
 mod session_ops;
 
-use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
+/// Typed error for engine operations, replacing string-based error classification.
+#[derive(Debug, thiserror::Error)]
+pub enum EngineError {
+    #[error("{0}")]
+    NotFound(String),
+
+    #[error("{0}")]
+    AlreadyExists(String),
+
+    #[error("{0}")]
+    InvalidInput(String),
+
+    #[error("{0}")]
+    Internal(String),
+}
+
+impl From<anyhow::Error> for EngineError {
+    fn from(e: anyhow::Error) -> Self {
+        EngineError::Internal(e.to_string())
+    }
+}
+
+pub type EngineResult<T> = std::result::Result<T, EngineError>;
+
 use self::session::Session;
+
+/// Default terminal dimensions used when no explicit size is provided.
+pub const DEFAULT_COLS: u16 = 120;
+pub const DEFAULT_ROWS: u16 = 40;
 
 /// Broadcast events from the engine (sent to all connected WebSocket clients).
 #[derive(Debug, Clone, serde::Serialize)]
@@ -45,7 +74,7 @@ pub struct Engine {
 impl Engine {
     /// Initialize the engine: migrate data dir, discover kubos, sync abots,
     /// spawn autosave + idle check background tasks.
-    pub async fn new(data_dir: &Path) -> Result<Arc<Self>> {
+    pub async fn new(data_dir: &Path) -> anyhow::Result<Arc<Self>> {
         let (output_tx, _) = broadcast::channel(4096);
 
         let mut agent_env = HashMap::new();
@@ -88,44 +117,25 @@ impl Engine {
             kubos: Mutex::new(kubos_map),
         });
 
-        // Autosave loop
-        {
-            let engine = engine.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    engine.autosave().await;
-                }
-            });
-        }
-
-        // Kubo idle check loop
-        {
-            let engine = engine.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    engine.idle_check_kubos().await;
-                }
-            });
-        }
-
-        // Container health check loop — detect dead containers and mark sessions as exited
-        {
-            let engine = engine.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-                    engine.health_check_kubos().await;
-                }
-            });
-        }
+        // Supervised background loops — if a task panics, it is logged and restarted.
+        spawn_supervised(
+            "autosave",
+            engine.clone(),
+            std::time::Duration::from_secs(300),
+            |e| Box::pin(async move { e.autosave().await }),
+        );
+        spawn_supervised(
+            "idle-check",
+            engine.clone(),
+            std::time::Duration::from_secs(60),
+            |e| Box::pin(async move { e.idle_check_kubos().await }),
+        );
+        spawn_supervised(
+            "health-check",
+            engine.clone(),
+            std::time::Duration::from_secs(30),
+            |e| Box::pin(async move { e.health_check_kubos().await }),
+        );
 
         Ok(engine)
     }
@@ -162,12 +172,12 @@ impl Engine {
         Some((session, kubo_name))
     }
 
-    /// Decrement the kubo's active session counter.
-    pub(super) async fn decrement_kubo(&self, kubo_name: Option<String>) {
+    /// Remove a session from the kubo's active session set.
+    pub(super) async fn decrement_kubo(&self, kubo_name: Option<String>, session_name: &str) {
         if let Some(kn) = kubo_name {
             let mut kubos = self.kubos.lock().await;
             if let Some(kubo) = kubos.get_mut(&kn) {
-                kubo.session_closed();
+                kubo.session_closed(session_name);
             }
         }
     }
@@ -201,7 +211,7 @@ impl Engine {
         let gen = sessions.get(qualified).map(|s| s.generation).unwrap_or(0);
         drop(sessions);
 
-        self.decrement_kubo(old_kubo_name).await;
+        self.decrement_kubo(old_kubo_name, qualified).await;
 
         // Restore scrollback unless the backend handles it (e.g. control mode
         // sends the current screen via refresh-client -S).
@@ -239,6 +249,46 @@ impl Engine {
 
         session_name
     }
+}
+
+/// Spawn a supervised background loop that restarts on panic.
+fn spawn_supervised<F>(
+    name: &'static str,
+    engine: Arc<Engine>,
+    period: std::time::Duration,
+    task: F,
+) where
+    F: Fn(Arc<Engine>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    let task = Arc::new(task);
+    tokio::spawn(async move {
+        loop {
+            let engine = engine.clone();
+            let task = task.clone();
+            let handle = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(period);
+                interval.tick().await; // skip first immediate tick
+                loop {
+                    interval.tick().await;
+                    task(engine.clone()).await;
+                }
+            });
+            match handle.await {
+                Ok(()) => break, // task exited cleanly (shouldn't happen)
+                Err(e) => {
+                    tracing::error!(
+                        "background task '{}' panicked: {}, restarting in 5s",
+                        name,
+                        e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    });
 }
 
 /// Capture tmux scrollback for an abot in a kubo container.
@@ -309,7 +359,7 @@ fn spawn_output_relay(
                 (None, None)
             }
         };
-        Engine::decrement_kubo(&engine, kubo_name).await;
+        Engine::decrement_kubo(&engine, kubo_name, &current_name).await;
         if let Some(code) = code {
             let _ = output_tx.send(OutputEvent::Exit {
                 session: current_name,
