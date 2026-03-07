@@ -44,6 +44,10 @@ pub struct KuboExecBackend {
     exec_id: String,
     /// tmux session name (if tmux-backed). Used for resize commands.
     tmux_name: Option<String>,
+    /// True when connected via tmux control mode (`-C`). In control mode,
+    /// stdin carries tmux commands (send-keys, refresh-client) instead of raw bytes,
+    /// and stdout carries `%output` protocol lines instead of terminal data.
+    control_mode: bool,
     /// Bounded channel for sending stdin data to the writer task.
     /// Errors on send mean the writer task is gone (pipe broken / container dead).
     stdin_chan: mpsc::Sender<Vec<u8>>,
@@ -302,6 +306,44 @@ async fn tmux_new_session(
     Ok(())
 }
 
+/// Unescape tmux control mode octal encoding.
+/// tmux replaces chars < ASCII 32 and `\` with octal: `\015` for CR, `\012` for LF, `\134` for `\`.
+fn unescape_tmux_output(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 3 < bytes.len() {
+            let d0 = bytes[i + 1];
+            let d1 = bytes[i + 2];
+            let d2 = bytes[i + 3];
+            if d0.is_ascii_digit() && d1.is_ascii_digit() && d2.is_ascii_digit() {
+                let val = (d0 - b'0') as u16 * 64 + (d1 - b'0') as u16 * 8 + (d2 - b'0') as u16;
+                if val <= 255 {
+                    result.push(val as u8);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).to_string()
+}
+
+/// Encode bytes as hex pairs for `tmux send-keys -H`.
+fn encode_hex_keys(data: &[u8]) -> String {
+    let mut hex = String::with_capacity(data.len() * 3);
+    for (i, byte) in data.iter().enumerate() {
+        if i > 0 {
+            hex.push(' ');
+        }
+        hex.push_str(&format!("{:02x}", byte));
+    }
+    hex
+}
+
 /// Resize a tmux window (fire-and-forget).
 fn tmux_resize(docker: &Docker, container_id: &str, session: &str, cols: u16, rows: u16) {
     let docker = docker.clone();
@@ -485,6 +527,110 @@ impl KuboExecBackend {
                     container_id: container_id.to_string(),
                     exec_id: exec_id.to_string(),
                     tmux_name,
+                    control_mode: false,
+                    stdin_chan: stdin_chan_tx,
+                    stdin_closer,
+                    reader_rx: Some(rx),
+                })
+            }
+            bollard::exec::StartExecResults::Detached => {
+                anyhow::bail!("exec started in detached mode unexpectedly")
+            }
+        }
+    }
+
+    /// Attach to a docker exec running `tmux -C attach`, parsing the control
+    /// mode protocol. No TTY is allocated — all I/O is text-based commands.
+    async fn attach_control_mode(
+        docker: &Docker,
+        container_id: &str,
+        exec_id: &str,
+        tmux_session: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Self> {
+        let attach = docker
+            .start_exec(
+                exec_id,
+                Some(StartExecOptions {
+                    detach: false,
+                    ..Default::default()
+                }),
+            )
+            .await?;
+
+        let (tx, rx) = mpsc::channel::<String>(256);
+
+        match attach {
+            bollard::exec::StartExecResults::Attached { mut output, input } => {
+                // Set client size and force a full screen redraw so tmux sends the
+                // current pane content as %output lines. This replaces the
+                // capture-pane scrollback mechanism used in TTY mode.
+                let mut input = input;
+                let init_cmds = format!("refresh-client -C {}x{}\nrefresh-client -S\n", cols, rows);
+                let _ = input.write_all(init_cmds.as_bytes()).await;
+                let _ = input.flush().await;
+
+                let stdin_closer: Arc<Mutex<Option<StdinWriter>>> =
+                    Arc::new(Mutex::new(Some(input)));
+
+                // Writer task: drains the channel and writes to Docker stdin.
+                let (stdin_chan_tx, mut stdin_chan_rx) = mpsc::channel::<Vec<u8>>(64);
+                {
+                    let stdin_ref = stdin_closer.clone();
+                    tokio::spawn(async move {
+                        while let Some(data) = stdin_chan_rx.recv().await {
+                            let mut guard = stdin_ref.lock().await;
+                            if let Some(ref mut writer) = *guard {
+                                if writer.write_all(&data).await.is_err()
+                                    || writer.flush().await.is_err()
+                                {
+                                    *guard = None;
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    });
+                }
+
+                // Reader task: parse tmux control mode protocol lines.
+                // Only `%output %pane_id data` lines carry terminal output.
+                tokio::spawn(async move {
+                    let mut line_buf = String::new();
+                    while let Some(Ok(chunk)) = output.next().await {
+                        let bytes = chunk.into_bytes();
+                        let data = String::from_utf8_lossy(&bytes);
+                        line_buf.push_str(&data);
+
+                        while let Some(newline_pos) = line_buf.find('\n') {
+                            let line = &line_buf[..newline_pos];
+
+                            if let Some(rest) = line.strip_prefix("%output ") {
+                                // Format: %output %pane_id octal_escaped_data
+                                if let Some(space_pos) = rest.find(' ') {
+                                    let escaped = &rest[space_pos + 1..];
+                                    let unescaped = unescape_tmux_output(escaped);
+                                    if tx.send(unescaped).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                            // Ignore %begin, %end, %error, %session-changed, etc.
+
+                            // Drain the processed line from the buffer
+                            line_buf = line_buf[newline_pos + 1..].to_string();
+                        }
+                    }
+                });
+
+                Ok(Self {
+                    docker: docker.clone(),
+                    container_id: container_id.to_string(),
+                    exec_id: exec_id.to_string(),
+                    tmux_name: Some(tmux_session.to_string()),
+                    control_mode: true,
                     stdin_chan: stdin_chan_tx,
                     stdin_closer,
                     reader_rx: Some(rx),
@@ -518,12 +664,24 @@ impl KuboExecBackend {
         // Ensure options are set (covers sessions created before this change)
         apply_tmux_session_options(docker, container_id, tmux_name).await;
 
+        // Use tmux control mode (-C): text-based protocol instead of a PTY.
+        // Output arrives as `%output %pane_id octal_data\n` lines.
+        // Input is sent via `send-keys -H hex\n` commands on stdin.
+        // No TTY needed — avoids DA response issues and double-resize complexity.
         let exec = docker
             .create_exec(
                 container_id,
                 CreateExecOptions {
-                    cmd: Some(vec!["tmux", "attach-session", "-d", "-t", tmux_name]),
-                    tty: Some(true),
+                    cmd: Some(vec![
+                        "tmux",
+                        "-u",
+                        "-C",
+                        "attach-session",
+                        "-d",
+                        "-t",
+                        tmux_name,
+                    ]),
+                    tty: Some(false),
                     attach_stdin: Some(true),
                     attach_stdout: Some(true),
                     attach_stderr: Some(true),
@@ -533,15 +691,7 @@ impl KuboExecBackend {
             )
             .await?;
 
-        Self::attach_exec(
-            docker,
-            container_id,
-            &exec.id,
-            cols,
-            rows,
-            Some(tmux_name.to_string()),
-        )
-        .await
+        Self::attach_control_mode(docker, container_id, &exec.id, tmux_name, cols, rows).await
     }
 
     /// Spawn a raw exec session (no tmux). Original behavior.
@@ -594,14 +744,25 @@ impl KuboExecBackend {
 
 impl SessionBackend for KuboExecBackend {
     fn write(&mut self, data: &[u8]) -> Result<()> {
-        // Strip DA (Device Attributes) responses that xterm.js echoes back.
-        // These look like ESC[?1;2c or ESC[>0;276;0c and can trigger tmux
-        // keybindings if they reach the terminal stdin.
-        let filtered = strip_da_responses(data);
-        if filtered.is_empty() {
-            return Ok(());
-        }
-        self.stdin_chan.try_send(filtered).map_err(|e| match e {
+        let payload = if self.control_mode {
+            // In control mode, wrap user input as a tmux send-keys command
+            // with hex-encoded bytes to avoid any interpretation issues.
+            if data.is_empty() {
+                return Ok(());
+            }
+            let hex = encode_hex_keys(data);
+            format!("send-keys -H {}\n", hex).into_bytes()
+        } else {
+            // Strip DA (Device Attributes) responses that xterm.js echoes back.
+            // These look like ESC[?1;2c or ESC[>0;276;0c and can trigger tmux
+            // keybindings if they reach the terminal stdin.
+            let filtered = strip_da_responses(data);
+            if filtered.is_empty() {
+                return Ok(());
+            }
+            filtered
+        };
+        self.stdin_chan.try_send(payload).map_err(|e| match e {
             tokio::sync::mpsc::error::TrySendError::Full(_) => {
                 anyhow::anyhow!("stdin buffer full (input dropped)")
             }
@@ -612,12 +773,29 @@ impl SessionBackend for KuboExecBackend {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
+        if self.control_mode {
+            // In control mode, resize by telling tmux the client's terminal size.
+            // tmux uses this (with window-size=latest) to resize the pane.
+            let cmd = format!("refresh-client -C {}x{}\n", cols, rows);
+            return self
+                .stdin_chan
+                .try_send(cmd.into_bytes())
+                .map_err(|e| match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                        anyhow::anyhow!("stdin buffer full (resize dropped)")
+                    }
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        anyhow::anyhow!("stdin channel closed (container may be dead)")
+                    }
+                });
+        }
+
+        // TTY mode: resize both the Docker exec PTY and the tmux window.
         let docker = self.docker.clone();
         let exec_id = self.exec_id.clone();
         let container_id = self.container_id.clone();
         let tmux_name = self.tmux_name.clone();
         tokio::spawn(async move {
-            // Resize the Docker exec PTY
             let _ = docker
                 .resize_exec(
                     &exec_id,
@@ -627,9 +805,6 @@ impl SessionBackend for KuboExecBackend {
                     },
                 )
                 .await;
-            // Also resize the tmux window to match. Without this, tmux may
-            // not detect the PTY size change through Docker's indirection,
-            // leaving dots in the unused space.
             if let Some(ref session) = tmux_name {
                 tmux_resize(&docker, &container_id, session, cols, rows);
             }
@@ -659,6 +834,10 @@ impl SessionBackend for KuboExecBackend {
 
     fn try_exit_code(&mut self) -> Option<u32> {
         None
+    }
+
+    fn restores_own_scrollback(&self) -> bool {
+        self.control_mode
     }
 
     fn inject_env(&self, env: &std::collections::HashMap<String, String>) {
@@ -775,5 +954,50 @@ mod tests {
         // ESC[?1049h (alt screen) — NOT a DA response
         let input = b"\x1b[?1049h";
         assert_eq!(strip_da_responses(input), input.to_vec());
+    }
+
+    // --- tmux control mode helpers ---
+
+    #[test]
+    fn unescape_cr_lf() {
+        assert_eq!(unescape_tmux_output("hello\\015\\012"), "hello\r\n");
+    }
+
+    #[test]
+    fn unescape_backslash() {
+        assert_eq!(unescape_tmux_output("a\\134b"), "a\\b");
+    }
+
+    #[test]
+    fn unescape_plain_text() {
+        assert_eq!(unescape_tmux_output("hello world"), "hello world");
+    }
+
+    #[test]
+    fn unescape_mixed() {
+        // "$ ls\r\n" in octal: "$ ls\015\012"
+        assert_eq!(unescape_tmux_output("$ ls\\015\\012"), "$ ls\r\n");
+    }
+
+    #[test]
+    fn unescape_partial_octal_preserved() {
+        // Not enough digits after backslash — preserved as-is
+        assert_eq!(unescape_tmux_output("a\\01z"), "a\\01z");
+    }
+
+    #[test]
+    fn encode_hex_simple() {
+        assert_eq!(encode_hex_keys(b"hi"), "68 69");
+    }
+
+    #[test]
+    fn encode_hex_control_chars() {
+        assert_eq!(encode_hex_keys(b"\r"), "0d");
+        assert_eq!(encode_hex_keys(b"\x1b[A"), "1b 5b 41");
+    }
+
+    #[test]
+    fn encode_hex_empty() {
+        assert_eq!(encode_hex_keys(b""), "");
     }
 }

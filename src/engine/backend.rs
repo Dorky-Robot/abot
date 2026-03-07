@@ -30,4 +30,11 @@ pub trait SessionBackend: Send {
 
     /// Inject environment variables into a running session.
     fn inject_env(&self, _env: &std::collections::HashMap<String, String>) {}
+
+    /// Whether the backend handles its own scrollback restoration (e.g. via
+    /// tmux control mode's `refresh-client -S`). When true, the engine skips
+    /// `capture-pane` and bundle scrollback pre-population.
+    fn restores_own_scrollback(&self) -> bool {
+        false
+    }
 }

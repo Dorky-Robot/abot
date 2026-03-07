@@ -201,8 +201,16 @@ impl Engine {
 
         self.decrement_kubo(old_kubo_name).await;
 
-        // Restore scrollback: try tmux capture first, then bundle file
-        {
+        // Restore scrollback unless the backend handles it (e.g. control mode
+        // sends the current screen via refresh-client -S).
+        let skip_scrollback = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(qualified)
+                .map(|s| s.backend.restores_own_scrollback())
+                .unwrap_or(false)
+        };
+        if !skip_scrollback {
             let mut scrollback: Option<String> = None;
             {
                 let kubos = self.kubos.lock().await;
