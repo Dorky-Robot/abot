@@ -29,8 +29,10 @@ class OverlayNotifier extends Notifier<OverlayState> {
   @override
   OverlayState build() => const OverlayState();
 
-  void showSettings() {
-    state = const OverlayState(showSettings: true);
+  void toggleSettings() {
+    state = state.showSettings
+        ? const OverlayState()
+        : const OverlayState(showSettings: true);
   }
 
   void showSessionSettings(String name) {

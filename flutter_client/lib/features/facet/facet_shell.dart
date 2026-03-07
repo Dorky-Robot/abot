@@ -237,6 +237,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
     try {
       await ref.read(kuboServiceProvider.notifier).createKubo(name);
       if (!mounted) return;
+      ref.invalidate(kuboServiceProvider);
       ref.read(workspaceProvider.notifier).openKubo(name);
     } catch (e) {
       if (!mounted) return;
@@ -250,17 +251,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
   Future<void> _addAbotToKubo(String kubo) async {
     final name = await _showNewAbotDialog(kubo);
     if (name == null || name.isEmpty || !mounted) return;
-    try {
-      await ref.read(facetManagerProvider.notifier).createAbotInKubo(name, kubo: kubo);
-      if (!mounted) return;
-      ref.invalidate(kuboServiceProvider);
-      ref.invalidate(abotServiceProvider);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to add abot: $e')),
-      );
-    }
+    await _createAbotSession(name, kubo);
   }
 
   Future<void> _createAbotSession(String abotName, String kuboName) async {
@@ -274,11 +265,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
       ref.invalidate(abotServiceProvider);
     } catch (e) {
       if (!mounted) return;
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to start abot: $e')),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to start abot: $e')),
+      );
     }
   }
 
@@ -999,7 +988,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
               collapsed: sidebar.collapsed,
               onToggleCollapse: _toggleSidebar,
               onSettingsTap: () =>
-                  ref.read(overlayProvider.notifier).showSettings(),
+                  ref.read(overlayProvider.notifier).toggleSettings(),
               onScroll: _updateSidebarTransforms,
               onTabChanged: (tab) {
                 ref.read(sidebarProvider.notifier).setTab(tab);

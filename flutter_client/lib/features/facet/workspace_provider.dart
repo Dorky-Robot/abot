@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 
@@ -39,7 +40,9 @@ class WorkspaceNotifier extends Notifier<WorkspaceState> {
     if (openJson != null) {
       try {
         openKubos = (jsonDecode(openJson) as List).cast<String>().toSet();
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[WorkspaceProvider] Failed to parse open kubos: $e');
+      }
     }
 
     return WorkspaceState(
@@ -59,9 +62,9 @@ class WorkspaceNotifier extends Notifier<WorkspaceState> {
 
   void openKubo(String name) {
     final newOpen = {...state.openKubos, name};
-    state = state.copyWith(openKubos: newOpen, activeKubo: name);
-    web.window.localStorage.setItem(_activeKuboKey, name);
+    state = state.copyWith(openKubos: newOpen);
     _persistOpen(newOpen);
+    setActiveKubo(name);
   }
 
   void pruneStale(Set<String> serverKuboNames) {
@@ -74,13 +77,9 @@ class WorkspaceNotifier extends Notifier<WorkspaceState> {
         ? state.activeKubo
         : (newOpen.isNotEmpty ? newOpen.first : null);
 
-    state = state.copyWith(openKubos: newOpen, activeKubo: newActive);
+    state = state.copyWith(openKubos: newOpen);
     _persistOpen(newOpen);
-    if (newActive != null) {
-      web.window.localStorage.setItem(_activeKuboKey, newActive);
-    } else {
-      web.window.localStorage.removeItem(_activeKuboKey);
-    }
+    setActiveKubo(newActive);
   }
 
   void _persistOpen(Set<String> kubos) {
