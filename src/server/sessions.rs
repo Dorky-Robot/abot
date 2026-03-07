@@ -95,19 +95,20 @@ pub async fn rename_session(
     Path(old_name): Path<String>,
     Json(body): Json<RenameBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let new_name = &body.name;
-
-    app.engine
-        .rename_session(&old_name, new_name)
+    let new_qualified = app
+        .engine
+        .rename_session(&old_name, &body.name)
         .await
         .map_err(AppError::from)?;
 
     // Update ClientTracker so WebSocket relay continues routing output
     app.stream_clients
-        .rename_attached_session(&old_name, new_name)
+        .rename_attached_session(&old_name, &new_qualified)
         .await;
 
-    Ok(Json(json!({ "oldName": old_name, "newName": new_name })))
+    Ok(Json(
+        json!({ "oldName": old_name, "newName": new_qualified }),
+    ))
 }
 
 /// DELETE /sessions/:name — delete a session

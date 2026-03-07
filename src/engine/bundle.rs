@@ -105,18 +105,20 @@ pub async fn save_bundle(
 }
 
 /// Open a `.abot` bundle directory, returning the session name, env, and path.
-pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
+pub async fn open_bundle(path: &str) -> super::EngineResult<OpenedBundle> {
     let bundle_path = PathBuf::from(path);
     if !bundle_path.exists() {
-        return Err(
-            super::EngineError::NotFound(format!("bundle does not exist: {}", path)).into(),
-        );
+        return Err(super::EngineError::NotFound(format!(
+            "bundle does not exist: {}",
+            path
+        )));
     }
 
     // Read manifest
     let manifest_path = bundle_path.join("manifest.json");
     let manifest = if manifest_path.exists() {
-        read_json(&manifest_path)?
+        read_json(&manifest_path)
+            .map_err(|e| super::EngineError::Internal(format!("failed to read manifest: {}", e)))?
     } else {
         // Minimal manifest from directory name
         let name = bundle_path
@@ -134,8 +136,7 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
         return Err(super::EngineError::InvalidInput(format!(
             "unsupported bundle version: {}",
             version
-        ))
-        .into());
+        )));
     }
 
     let name = manifest
@@ -256,8 +257,11 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     if !src.is_dir() {
         anyhow::bail!("source is not a directory: {}", src.display());
     }
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
+    std::fs::create_dir_all(dst)
+        .with_context(|| format!("failed to create dir: {}", dst.display()))?;
+    for entry in
+        std::fs::read_dir(src).with_context(|| format!("failed to read dir: {}", src.display()))?
+    {
         let entry = entry?;
         let path = entry.path();
         let dest = dst.join(entry.file_name());
@@ -269,7 +273,9 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         if ft.is_dir() {
             copy_dir_recursive(&path, &dest)?;
         } else {
-            std::fs::copy(&path, &dest)?;
+            std::fs::copy(&path, &dest).with_context(|| {
+                format!("failed to copy {} → {}", path.display(), dest.display())
+            })?;
         }
     }
     Ok(())

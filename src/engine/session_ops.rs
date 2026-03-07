@@ -90,7 +90,8 @@ impl Engine {
         Ok(())
     }
 
-    pub async fn rename_session(&self, old_name: &str, new_name: &str) -> EngineResult<()> {
+    /// Rename a session. Returns the new qualified name (e.g. "bob@default").
+    pub async fn rename_session(&self, old_name: &str, new_name: &str) -> EngineResult<String> {
         kubo::validate_name(new_name).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
 
         // Preserve the qualified naming convention: if old_name is "alice@default",
@@ -130,7 +131,7 @@ impl Engine {
             }
         }
 
-        Ok(())
+        Ok(new_qualified)
     }
 
     pub async fn write_input(&self, name: &str, data: &str) -> EngineResult<()> {
@@ -433,7 +434,6 @@ impl Engine {
     }
 }
 
-/// Apply an env update map: `Some(val)` inserts, `None` removes.
 /// Snapshot of a dirty session for autosave, avoiding holding the sessions lock during I/O.
 struct AutosaveSnapshot {
     name: String,
@@ -443,6 +443,7 @@ struct AutosaveSnapshot {
     dirty_gen: u64,
 }
 
+/// Apply an env update map: `Some(val)` inserts, `None` removes.
 fn apply_env_update(
     target: &mut HashMap<String, String>,
     updates: &HashMap<String, Option<String>>,
