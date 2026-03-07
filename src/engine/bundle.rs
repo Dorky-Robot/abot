@@ -108,7 +108,9 @@ pub async fn save_bundle(
 pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
     let bundle_path = PathBuf::from(path);
     if !bundle_path.exists() {
-        anyhow::bail!("bundle does not exist: {}", path);
+        return Err(
+            super::EngineError::NotFound(format!("bundle does not exist: {}", path)).into(),
+        );
     }
 
     // Read manifest
@@ -129,7 +131,11 @@ pub async fn open_bundle(path: &str) -> Result<OpenedBundle> {
         .and_then(|v| v.as_u64())
         .unwrap_or(1);
     if version != BUNDLE_VERSION as u64 && version != LEGACY_BUNDLE_VERSION as u64 {
-        anyhow::bail!("unsupported bundle version: {}", version);
+        return Err(super::EngineError::InvalidInput(format!(
+            "unsupported bundle version: {}",
+            version
+        ))
+        .into());
     }
 
     let name = manifest

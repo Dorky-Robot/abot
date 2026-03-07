@@ -1,8 +1,9 @@
 //! Known abots registry — tracks which abots the user has created/employed.
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+use super::{EngineError, EngineResult};
 
 /// A known abot entry in `abots.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,7 +58,7 @@ pub fn read_known_abots(data_dir: &Path) -> Vec<KnownAbot> {
 }
 
 /// Write the known abots list to `{data_dir}/abots.json`.
-fn write_known_abots(data_dir: &Path, abots: &[KnownAbot]) -> Result<()> {
+fn write_known_abots(data_dir: &Path, abots: &[KnownAbot]) -> anyhow::Result<()> {
     let val = serde_json::json!({ "abots": abots });
     super::bundle::write_json(&data_dir.join("abots.json"), &val)
 }
@@ -115,12 +116,12 @@ pub fn sync_known_abots(data_dir: &Path) {
 }
 
 /// Get detailed info for a single abot (git branches, worktrees, kubo employment).
-pub fn get_abot_detail(data_dir: &Path, name: &str) -> Result<AbotDetail> {
+pub fn get_abot_detail(data_dir: &Path, name: &str) -> EngineResult<AbotDetail> {
     let abots_dir = super::bundle::resolve_abots_dir(data_dir);
     let abot_path = abots_dir.join(format!("{name}.abot"));
 
     if !abot_path.exists() {
-        anyhow::bail!("abot '{}' not found", name);
+        return Err(EngineError::NotFound(format!("abot '{}' not found", name)));
     }
 
     // Read manifest for created_at

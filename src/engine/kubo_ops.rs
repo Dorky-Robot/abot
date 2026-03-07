@@ -239,7 +239,7 @@ impl Engine {
             Self::teardown_session(&mut sessions, &self.output_tx, &qualified)
                 .and_then(|(_, kn)| kn)
         };
-        self.decrement_kubo(kubo_name, &qualified).await;
+        self.release_kubo_session(kubo_name, &qualified).await;
     }
 
     pub(super) async fn remove_abot_from_kubo_manifest(&self, kubo: &str, abot: &str) {
@@ -262,19 +262,31 @@ impl Engine {
     // ── Health & idle checks ────────────────────────────────
 
     pub(super) async fn health_check_kubos(&self) {
-        let dead_kubos: Vec<String> = {
+        // Snapshot kubos that have containers and active sessions, then check
+        // Docker status outside the lock to avoid blocking kubo operations.
+        let to_check: Vec<(String, String)> = {
             let kubos = self.kubos.lock().await;
-            let mut dead = Vec::new();
-            for (name, kubo) in kubos.iter() {
-                if kubo.container_id.is_some()
-                    && !kubo.active_sessions.is_empty()
-                    && !kubo.is_running().await
-                {
-                    dead.push(name.clone());
-                }
-            }
-            dead
+            kubos
+                .iter()
+                .filter_map(|(name, kubo)| {
+                    if !kubo.active_sessions.is_empty() {
+                        kubo.container_id
+                            .as_ref()
+                            .map(|cid| (name.clone(), cid.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         };
+
+        let mut dead_kubos = Vec::new();
+        for (name, container_id) in &to_check {
+            let is_alive = kubo::Kubo::check_container_running(container_id).await;
+            if !is_alive {
+                dead_kubos.push(name.clone());
+            }
+        }
 
         for kubo_name in dead_kubos {
             tracing::warn!(

@@ -270,6 +270,17 @@ impl Kubo {
 
     /// Check if the container is still running via Docker API.
     /// Checks both by container ID (if known) and by container name (for server restarts).
+    /// Check if a container is running by ID, without needing a Kubo reference.
+    /// Used by health checks to avoid holding the kubos mutex during Docker calls.
+    pub async fn check_container_running(container_id: &str) -> bool {
+        if let Ok(docker) = bollard::Docker::connect_with_socket_defaults() {
+            if let Ok(info) = docker.inspect_container(container_id, None).await {
+                return info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+            }
+        }
+        false
+    }
+
     pub async fn is_running(&self) -> bool {
         // First try by container ID (fast path)
         if let Some(ref id) = self.container_id {

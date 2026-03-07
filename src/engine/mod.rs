@@ -173,7 +173,7 @@ impl Engine {
     }
 
     /// Remove a session from the kubo's active session set.
-    pub(super) async fn decrement_kubo(&self, kubo_name: Option<String>, session_name: &str) {
+    pub(super) async fn release_kubo_session(&self, kubo_name: Option<String>, session_name: &str) {
         if let Some(kn) = kubo_name {
             let mut kubos = self.kubos.lock().await;
             if let Some(kubo) = kubos.get_mut(&kn) {
@@ -211,7 +211,7 @@ impl Engine {
         let gen = sessions.get(qualified).map(|s| s.generation).unwrap_or(0);
         drop(sessions);
 
-        self.decrement_kubo(old_kubo_name, qualified).await;
+        self.release_kubo_session(old_kubo_name, qualified).await;
 
         // Restore scrollback unless the backend handles it (e.g. control mode
         // sends the current screen via refresh-client -S).
@@ -359,7 +359,7 @@ fn spawn_output_relay(
                 (None, None)
             }
         };
-        Engine::decrement_kubo(&engine, kubo_name, &current_name).await;
+        engine.release_kubo_session(kubo_name, &current_name).await;
         if let Some(code) = code {
             let _ = output_tx.send(OutputEvent::Exit {
                 session: current_name,

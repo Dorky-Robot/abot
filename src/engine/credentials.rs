@@ -77,7 +77,7 @@ pub fn read_credentials_file(path: &Path) -> HashMap<String, String> {
 
 /// Extract credential env vars from a session env map into a JSON-ready map
 /// for writing to credentials.json.
-#[allow(dead_code)]
+#[allow(dead_code)] // Will be used when kubo-level credential persistence is implemented
 pub fn env_to_credentials_json(
     session_env: &HashMap<String, String>,
 ) -> serde_json::Map<String, serde_json::Value> {
@@ -107,7 +107,7 @@ pub fn env_to_credentials_json(
 }
 
 /// Check if an env var key is a credential key.
-#[allow(dead_code)]
+#[allow(dead_code)] // Will be used when credential filtering is added to session env display
 pub fn is_credential_key(key: &str) -> bool {
     ALL_KEYS.contains(&key)
 }

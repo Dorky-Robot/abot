@@ -83,7 +83,7 @@ impl Engine {
             Self::teardown_session(&mut sessions, &self.output_tx, name)
                 .ok_or_else(|| EngineError::NotFound(format!("session '{name}' not found")))?
         };
-        self.decrement_kubo(kubo_name, name).await;
+        self.release_kubo_session(kubo_name, name).await;
         if let Some(bp) = session.bundle_path {
             let _ = std::fs::remove_dir_all(&bp);
         }
@@ -93,21 +93,29 @@ impl Engine {
     pub async fn rename_session(&self, old_name: &str, new_name: &str) -> EngineResult<()> {
         kubo::validate_name(new_name).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
 
+        // Preserve the qualified naming convention: if old_name is "alice@default",
+        // the new key should be "bob@default" (not just "bob").
+        let new_qualified = if let Some(at_pos) = old_name.find('@') {
+            format!("{}{}", new_name, &old_name[at_pos..])
+        } else {
+            new_name.to_string()
+        };
+
         // Rename in the sessions map (fast, no I/O).
         let bundle_path = {
             let mut sessions = self.sessions.lock().await;
-            if sessions.contains_key(new_name) {
+            if sessions.contains_key(&new_qualified) {
                 return Err(EngineError::AlreadyExists(format!(
-                    "session '{new_name}' already exists"
+                    "session '{new_qualified}' already exists"
                 )));
             }
             let mut session = sessions
                 .remove(old_name)
                 .ok_or_else(|| EngineError::NotFound(format!("session '{old_name}' not found")))?;
-            session.name = new_name.to_string();
-            session.name_tx.send_replace(new_name.to_string());
+            session.name = new_qualified.clone();
+            session.name_tx.send_replace(new_qualified.clone());
             let bp = session.bundle_path.clone();
-            sessions.insert(new_name.to_string(), session);
+            sessions.insert(new_qualified.clone(), session);
             bp
         };
 
@@ -264,6 +272,7 @@ impl Engine {
             let env = s.env.clone();
             let name = s.name.clone();
             let scrollback = s.get_buffer();
+            let snapshot_gen = s.dirty_gen;
             drop(sessions);
 
             let bundle_name = name.split('@').next().unwrap_or(&name);
@@ -272,7 +281,7 @@ impl Engine {
 
             let mut sessions = self.sessions.lock().await;
             if let Some(s) = sessions.get_mut(session_name) {
-                s.mark_saved();
+                s.mark_saved_if_unchanged(snapshot_gen);
             }
             Ok(bundle_path.to_string_lossy().to_string())
         } else {
@@ -366,57 +375,58 @@ impl Engine {
             (session, kubo_name)
         };
         drop(session);
-        self.decrement_kubo(kubo_name, session_name).await;
+        self.release_kubo_session(kubo_name, session_name).await;
         Ok(())
     }
 
     // ── Autosave ────────────────────────────────────────────
 
-    #[allow(clippy::type_complexity)]
     pub(super) async fn autosave(&self) {
         // Snapshot dirty sessions with their current dirty_gen
-        let to_save: Vec<(String, PathBuf, HashMap<String, String>, String, u64)> = {
+        let to_save: Vec<AutosaveSnapshot> = {
             let sessions = self.sessions.lock().await;
             sessions
                 .values()
                 .filter(|s| s.is_dirty() && s.bundle_path.is_some() && s.is_alive())
-                .map(|s| {
-                    (
-                        s.name.clone(),
-                        s.bundle_path.clone().unwrap(),
-                        s.env.clone(),
-                        s.get_buffer(),
-                        s.dirty_gen,
-                    )
+                .map(|s| AutosaveSnapshot {
+                    name: s.name.clone(),
+                    bundle_path: s.bundle_path.clone().unwrap(),
+                    env: s.env.clone(),
+                    scrollback: s.get_buffer(),
+                    dirty_gen: s.dirty_gen,
                 })
                 .collect()
         };
 
-        for (name, bundle_path, env, scrollback, snapshot_gen) in to_save {
-            let bundle_name = name.split('@').next().unwrap_or(&name);
-            match bundle::save_bundle(&bundle_path, bundle_name, &env).await {
+        for snap in to_save {
+            let bundle_name = snap.name.split('@').next().unwrap_or(&snap.name);
+            match bundle::save_bundle(&snap.bundle_path, bundle_name, &snap.env).await {
                 Ok(()) => {
-                    bundle::save_scrollback(&bundle_path, &scrollback);
-                    if bundle_path.join(".git").exists() {
-                        match bundle::auto_commit_abot(&bundle_path) {
+                    bundle::save_scrollback(&snap.bundle_path, &snap.scrollback);
+                    if snap.bundle_path.join(".git").exists() {
+                        match bundle::auto_commit_abot(&snap.bundle_path) {
                             Ok(true) => {
-                                tracing::debug!("autosave: git commit for '{}'", name);
+                                tracing::debug!("autosave: git commit for '{}'", snap.name);
                             }
                             Ok(false) => {}
                             Err(e) => {
-                                tracing::warn!("autosave: git commit failed for '{}': {}", name, e);
+                                tracing::warn!(
+                                    "autosave: git commit failed for '{}': {}",
+                                    snap.name,
+                                    e
+                                );
                             }
                         }
                     }
                     // Only mark saved if no mutations occurred since snapshot
                     let mut sessions = self.sessions.lock().await;
-                    if let Some(s) = sessions.get_mut(&name) {
-                        s.mark_saved_if_unchanged(snapshot_gen);
+                    if let Some(s) = sessions.get_mut(&snap.name) {
+                        s.mark_saved_if_unchanged(snap.dirty_gen);
                     }
-                    tracing::info!("autosave: saved session '{}'", name);
+                    tracing::info!("autosave: saved session '{}'", snap.name);
                 }
                 Err(e) => {
-                    tracing::error!("autosave: failed to save '{}': {}", name, e);
+                    tracing::error!("autosave: failed to save '{}': {}", snap.name, e);
                 }
             }
         }
@@ -424,6 +434,15 @@ impl Engine {
 }
 
 /// Apply an env update map: `Some(val)` inserts, `None` removes.
+/// Snapshot of a dirty session for autosave, avoiding holding the sessions lock during I/O.
+struct AutosaveSnapshot {
+    name: String,
+    bundle_path: PathBuf,
+    env: HashMap<String, String>,
+    scrollback: String,
+    dirty_gen: u64,
+}
+
 fn apply_env_update(
     target: &mut HashMap<String, String>,
     updates: &HashMap<String, Option<String>>,
