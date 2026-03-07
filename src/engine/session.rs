@@ -32,8 +32,11 @@ pub struct Session {
     pub env: HashMap<String, String>,
     /// Path to the backing `.abot` bundle directory, if saved.
     pub bundle_path: Option<PathBuf>,
-    /// Whether the session has unsaved changes since last save.
-    pub dirty: bool,
+    /// Monotonic counter incremented on each mutation (output, env change).
+    /// Autosave snapshots this value and only clears dirty if it hasn't advanced.
+    pub dirty_gen: u64,
+    /// The dirty_gen value at the time of the last successful save.
+    pub saved_gen: u64,
     /// Kubo this session belongs to.
     pub kubo: Option<String>,
     /// Monotonic generation — incremented on each session creation so stale
@@ -58,7 +61,8 @@ impl Session {
             status: SessionStatus::Running,
             env,
             bundle_path,
-            dirty: false,
+            dirty_gen: 0,
+            saved_gen: 0,
             kubo,
             generation: GENERATION_COUNTER.fetch_add(1, Ordering::Relaxed),
         }
@@ -66,6 +70,25 @@ impl Session {
 
     pub fn is_alive(&self) -> bool {
         self.status == SessionStatus::Running
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_gen != self.saved_gen
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty_gen = self.dirty_gen.wrapping_add(1);
+    }
+
+    /// Mark as saved only if no mutations occurred since the snapshot was taken.
+    pub fn mark_saved_if_unchanged(&mut self, snapshot_gen: u64) {
+        if self.dirty_gen == snapshot_gen {
+            self.saved_gen = snapshot_gen;
+        }
+    }
+
+    pub fn mark_saved(&mut self) {
+        self.saved_gen = self.dirty_gen;
     }
 
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
@@ -103,7 +126,7 @@ impl Session {
                 .bundle_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
-            dirty: self.dirty,
+            dirty: self.is_dirty(),
             kubo: self.kubo.clone(),
         }
     }
@@ -214,7 +237,7 @@ mod tests {
             None,
             None,
         );
-        assert!(!session.dirty);
+        assert!(!session.is_dirty());
         assert!(session.bundle_path.is_none());
     }
 
@@ -229,7 +252,7 @@ mod tests {
             None,
         );
         assert_eq!(session.bundle_path, Some(path));
-        assert!(!session.dirty);
+        assert!(!session.is_dirty());
     }
 
     #[test]
@@ -246,7 +269,7 @@ mod tests {
         assert_eq!(s.bundle_path.as_deref(), Some("/home/user/project.abot"));
         assert!(!s.dirty);
 
-        session.dirty = true;
+        session.mark_dirty();
         let s = session.summary();
         assert!(s.dirty);
     }
@@ -266,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn dirty_flag_is_mutable() {
+    fn dirty_generation_tracking() {
         let mut session = Session::new(
             "s".into(),
             Box::new(StubBackend),
@@ -274,11 +297,38 @@ mod tests {
             None,
             None,
         );
-        assert!(!session.dirty);
-        session.dirty = true;
-        assert!(session.dirty);
-        session.dirty = false;
-        assert!(!session.dirty);
+        assert!(!session.is_dirty());
+
+        session.mark_dirty();
+        assert!(session.is_dirty());
+
+        session.mark_saved();
+        assert!(!session.is_dirty());
+    }
+
+    #[test]
+    fn mark_saved_if_unchanged_prevents_lost_update() {
+        let mut session = Session::new(
+            "s".into(),
+            Box::new(StubBackend),
+            HashMap::new(),
+            None,
+            None,
+        );
+        session.mark_dirty();
+        let snapshot = session.dirty_gen;
+
+        // Simulate mutation after snapshot
+        session.mark_dirty();
+
+        // Autosave completes — should NOT clear dirty because gen advanced
+        session.mark_saved_if_unchanged(snapshot);
+        assert!(session.is_dirty());
+
+        // Save again with correct snapshot
+        let snapshot2 = session.dirty_gen;
+        session.mark_saved_if_unchanged(snapshot2);
+        assert!(!session.is_dirty());
     }
 
     #[test]

@@ -35,10 +35,10 @@ pub(crate) struct AddAbotBody {
 }
 
 fn default_cols() -> u16 {
-    120
+    crate::engine::DEFAULT_COLS
 }
 fn default_rows() -> u16 {
-    40
+    crate::engine::DEFAULT_ROWS
 }
 
 /// GET /kubos — list all kubos
@@ -60,7 +60,7 @@ pub async fn create_kubo(
         .engine
         .create_kubo(&body.name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": body.name, "path": path })))
 }
@@ -71,10 +71,7 @@ pub async fn start_kubo(
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    app.engine
-        .start_kubo(&name)
-        .await
-        .map_err(AppError::from_engine)?;
+    app.engine.start_kubo(&name).await.map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": name })))
 }
@@ -85,10 +82,7 @@ pub async fn stop_kubo(
     State(app): State<Arc<AppState>>,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    app.engine
-        .stop_kubo(&name)
-        .await
-        .map_err(AppError::from_engine)?;
+    app.engine.stop_kubo(&name).await.map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": name })))
 }
@@ -103,7 +97,7 @@ pub async fn open_kubo(
         .engine
         .open_kubo(&body.path)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": name, "path": body.path })))
 }
@@ -117,7 +111,7 @@ pub async fn remove_abot_from_kubo(
     app.engine
         .remove_abot_from_kubo(&kubo_name, &abot_name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "kubo": kubo_name, "abot": abot_name })))
 }
@@ -140,7 +134,7 @@ pub async fn add_abot_to_kubo(
             body.env,
         )
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     let mut result = json!({ "kubo": kubo_name, "abot": body.abot });
     if let Some(s) = session {

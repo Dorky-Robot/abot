@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/network/kubo_service.dart';
 import '../../core/theme/abot_theme.dart';
+import '../../core/theme/abot_widgets.dart';
 
 /// Per-kubo settings overlay — opened from kubo gear icon in sidebar.
 class KuboSettingsPanel extends StatelessWidget {
@@ -84,14 +85,14 @@ class KuboSettingsPanel extends StatelessWidget {
                       padding: const EdgeInsets.all(AbotSpacing.lg),
                       children: [
                         // Status
-                        _SectionLabel(label: 'Status'),
+                        AbotSectionLabel(label: 'Status'),
                         const SizedBox(height: AbotSpacing.sm),
                         _buildStatusRow(p),
                         const SizedBox(height: AbotSpacing.lg),
 
                         // Path
                         if (kubo.path.isNotEmpty) ...[
-                          _SectionLabel(label: 'Location'),
+                          AbotSectionLabel(label: 'Location'),
                           const SizedBox(height: AbotSpacing.sm),
                           Text(
                             kubo.path,
@@ -106,7 +107,7 @@ class KuboSettingsPanel extends StatelessWidget {
 
                         // Abots
                         if (kubo.abots.isNotEmpty) ...[
-                          _SectionLabel(label: 'Abots'),
+                          AbotSectionLabel(label: 'Abots'),
                           const SizedBox(height: AbotSpacing.sm),
                           for (final abot in kubo.abots)
                             Padding(
@@ -214,22 +215,3 @@ class KuboSettingsPanel extends StatelessWidget {
   }
 }
 
-class _SectionLabel extends StatelessWidget {
-  final String label;
-  const _SectionLabel({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    final p = context.palette;
-    return Text(
-      label,
-      style: TextStyle(
-        fontSize: 10,
-        color: p.subtext0,
-        fontFamily: AbotFonts.mono,
-        fontWeight: FontWeight.w600,
-        letterSpacing: 0.5,
-      ),
-    );
-  }
-}

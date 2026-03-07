@@ -202,7 +202,17 @@ async fn handle_client_message(
 
         ClientMessage::Input { data, session } => {
             if let Some(session_name) = session {
-                if let Err(e) = app.engine.write_input(&session_name, &data).await {
+                if !app
+                    .stream_clients
+                    .is_attached(client_id, &session_name)
+                    .await
+                {
+                    tracing::warn!(
+                        "client '{}' tried to write to unattached session '{}'",
+                        client_id,
+                        session_name
+                    );
+                } else if let Err(e) = app.engine.write_input(&session_name, &data).await {
                     tracing::warn!("write to session '{}' failed: {}", session_name, e);
                 }
             } else {
@@ -216,7 +226,13 @@ async fn handle_client_message(
             session,
         } => {
             if let Some(session_name) = session {
-                app.engine.resize(&session_name, cols, rows).await;
+                if app
+                    .stream_clients
+                    .is_attached(client_id, &session_name)
+                    .await
+                {
+                    app.engine.resize(&session_name, cols, rows).await;
+                }
             }
         }
 
@@ -315,7 +331,7 @@ async fn handle_p2p_signal(
                                 clients.send_to(&cid, ServerMessage::P2pReady).await;
                             }
                             P2pEvent::Data(text) => {
-                                handle_p2p_data(&app_clone, &text).await;
+                                handle_p2p_data(&app_clone, &cid, &text).await;
                             }
                             P2pEvent::Closed => {
                                 tracing::info!("P2P DataChannel closed for client {}", cid);
@@ -356,33 +372,38 @@ async fn handle_p2p_signal(
 }
 
 /// Handle a message received over the P2P DataChannel.
-async fn handle_p2p_data(app: &Arc<AppState>, text: &str) {
-    let parsed = match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(v) => v,
+async fn handle_p2p_data(app: &Arc<AppState>, client_id: &str, text: &str) {
+    let msg: ClientMessage = match serde_json::from_str(text) {
+        Ok(m) => m,
         Err(_) => return,
     };
 
-    let msg_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match msg_type {
-        "input" => {
-            if let Some(input_data) = parsed.get("data").and_then(|v| v.as_str()) {
-                let session = parsed.get("session").and_then(|v| v.as_str());
-                if let Some(session_name) = session {
-                    let _ = app.engine.write_input(session_name, input_data).await;
-                }
+    match msg {
+        ClientMessage::Input {
+            data,
+            session: Some(session_name),
+        } => {
+            if app
+                .stream_clients
+                .is_attached(client_id, &session_name)
+                .await
+            {
+                let _ = app.engine.write_input(&session_name, &data).await;
             }
         }
-        "resize" => {
-            let cols = parsed.get("cols").and_then(|v| v.as_u64()).unwrap_or(120) as u16;
-            let rows = parsed.get("rows").and_then(|v| v.as_u64()).unwrap_or(40) as u16;
-            let session = parsed.get("session").and_then(|v| v.as_str());
-            if let Some(session_name) = session {
-                app.engine.resize(session_name, cols, rows).await;
+        ClientMessage::Resize {
+            cols,
+            rows,
+            session: Some(session_name),
+        } => {
+            if app
+                .stream_clients
+                .is_attached(client_id, &session_name)
+                .await
+            {
+                app.engine.resize(&session_name, cols, rows).await;
             }
         }
-        _ => {
-            tracing::debug!("unknown DC message type: {}", msg_type);
-        }
+        _ => {}
     }
 }

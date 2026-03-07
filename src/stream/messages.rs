@@ -41,10 +41,10 @@ pub enum ClientMessage {
 }
 
 fn default_cols() -> u16 {
-    120
+    crate::engine::DEFAULT_COLS
 }
 fn default_rows() -> u16 {
-    40
+    crate::engine::DEFAULT_ROWS
 }
 
 /// Messages from server to browser client

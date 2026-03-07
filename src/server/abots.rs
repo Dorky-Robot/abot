@@ -32,7 +32,7 @@ pub async fn get_abot(
         .engine
         .get_abot_info(&name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!(abot)))
 }
@@ -46,7 +46,7 @@ pub async fn remove_abot(
     app.engine
         .remove_known_abot(&name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "removed": name })))
 }
@@ -61,7 +61,7 @@ pub async fn dismiss_variant(
     app.engine
         .dismiss_variant(&name, &body.kubo)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "dismissed": name, "kubo": body.kubo })))
 }
@@ -76,7 +76,7 @@ pub async fn integrate_variant(
     app.engine
         .integrate_variant(&name, &body.kubo)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "integrated": name, "kubo": body.kubo })))
 }
@@ -91,7 +91,7 @@ pub async fn discard_variant(
     app.engine
         .discard_variant(&name, &body.kubo)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "discarded": name, "kubo": body.kubo })))
 }

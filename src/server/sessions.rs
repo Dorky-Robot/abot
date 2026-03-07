@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::auth::middleware::{Authenticated, CsrfVerified};
+use crate::engine::{DEFAULT_COLS, DEFAULT_ROWS};
 use crate::error::AppError;
 use crate::server::anthropic_oauth;
 use crate::server::AppState;
@@ -60,9 +61,15 @@ pub async fn create_session(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let session_name = app
         .engine
-        .create_session(body.name, 120, 40, HashMap::new(), body.kubo)
+        .create_session(
+            body.name,
+            DEFAULT_COLS,
+            DEFAULT_ROWS,
+            HashMap::new(),
+            body.kubo,
+        )
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": session_name })))
 }
@@ -77,7 +84,7 @@ pub async fn get_session(
         .engine
         .get_session(&name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
     Ok(Json(json!(session)))
 }
 
@@ -88,19 +95,20 @@ pub async fn rename_session(
     Path(old_name): Path<String>,
     Json(body): Json<RenameBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let new_name = &body.name;
-
-    app.engine
-        .rename_session(&old_name, new_name)
+    let new_qualified = app
+        .engine
+        .rename_session(&old_name, &body.name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     // Update ClientTracker so WebSocket relay continues routing output
     app.stream_clients
-        .rename_attached_session(&old_name, new_name)
+        .rename_attached_session(&old_name, &new_qualified)
         .await;
 
-    Ok(Json(json!({ "oldName": old_name, "newName": new_name })))
+    Ok(Json(
+        json!({ "oldName": old_name, "newName": new_qualified }),
+    ))
 }
 
 /// DELETE /sessions/:name — delete a session
@@ -112,7 +120,7 @@ pub async fn delete_session(
     app.engine
         .delete_session(&name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": name })))
 }
@@ -138,7 +146,7 @@ pub async fn set_session_credentials(
     app.engine
         .update_session_env(&name, session_env)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "session": name, "status": "connected" })))
 }
@@ -153,7 +161,7 @@ pub async fn session_credentials_status(
         .engine
         .get_session(&name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     let status = if session.env_keys > 0 {
         "connected"
@@ -177,7 +185,7 @@ pub async fn delete_session_credentials(
     app.engine
         .update_session_env(&name, session_env)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "session": name, "status": "disconnected" })))
 }
@@ -190,9 +198,9 @@ pub async fn open_bundle(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let (name, bundle_path) = app
         .engine
-        .open_bundle(&body.path, 120, 40, &body.kubo)
+        .open_bundle(&body.path, DEFAULT_COLS, DEFAULT_ROWS, &body.kubo)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": name, "path": bundle_path })))
 }
@@ -207,7 +215,7 @@ pub async fn save_session(
         .engine
         .save_session(&name)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "session": name, "path": path })))
 }
@@ -223,7 +231,7 @@ pub async fn save_session_as(
         .engine
         .save_session_as(&name, &body.path)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "session": name, "path": saved_path })))
 }
@@ -240,7 +248,7 @@ pub async fn close_session(
     app.engine
         .close_session(&name, save)
         .await
-        .map_err(AppError::from_engine)?;
+        .map_err(AppError::from)?;
 
     Ok(Json(json!({ "session": name })))
 }

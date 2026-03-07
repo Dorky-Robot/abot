@@ -1,10 +1,9 @@
-use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::backend::SessionBackend;
-use super::{bundle, kubo, kubo_exec, Engine};
+use super::{bundle, kubo, kubo_exec, Engine, EngineError, EngineResult};
 
 impl Engine {
     // ── Kubo CRUD ────────────────────────────────────────────
@@ -18,7 +17,7 @@ impl Engine {
         list
     }
 
-    pub async fn create_kubo(&self, name: &str) -> Result<String> {
+    pub async fn create_kubo(&self, name: &str) -> EngineResult<String> {
         let kubos_dir = bundle::resolve_kubos_dir(&self.data_dir);
         let kubo_path = kubo::Kubo::ensure_kubo_dir(&kubos_dir, name)?;
         let new_kubo = kubo::new_kubo(name.to_string(), kubo_path.clone())?;
@@ -27,30 +26,32 @@ impl Engine {
         Ok(kubo_path.to_string_lossy().to_string())
     }
 
-    pub async fn start_kubo(&self, name: &str) -> Result<()> {
+    pub async fn start_kubo(&self, name: &str) -> EngineResult<()> {
         let mut kubos = self.kubos.lock().await;
         if let Some(kubo) = kubos.get_mut(name) {
             kubo.start().await?;
             Ok(())
         } else {
-            anyhow::bail!("kubo '{}' not found", name);
+            Err(EngineError::NotFound(format!("kubo '{name}' not found")))
         }
     }
 
-    pub async fn stop_kubo(&self, name: &str) -> Result<()> {
+    pub async fn stop_kubo(&self, name: &str) -> EngineResult<()> {
         let mut kubos = self.kubos.lock().await;
         if let Some(kubo) = kubos.get_mut(name) {
             kubo.stop().await?;
             Ok(())
         } else {
-            anyhow::bail!("kubo '{}' not found", name);
+            Err(EngineError::NotFound(format!("kubo '{name}' not found")))
         }
     }
 
-    pub async fn open_kubo(&self, path: &str) -> Result<String> {
+    pub async fn open_kubo(&self, path: &str) -> EngineResult<String> {
         let kubo_path = PathBuf::from(path);
         if !kubo_path.exists() || !kubo_path.is_dir() {
-            anyhow::bail!("kubo path does not exist: {}", path);
+            return Err(EngineError::NotFound(format!(
+                "kubo path does not exist: {path}"
+            )));
         }
 
         let dir_name = kubo_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -60,9 +61,11 @@ impl Engine {
             .to_string();
 
         if name.is_empty() {
-            anyhow::bail!("could not determine kubo name from path");
+            return Err(EngineError::InvalidInput(
+                "could not determine kubo name from path".into(),
+            ));
         }
-        kubo::validate_name(&name)?;
+        kubo::validate_name(&name).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
 
         let manifest_path = kubo_path.join("manifest.json");
         if !manifest_path.exists() {
@@ -95,7 +98,7 @@ impl Engine {
         cols: u16,
         rows: u16,
         env: HashMap<String, String>,
-    ) -> Result<Option<String>> {
+    ) -> EngineResult<Option<String>> {
         self.ensure_abot_in_kubo(abot_name, kubo_name).await?;
         bundle::add_known_abot(&self.data_dir, abot_name);
 
@@ -126,7 +129,11 @@ impl Engine {
     /// Remove an abot from a kubo — equivalent to dismissing the variant.
     /// Closes the session, kills the tmux session, cleans up the git worktree
     /// (keeping the branch as "past work"), and removes from the kubo manifest.
-    pub async fn remove_abot_from_kubo(&self, kubo_name: &str, abot_name: &str) -> Result<()> {
+    pub async fn remove_abot_from_kubo(
+        &self,
+        kubo_name: &str,
+        abot_name: &str,
+    ) -> EngineResult<()> {
         self.dismiss_variant(abot_name, kubo_name).await
     }
 
@@ -136,10 +143,11 @@ impl Engine {
         &self,
         kubo_name: &str,
         abot_name: &str,
+        session_name: &str,
         cols: u16,
         rows: u16,
         session_env: &HashMap<String, String>,
-    ) -> Result<Box<dyn SessionBackend>> {
+    ) -> EngineResult<Box<dyn SessionBackend>> {
         let global_env = self.agent_env.lock().await;
         let mut merged = global_env.clone();
         drop(global_env);
@@ -147,7 +155,7 @@ impl Engine {
         let mut kubos = self.kubos.lock().await;
         let kubo = kubos
             .get_mut(kubo_name)
-            .ok_or_else(|| anyhow::anyhow!("kubo '{}' not found", kubo_name))?;
+            .ok_or_else(|| EngineError::NotFound(format!("kubo '{kubo_name}' not found")))?;
 
         let kubo_creds = bundle::read_credentials(&kubo.path.join("credentials.json"));
         merged.extend(kubo_creds);
@@ -158,7 +166,7 @@ impl Engine {
         let container_id = kubo
             .container_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("kubo '{}' failed to start", kubo_name))?
+            .ok_or_else(|| EngineError::Internal(format!("kubo '{kubo_name}' failed to start")))?
             .clone();
 
         kubo.ensure_abot_home(abot_name)?;
@@ -169,15 +177,19 @@ impl Engine {
 
         let mut kubos = self.kubos.lock().await;
         if let Some(kubo) = kubos.get_mut(kubo_name) {
-            kubo.session_opened();
+            kubo.session_opened(session_name);
         }
 
         Ok(Box::new(backend))
     }
 
-    pub(super) async fn ensure_abot_in_kubo(&self, name: &str, kubo: &str) -> Result<PathBuf> {
-        kubo::validate_name(name)?;
-        kubo::validate_name(kubo)?;
+    pub(super) async fn ensure_abot_in_kubo(
+        &self,
+        name: &str,
+        kubo: &str,
+    ) -> EngineResult<PathBuf> {
+        kubo::validate_name(name).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
+        kubo::validate_name(kubo).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
 
         let abots_dir = bundle::resolve_abots_dir(&self.data_dir);
         if let Err(e) = std::fs::create_dir_all(&abots_dir) {
@@ -194,12 +206,14 @@ impl Engine {
         canonical_path: &Path,
         name: &str,
         kubo: &str,
-    ) -> Result<PathBuf> {
+    ) -> EngineResult<PathBuf> {
         let kubo_path = {
             let kubos = self.kubos.lock().await;
             match kubos.get(kubo) {
                 Some(k) => k.path.clone(),
-                None => anyhow::bail!("kubo '{}' not found", kubo),
+                None => {
+                    return Err(EngineError::NotFound(format!("kubo '{kubo}' not found")));
+                }
             }
         };
 
@@ -225,7 +239,7 @@ impl Engine {
             Self::teardown_session(&mut sessions, &self.output_tx, &qualified)
                 .and_then(|(_, kn)| kn)
         };
-        self.decrement_kubo(kubo_name).await;
+        self.release_kubo_session(kubo_name, &qualified).await;
     }
 
     pub(super) async fn remove_abot_from_kubo_manifest(&self, kubo: &str, abot: &str) {
@@ -248,19 +262,31 @@ impl Engine {
     // ── Health & idle checks ────────────────────────────────
 
     pub(super) async fn health_check_kubos(&self) {
-        let dead_kubos: Vec<String> = {
+        // Snapshot kubos that have containers and active sessions, then check
+        // Docker status outside the lock to avoid blocking kubo operations.
+        let to_check: Vec<(String, String)> = {
             let kubos = self.kubos.lock().await;
-            let mut dead = Vec::new();
-            for (name, kubo) in kubos.iter() {
-                if kubo.container_id.is_some()
-                    && kubo.active_sessions > 0
-                    && !kubo.is_running().await
-                {
-                    dead.push(name.clone());
-                }
-            }
-            dead
+            kubos
+                .iter()
+                .filter_map(|(name, kubo)| {
+                    if !kubo.active_sessions.is_empty() {
+                        kubo.container_id
+                            .as_ref()
+                            .map(|cid| (name.clone(), cid.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         };
+
+        let mut dead_kubos = Vec::new();
+        for (name, container_id) in &to_check {
+            let is_alive = kubo::Kubo::check_container_running(container_id).await;
+            if !is_alive {
+                dead_kubos.push(name.clone());
+            }
+        }
 
         for kubo_name in dead_kubos {
             tracing::warn!(
@@ -286,7 +312,7 @@ impl Engine {
                 let mut kubos = self.kubos.lock().await;
                 if let Some(kubo) = kubos.get_mut(&kubo_name) {
                     kubo.container_id = None;
-                    kubo.active_sessions = 0;
+                    kubo.active_sessions.clear();
                     kubo.last_session_close = Some(std::time::Instant::now());
                 }
             }

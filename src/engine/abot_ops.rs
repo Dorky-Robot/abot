@@ -1,7 +1,6 @@
-use anyhow::Result;
 use std::collections::HashSet;
 
-use super::{bundle, kubo, kubo_exec, Engine};
+use super::{bundle, kubo, kubo_exec, Engine, EngineError, EngineResult};
 
 impl Engine {
     // ── Abot CRUD ────────────────────────────────────────────
@@ -20,31 +19,31 @@ impl Engine {
             .collect()
     }
 
-    pub async fn get_abot_info(&self, abot_name: &str) -> Result<bundle::AbotDetail> {
-        kubo::validate_name(abot_name)?;
+    pub async fn get_abot_info(&self, abot_name: &str) -> EngineResult<bundle::AbotDetail> {
+        kubo::validate_name(abot_name).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
         let mut detail = bundle::get_abot_detail(&self.data_dir, abot_name)?;
         let session_keys = self.build_session_keys().await;
         inject_has_session(&mut detail, &session_keys);
         Ok(detail)
     }
 
-    pub async fn remove_known_abot(&self, abot_name: &str) -> Result<()> {
-        kubo::validate_name(abot_name)?;
+    pub async fn remove_known_abot(&self, abot_name: &str) -> EngineResult<()> {
+        kubo::validate_name(abot_name).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
         bundle::remove_known_abot(&self.data_dir, abot_name);
         Ok(())
     }
 
-    pub async fn dismiss_variant(&self, abot_name: &str, kubo_name: &str) -> Result<()> {
+    pub async fn dismiss_variant(&self, abot_name: &str, kubo_name: &str) -> EngineResult<()> {
         self.variant_op(abot_name, kubo_name, VariantOp::Dismiss)
             .await
     }
 
-    pub async fn integrate_variant(&self, abot_name: &str, kubo_name: &str) -> Result<()> {
+    pub async fn integrate_variant(&self, abot_name: &str, kubo_name: &str) -> EngineResult<()> {
         self.variant_op(abot_name, kubo_name, VariantOp::Integrate)
             .await
     }
 
-    pub async fn discard_variant(&self, abot_name: &str, kubo_name: &str) -> Result<()> {
+    pub async fn discard_variant(&self, abot_name: &str, kubo_name: &str) -> EngineResult<()> {
         self.variant_op(abot_name, kubo_name, VariantOp::Discard)
             .await
     }
@@ -56,9 +55,9 @@ impl Engine {
         sessions.keys().cloned().collect()
     }
 
-    async fn variant_op(&self, abot: &str, kubo: &str, op: VariantOp) -> Result<()> {
-        kubo::validate_name(abot)?;
-        kubo::validate_name(kubo)?;
+    async fn variant_op(&self, abot: &str, kubo: &str, op: VariantOp) -> EngineResult<()> {
+        kubo::validate_name(abot).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
+        kubo::validate_name(kubo).map_err(|e| EngineError::InvalidInput(e.to_string()))?;
         let abots_dir = bundle::resolve_abots_dir(&self.data_dir);
         let canonical_path = abots_dir.join(format!("{abot}.abot"));
         let kubo_branch = format!("kubo/{kubo}");
