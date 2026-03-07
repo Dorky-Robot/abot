@@ -70,9 +70,14 @@ impl Engine {
             let kubos = self.kubos.lock().await;
             if let Some(k) = kubos.get(kubo) {
                 if let Some(ref cid) = k.container_id {
-                    if let Ok(docker) = bollard::Docker::connect_with_socket_defaults() {
-                        let tmux_name = kubo_exec::tmux_session_name(abot);
-                        kubo_exec::tmux_kill_session(&docker, cid, &tmux_name).await;
+                    match bollard::Docker::connect_with_socket_defaults() {
+                        Ok(docker) => {
+                            let tmux_name = kubo_exec::tmux_session_name(abot);
+                            kubo_exec::tmux_kill_session(&docker, cid, &tmux_name).await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("failed to connect to Docker for tmux cleanup: {}", e);
+                        }
                     }
                 }
             }

@@ -965,20 +965,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
                 onIntegrate: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).integrateVariant(name, kuboName);
-                  if (!mounted) return;
-                  ref.read(kuboServiceProvider.notifier).refresh();
+                  if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
                 },
                 onDiscard: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).discardVariant(name, kuboName);
-                  if (!mounted) return;
-                  ref.read(kuboServiceProvider.notifier).refresh();
+                  if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
                 },
                 onDismiss: (kuboName) async {
                   final name = _abotDetailName!;
                   await ref.read(abotServiceProvider.notifier).dismissVariant(name, kuboName);
-                  if (!mounted) return;
-                  ref.read(kuboServiceProvider.notifier).refresh();
+                  if (mounted) ref.read(kuboServiceProvider.notifier).refresh();
                 },
               );
             }),
