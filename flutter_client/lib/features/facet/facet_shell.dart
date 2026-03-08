@@ -11,7 +11,6 @@ import '../../core/network/websocket_service.dart';
 import '../../core/network/ws_messages.dart';
 import '../../core/theme/abot_theme.dart';
 import '../terminal/terminal_facet.dart';
-import 'facet.dart';
 import 'facet_manager.dart';
 import 'overlay_provider.dart';
 import 'sidebar_provider.dart';
@@ -45,6 +44,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
   Timer? _animationCleanup;
   final Map<String, web.HTMLElement> _labelOverlays = {};
   ProviderSubscription? _wsSubscription;
+  ProviderSubscription? _tabSubscription;
+  ProviderSubscription? _activeKuboSubscription;
 
   @override
   void initState() {
@@ -113,6 +114,36 @@ class _FacetShellState extends ConsumerState<FacetShell>
     if (!mounted) return;
     wsService.connect();
 
+    // React to sidebar tab changes (CSS transforms + terminal refocus).
+    _tabSubscription = ref.listenManual(
+        sidebarProvider.select((s) => s.tab), (prev, next) {
+      if (!mounted) return;
+      _updateSidebarTransforms();
+      final focusedId = ref.read(facetManagerProvider).focusedId;
+      if (focusedId != null) {
+        TerminalRegistry.instance.focusTerminal(focusedId);
+      }
+    });
+
+    // React to active kubo changes — unfocus if the focused session is in a different kubo.
+    _activeKuboSubscription = ref.listenManual(
+        workspaceProvider.select((w) => w.activeKubo), (prev, next) {
+      if (!mounted || next == null) return;
+      final focusedId = ref.read(facetManagerProvider).focusedId;
+      if (focusedId == null) return;
+      final sessions = ref.read(sessionServiceProvider);
+      final infoMap = sessions.when(
+        data: (list) => {for (final s in list) s.name: s},
+        loading: () => <String, SessionInfo>{},
+        error: (_, _) => <String, SessionInfo>{},
+      );
+      final focusedSession = ref.read(facetManagerProvider).facets[focusedId]?.sessionName;
+      final focusedKubo = infoMap[focusedSession]?.kubo;
+      if (focusedKubo != next) {
+        ref.read(facetManagerProvider.notifier).unfocus();
+      }
+    });
+
     _wsSubscription = ref.listenManual(wsServiceProvider, (prev, next) {
       if (!mounted) return;
       if (prev?.connectionState != WsConnectionState.connected &&
@@ -176,10 +207,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
   }
 
   // --- Sidebar collapse ---
-
-  void _showAbotDetail(String name) {
-    ref.read(overlayProvider.notifier).showAbotDetail(name);
-  }
 
   void _toggleSidebar() {
     ref.read(sidebarProvider.notifier).toggleCollapsed();
@@ -759,6 +786,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
   void dispose() {
     _animationCleanup?.cancel();
     _wsSubscription?.close();
+    _tabSubscription?.close();
+    _activeKuboSubscription?.close();
     _removeAllLabelOverlays();
     TerminalRegistry.instance.onRegistered = null;
     WidgetsBinding.instance.removeObserver(this);
@@ -769,7 +798,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
   Widget build(BuildContext context) {
     final facetState = ref.watch(facetManagerProvider);
     final sessionsAsync = ref.watch(sessionServiceProvider);
-    final wsState = ref.watch(wsServiceProvider);
     final kubosAsync = ref.watch(kuboServiceProvider);
     final abotsAsync = ref.watch(abotServiceProvider);
     final overlay = ref.watch(overlayProvider);
@@ -813,7 +841,7 @@ class _FacetShellState extends ConsumerState<FacetShell>
             },
             child: Focus(
               autofocus: true,
-              child: _buildFacetLayout(facetState, sessionsAsync, wsState, kubosAsync, abotsAsync),
+              child: _buildFacetLayout(facetState, sessionsAsync),
             ),
           ),
           if (overlay.showSettings)
@@ -910,16 +938,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
   }
 
   Widget _buildFacetLayout(
-      FacetManagerState state, AsyncValue<List<SessionInfo>> sessionsAsync,
-      WsState wsState, AsyncValue<List<KuboInfo>> kubosAsync,
-      AsyncValue<List<AbotInfo>> abotsAsync) {
-    final allFacets = state.order
-        .map((id) => state.facets[id])
-        .whereType<FacetData>()
-        .toList();
-
-    for (final facet in allFacets) {
-      _ensureCardKey(facet.id);
+      FacetManagerState state, AsyncValue<List<SessionInfo>> sessionsAsync) {
+    for (final id in state.order) {
+      final facet = state.facets[id];
+      if (facet != null) _ensureCardKey(facet.id);
     }
 
     final serverSessions = sessionsAsync.when(
@@ -927,23 +949,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
       loading: () => <SessionInfo>[],
       error: (_, _) => <SessionInfo>[],
     );
-    final openSessionNames = state.facets.values
-        .map((f) => f.sessionName)
-        .toSet();
-    final kubos = kubosAsync.when(
-      data: (list) => list,
-      loading: () => <KuboInfo>[],
-      error: (_, _) => <KuboInfo>[],
-    );
-
-    final knownAbots = abotsAsync.when(
-      data: (list) => list,
-      loading: () => <AbotInfo>[],
-      error: (_, _) => <AbotInfo>[],
-    );
-
-    final workspace = ref.watch(workspaceProvider);
-    final sidebar = ref.watch(sidebarProvider);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -960,16 +965,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
         return Row(
           children: [
             StageStrip(
-              allFacets: allFacets,
-              focusedId: state.focusedId,
               cardKeys: _cardKeys,
-              serverSessions: serverSessions,
-              openSessionNames: openSessionNames,
               onFocusFacet: _focusFacet,
               onOpenSession: _onOpenSession,
               onDeleteSession: _onDeleteSession,
-              onSessionSettings: (name) =>
-                  ref.read(overlayProvider.notifier).showSessionSettings(name),
               onNewSession: () {
                 final ak = ref.read(workspaceProvider).activeKubo;
                 if (ak != null) _addAbotToKubo(ak);
@@ -980,48 +979,9 @@ class _FacetShellState extends ConsumerState<FacetShell>
               onOpenBundleInKubo: _openBundleInKubo,
               onOpenKubo: _openKuboFromDisk,
               onRemoveAbot: _removeAbotFromKubo,
-              onKuboSettings: (name) =>
-                  ref.read(overlayProvider.notifier).showKuboSettings(name),
-              connectionState: wsState.connectionState,
-              sessionInfoMap: sessionInfoMap,
-              kubos: kubos.where((k) => workspace.openKubos.contains(k.name)).toList(),
-              collapsed: sidebar.collapsed,
-              onToggleCollapse: _toggleSidebar,
-              onSettingsTap: () =>
-                  ref.read(overlayProvider.notifier).toggleSettings(),
               onScroll: _updateSidebarTransforms,
-              onTabChanged: (tab) {
-                ref.read(sidebarProvider.notifier).setTab(tab);
-                _updateSidebarTransforms();
-                final focusedId = ref.read(facetManagerProvider).focusedId;
-                if (focusedId != null) {
-                  TerminalRegistry.instance.focusTerminal(focusedId);
-                }
-              },
-              knownAbots: knownAbots,
-              onAbotDetail: (name) => _showAbotDetail(name),
-              onIntegrateVariant: (abotName, kuboName) async {
-                await ref.read(abotServiceProvider.notifier).integrateVariant(abotName, kuboName);
-              },
-              onDiscardVariant: (abotName, kuboName) async {
-                await ref.read(abotServiceProvider.notifier).discardVariant(abotName, kuboName);
-              },
-              onDismissVariant: (abotName, kuboName) async {
-                await ref.read(abotServiceProvider.notifier).dismissVariant(abotName, kuboName);
-              },
+              onToggleCollapse: _toggleSidebar,
               onCreateAbotSession: _createAbotSession,
-              activeKubo: workspace.activeKubo,
-              onActiveKuboChanged: (kubo) {
-                ref.read(workspaceProvider.notifier).setActiveKubo(kubo);
-                final focusedId = ref.read(facetManagerProvider).focusedId;
-                if (focusedId != null) {
-                  final focusedSession = ref.read(facetManagerProvider).facets[focusedId]?.sessionName;
-                  final focusedKubo = sessionInfoMap[focusedSession]?.kubo;
-                  if (focusedKubo != kubo) {
-                    ref.read(facetManagerProvider.notifier).unfocus();
-                  }
-                }
-              },
             ),
             Expanded(child: _buildFocusedArea(state, sessionInfoMap)),
           ],

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import '../../core/network/abot_service.dart';
 import '../../core/network/kubo_service.dart';
@@ -7,22 +8,20 @@ import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/theme/abot_theme.dart';
 import 'facet.dart';
-
-/// Which sidebar tab is active.
-enum SidebarTab { kubos, abots }
+import 'facet_manager.dart';
+import 'overlay_provider.dart';
+import 'sidebar_provider.dart';
+import 'workspace_provider.dart';
 
 /// Side strip with two tabs: Kubos (grouped) and Abots (flat session list).
-/// The [+] button is contextual — creates a kubo or abot depending on tab.
-class StageStrip extends StatefulWidget {
-  final List<FacetData> allFacets;
-  final String? focusedId;
+/// Watches providers directly for reactive updates (no prop-drilling for data).
+/// Action callbacks that require FacetShell context (dialogs, CSS transforms,
+/// file pickers) are still passed as constructor params.
+class StageStrip extends ConsumerStatefulWidget {
   final Map<String, GlobalKey>? cardKeys;
-  final List<SessionInfo> serverSessions;
-  final Set<String> openSessionNames;
   final void Function(String facetId) onFocusFacet;
   final void Function(String sessionName) onOpenSession;
   final void Function(String sessionName) onDeleteSession;
-  final void Function(String sessionName)? onSessionSettings;
   final VoidCallback onNewSession;
   final void Function(String kubo) onNewSessionInKubo;
   final VoidCallback onNewKubo;
@@ -30,36 +29,17 @@ class StageStrip extends StatefulWidget {
   final void Function(String kubo)? onOpenBundleInKubo;
   final VoidCallback? onOpenKubo;
   final void Function(String kuboName, String abotName)? onRemoveAbot;
-  final void Function(String kuboName)? onKuboSettings;
-  final WsConnectionState connectionState;
-  final Map<String, SessionInfo> sessionInfoMap;
-  final List<KuboInfo> kubos;
-  final bool collapsed;
-  final VoidCallback onToggleCollapse;
-  final VoidCallback? onSettingsTap;
   final VoidCallback? onScroll;
-  final void Function(SidebarTab tab)? onTabChanged;
-  final String? activeKubo;
-  final void Function(String kubo)? onActiveKuboChanged;
-  final List<AbotInfo> knownAbots;
-  final void Function(String abotName)? onAbotDetail;
-  final void Function(String abotName, String kuboName)? onIntegrateVariant;
-  final void Function(String abotName, String kuboName)? onDiscardVariant;
-  final void Function(String abotName, String kuboName)? onDismissVariant;
+  final VoidCallback onToggleCollapse;
   /// Create a session for an abot that's in a kubo manifest but has no session yet.
   final void Function(String abotName, String kuboName)? onCreateAbotSession;
 
   const StageStrip({
     super.key,
-    required this.allFacets,
-    required this.focusedId,
     this.cardKeys,
-    required this.serverSessions,
-    required this.openSessionNames,
     required this.onFocusFacet,
     required this.onOpenSession,
     required this.onDeleteSession,
-    this.onSessionSettings,
     required this.onNewSession,
     required this.onNewSessionInKubo,
     required this.onNewKubo,
@@ -67,53 +47,34 @@ class StageStrip extends StatefulWidget {
     this.onOpenBundleInKubo,
     this.onOpenKubo,
     this.onRemoveAbot,
-    this.onKuboSettings,
-    required this.connectionState,
-    this.sessionInfoMap = const {},
-    this.kubos = const [],
-    required this.collapsed,
-    required this.onToggleCollapse,
-    this.onSettingsTap,
     this.onScroll,
-    this.onTabChanged,
-    this.activeKubo,
-    this.onActiveKuboChanged,
-    this.knownAbots = const [],
-    this.onAbotDetail,
-    this.onIntegrateVariant,
-    this.onDiscardVariant,
-    this.onDismissVariant,
+    required this.onToggleCollapse,
     this.onCreateAbotSession,
   });
 
   @override
-  State<StageStrip> createState() => _StageStripState();
+  ConsumerState<StageStrip> createState() => _StageStripState();
 }
 
-class _StageStripState extends State<StageStrip> {
-  static const _tabKey = 'abot_sidebar_tab';
+class _StageStripState extends ConsumerState<StageStrip> {
   static const _collapsedKey = 'abot_collapsed_kubos';
   static const _collapsedAbotsKey = 'abot_collapsed_abots';
 
-  SidebarTab _activeTab = SidebarTab.abots;
   final Set<String> _collapsedKubos = {};
   final Set<String> _collapsedAbots = {};
 
   @override
   void initState() {
     super.initState();
-    _restoreState();
+    _restoreCollapsed();
     // Notify parent of restored tab so CSS transforms update correctly.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      widget.onTabChanged?.call(_activeTab);
+      widget.onScroll?.call();
     });
   }
 
-  void _restoreState() {
+  void _restoreCollapsed() {
     final storage = web.window.localStorage;
-    final tab = storage.getItem(_tabKey);
-    if (tab == 'kubos') _activeTab = SidebarTab.kubos;
-    if (tab == 'abots') _activeTab = SidebarTab.abots;
 
     final collapsed = storage.getItem(_collapsedKey);
     if (collapsed != null) {
@@ -136,11 +97,6 @@ class _StageStripState extends State<StageStrip> {
     }
   }
 
-  void _persistTab() {
-    web.window.localStorage.setItem(
-        _tabKey, _activeTab == SidebarTab.kubos ? 'kubos' : 'abots');
-  }
-
   void _persistCollapsed() {
     web.window.localStorage.setItem(
         _collapsedKey, jsonEncode(_collapsedKubos.toList()));
@@ -152,40 +108,76 @@ class _StageStripState extends State<StageStrip> {
   }
 
   /// Return abot names from the kubo manifest that have no sessions (neither open nor unattached).
-  List<String> _manifestOnlyAbots(String kuboName, _KuboGroup group) {
-    final kuboInfo = widget.kubos.where((k) => k.name == kuboName).firstOrNull;
+  List<String> _manifestOnlyAbots(
+      String kuboName, _KuboGroup group, List<KuboInfo> kubos,
+      Map<String, SessionInfo> sessionInfoMap) {
+    final kuboInfo = kubos.where((k) => k.name == kuboName).firstOrNull;
     if (kuboInfo == null) return [];
     // Use displayName (bare abot name) to compare with manifest abots
     final sessionDisplayNames = <String>{
-      ...group.facets.map((f) => widget.sessionInfoMap[f.sessionName]?.displayName ?? f.sessionName),
+      ...group.facets.map((f) => sessionInfoMap[f.sessionName]?.displayName ?? f.sessionName),
       ...group.unattachedSessions.map((s) => s.displayName),
     };
     return kuboInfo.abots.where((a) => !sessionDisplayNames.contains(a)).toList();
-  }
-
-  String? _kuboFor(String sessionName) {
-    return widget.sessionInfoMap[sessionName]?.kubo;
   }
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
 
+    // Watch all data providers directly — no prop-drilling.
+    final facetState = ref.watch(facetManagerProvider);
+    final sessionsAsync = ref.watch(sessionServiceProvider);
+    final wsState = ref.watch(wsServiceProvider);
+    final kubosAsync = ref.watch(kuboServiceProvider);
+    final abotsAsync = ref.watch(abotServiceProvider);
+    final sidebar = ref.watch(sidebarProvider);
+    final workspace = ref.watch(workspaceProvider);
+
+    final serverSessions = sessionsAsync.when(
+      data: (list) => list,
+      loading: () => <SessionInfo>[],
+      error: (_, _) => <SessionInfo>[],
+    );
+    final allFacets = facetState.order
+        .map((id) => facetState.facets[id])
+        .whereType<FacetData>()
+        .toList();
+    final focusedId = facetState.focusedId;
+    final openSessionNames = facetState.facets.values
+        .map((f) => f.sessionName)
+        .toSet();
+    final sessionInfoMap = {for (final s in serverSessions) s.name: s};
+    final kubos = kubosAsync.when(
+      data: (list) => list.where((k) => workspace.openKubos.contains(k.name)).toList(),
+      loading: () => <KuboInfo>[],
+      error: (_, _) => <KuboInfo>[],
+    );
+    final collapsed = sidebar.collapsed;
+    final activeKubo = workspace.activeKubo;
+    final knownAbots = abotsAsync.when(
+      data: (list) => list,
+      loading: () => <AbotInfo>[],
+      error: (_, _) => <AbotInfo>[],
+    );
+    final activeTab = sidebar.tab;
+    final connectionState = wsState.connectionState;
+
     return AnimatedContainer(
       duration: AbotSizes.sidebarAnimDuration,
       curve: Curves.easeInOut,
-      width: widget.collapsed
+      width: collapsed
           ? AbotSizes.sidebarCollapsedWidth
           : AbotSizes.sidebarExpandedWidth,
       color: p.mantle,
       child: Column(
         children: [
-          _buildTopBar(p),
-          if (widget.collapsed)
+          _buildTopBar(p, collapsed, activeTab),
+          if (collapsed)
             const Spacer()
           else ...[
             // Tab bar
-            _buildTabBar(p),
+            _buildTabBar(p, activeTab),
             // Tab content
             Expanded(
               child: NotificationListener<ScrollNotification>(
@@ -193,30 +185,33 @@ class _StageStripState extends State<StageStrip> {
                   widget.onScroll?.call();
                   return false;
                 },
-                child: _activeTab == SidebarTab.kubos
-                    ? _buildKubosTab(p)
-                    : _buildAbotsTab(p),
+                child: activeTab == SidebarTab.kubos
+                    ? _buildKubosTab(p, kubos, allFacets, serverSessions,
+                        openSessionNames, sessionInfoMap, focusedId, activeKubo)
+                    : _buildAbotsTab(p, knownAbots, serverSessions,
+                        allFacets, sessionInfoMap),
               ),
             ),
           ],
           _SidebarFooter(
-            connectionState: widget.connectionState,
-            onSettingsTap: widget.onSettingsTap,
-            collapsed: widget.collapsed,
+            connectionState: connectionState,
+            onSettingsTap: () =>
+                ref.read(overlayProvider.notifier).toggleSettings(),
+            collapsed: collapsed,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildTopBar(CatPalette p) {
+  Widget _buildTopBar(CatPalette p, bool collapsed, SidebarTab activeTab) {
     return Padding(
       padding: const EdgeInsets.only(
         top: AbotSpacing.sm,
         left: AbotSpacing.xs,
         right: AbotSpacing.xs,
       ),
-      child: widget.collapsed
+      child: collapsed
           ? Column(
               children: [
                 _IconBtn(
@@ -229,10 +224,10 @@ class _StageStripState extends State<StageStrip> {
                 _IconBtn(
                   icon: Icons.add,
                   color: p.subtext0,
-                  onTap: _activeTab == SidebarTab.kubos
+                  onTap: activeTab == SidebarTab.kubos
                       ? widget.onNewKubo
                       : widget.onNewSession,
-                  tooltip: _activeTab == SidebarTab.kubos
+                  tooltip: activeTab == SidebarTab.kubos
                       ? 'New kubo'
                       : 'New abot',
                 ),
@@ -247,7 +242,7 @@ class _StageStripState extends State<StageStrip> {
                   tooltip: 'Collapse sidebar',
                 ),
                 const Spacer(),
-                if (_activeTab == SidebarTab.kubos && widget.onOpenKubo != null)
+                if (activeTab == SidebarTab.kubos && widget.onOpenKubo != null)
                   _IconBtn(
                     icon: Icons.folder_open_outlined,
                     color: p.subtext0,
@@ -257,10 +252,10 @@ class _StageStripState extends State<StageStrip> {
                 _IconBtn(
                   icon: Icons.add,
                   color: p.subtext0,
-                  onTap: _activeTab == SidebarTab.kubos
+                  onTap: activeTab == SidebarTab.kubos
                       ? widget.onNewKubo
                       : widget.onNewSession,
-                  tooltip: _activeTab == SidebarTab.kubos
+                  tooltip: activeTab == SidebarTab.kubos
                       ? 'New kubo'
                       : 'New abot',
                 ),
@@ -269,7 +264,7 @@ class _StageStripState extends State<StageStrip> {
     );
   }
 
-  Widget _buildTabBar(CatPalette p) {
+  Widget _buildTabBar(CatPalette p, SidebarTab activeTab) {
     return Padding(
       padding: const EdgeInsets.symmetric(
         horizontal: AbotSpacing.sm,
@@ -285,20 +280,18 @@ class _StageStripState extends State<StageStrip> {
           children: [
             _TabButton(
               label: 'Kubos',
-              isActive: _activeTab == SidebarTab.kubos,
+              isActive: activeTab == SidebarTab.kubos,
               onTap: () {
-                setState(() => _activeTab = SidebarTab.kubos);
-                _persistTab();
-                widget.onTabChanged?.call(SidebarTab.kubos);
+                ref.read(sidebarProvider.notifier).setTab(SidebarTab.kubos);
+                widget.onScroll?.call();
               },
             ),
             _TabButton(
               label: 'Abots',
-              isActive: _activeTab == SidebarTab.abots,
+              isActive: activeTab == SidebarTab.abots,
               onTap: () {
-                setState(() => _activeTab = SidebarTab.abots);
-                _persistTab();
-                widget.onTabChanged?.call(SidebarTab.abots);
+                ref.read(sidebarProvider.notifier).setTab(SidebarTab.abots);
+                widget.onScroll?.call();
               },
             ),
           ],
@@ -309,22 +302,30 @@ class _StageStripState extends State<StageStrip> {
 
   // ── Kubos tab ────────────────────────────────────────────────────────
 
-  Widget _buildKubosTab(CatPalette p) {
+  Widget _buildKubosTab(
+      CatPalette p,
+      List<KuboInfo> kubos,
+      List<FacetData> allFacets,
+      List<SessionInfo> serverSessions,
+      Set<String> openSessionNames,
+      Map<String, SessionInfo> sessionInfoMap,
+      String? focusedId,
+      String? activeKubo) {
     final groups = <String, _KuboGroup>{};
-    for (final k in widget.kubos) {
+    for (final k in kubos) {
       groups.putIfAbsent(k.name, () => _KuboGroup(kuboName: k.name));
     }
 
     // Assign all sessions (open and unattached) to groups
-    for (final facet in widget.allFacets) {
-      final kubo = _kuboFor(facet.sessionName);
+    for (final facet in allFacets) {
+      final kubo = sessionInfoMap[facet.sessionName]?.kubo;
       if (kubo != null) {
         groups.putIfAbsent(kubo, () => _KuboGroup(kuboName: kubo));
         groups[kubo]!.facets.add(facet);
       }
     }
-    for (final session in widget.serverSessions) {
-      if (widget.openSessionNames.contains(session.name)) continue;
+    for (final session in serverSessions) {
+      if (openSessionNames.contains(session.name)) continue;
       final kubo = session.kubo;
       if (kubo != null) {
         groups.putIfAbsent(kubo, () => _KuboGroup(kuboName: kubo));
@@ -335,7 +336,7 @@ class _StageStripState extends State<StageStrip> {
     final sortedKeys = groups.keys.toList()..sort();
 
     final kuboRunning = <String, bool>{};
-    for (final k in widget.kubos) {
+    for (final k in kubos) {
       kuboRunning[k.name] = k.running;
     }
 
@@ -365,24 +366,27 @@ class _StageStripState extends State<StageStrip> {
     return CustomScrollView(
       slivers: [
         for (final kuboName in sortedKeys)
-          _buildKuboSection(
-              p, kuboName, groups[kuboName]!, kuboRunning[kuboName] ?? false),
+          _buildKuboSection(p, kuboName, groups[kuboName]!,
+              kuboRunning[kuboName] ?? false, kubos, sessionInfoMap,
+              focusedId, activeKubo),
       ],
     );
   }
 
   Widget _buildKuboSection(
-      CatPalette p, String kuboName, _KuboGroup group, bool running) {
+      CatPalette p, String kuboName, _KuboGroup group, bool running,
+      List<KuboInfo> kubos, Map<String, SessionInfo> sessionInfoMap,
+      String? focusedId, String? activeKubo) {
     final isCollapsed = _collapsedKubos.contains(kuboName);
-    final isActive = widget.activeKubo == kuboName;
-    final manifestOnly = _manifestOnlyAbots(kuboName, group);
+    final isActive = activeKubo == kuboName;
+    final manifestOnly = _manifestOnlyAbots(kuboName, group, kubos, sessionInfoMap);
 
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
       sliver: SliverList(
         delegate: SliverChildListDelegate([
           GestureDetector(
-            onTap: () => widget.onActiveKuboChanged?.call(kuboName),
+            onTap: () => ref.read(workspaceProvider.notifier).setActiveKubo(kuboName),
             behavior: HitTestBehavior.translucent,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -410,15 +414,15 @@ class _StageStripState extends State<StageStrip> {
                   // Open abots (have facets)
                   for (final facet in group.facets)
                     _AbotRow(
-                      name: widget.sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName,
-                      isRunning: widget.sessionInfoMap[facet.sessionName]?.isRunning ?? true,
-                      isFocused: facet.id == widget.focusedId,
-                      isDirty: widget.sessionInfoMap[facet.sessionName]?.dirty ?? false,
-                      onTap: facet.id == widget.focusedId
+                      name: sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName,
+                      isRunning: sessionInfoMap[facet.sessionName]?.isRunning ?? true,
+                      isFocused: facet.id == focusedId,
+                      isDirty: sessionInfoMap[facet.sessionName]?.dirty ?? false,
+                      onTap: facet.id == focusedId
                           ? null
                           : () => widget.onFocusFacet(facet.id),
                       onRemove: widget.onRemoveAbot != null
-                          ? () => widget.onRemoveAbot!(kuboName, widget.sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName)
+                          ? () => widget.onRemoveAbot!(kuboName, sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName)
                           : null,
                     ),
                   // Unattached abots (server sessions not open as facets)
@@ -466,9 +470,8 @@ class _StageStripState extends State<StageStrip> {
                     onOpen: widget.onOpenBundleInKubo != null
                         ? () => widget.onOpenBundleInKubo!(kuboName)
                         : widget.onOpenBundle,
-                    onSettings: widget.onKuboSettings != null
-                        ? () => widget.onKuboSettings!(kuboName)
-                        : null,
+                    onSettings: () =>
+                        ref.read(overlayProvider.notifier).showKuboSettings(kuboName),
                   ),
                 ],
                 const SizedBox(height: AbotSpacing.sm),
@@ -482,16 +485,16 @@ class _StageStripState extends State<StageStrip> {
 
   // ── Abots tab (collapsible groups with kubo branches) ────────────────
 
-  Widget _buildAbotsTab(CatPalette p) {
-    final knownAbots = widget.knownAbots;
-
+  Widget _buildAbotsTab(CatPalette p, List<AbotInfo> knownAbots,
+      List<SessionInfo> serverSessions, List<FacetData> allFacets,
+      Map<String, SessionInfo> sessionInfoMap) {
     // Build a set of bare abot names that have active sessions
     final activeAbotNames = <String>{};
-    for (final session in widget.serverSessions) {
+    for (final session in serverSessions) {
       activeAbotNames.add(session.displayName);
     }
-    for (final facet in widget.allFacets) {
-      final info = widget.sessionInfoMap[facet.sessionName];
+    for (final facet in allFacets) {
+      final info = sessionInfoMap[facet.sessionName];
       activeAbotNames.add(info?.displayName ?? facet.sessionName);
     }
 
@@ -554,9 +557,8 @@ class _StageStripState extends State<StageStrip> {
                     });
                     _persistCollapsedAbots();
                   },
-                  onTapDetail: widget.onAbotDetail != null
-                      ? () => widget.onAbotDetail!(abot.name)
-                      : null,
+                  onTapDetail: () =>
+                      ref.read(overlayProvider.notifier).showAbotDetail(abot.name),
                 ),
               ),
               if (!isCollapsed) ...[
@@ -567,12 +569,11 @@ class _StageStripState extends State<StageStrip> {
                     hasSession: branch.hasSession,
                     isActive: true,
                     onTap: () {
-                      widget.onActiveKuboChanged?.call(branch.kuboName);
+                      ref.read(workspaceProvider.notifier).setActiveKubo(branch.kuboName);
                       widget.onCreateAbotSession?.call(abot.name, branch.kuboName);
                     },
-                    onDismiss: widget.onDismissVariant != null
-                        ? () => widget.onDismissVariant!(abot.name, branch.kuboName)
-                        : null,
+                    onDismiss: () =>
+                        ref.read(abotServiceProvider.notifier).dismissVariant(abot.name, branch.kuboName),
                   ),
                 // Past kubo branches (no worktree)
                 for (final branch in pastBranches)
@@ -580,12 +581,10 @@ class _StageStripState extends State<StageStrip> {
                     kuboName: branch.kuboName,
                     hasSession: false,
                     isActive: false,
-                    onIntegrate: widget.onIntegrateVariant != null
-                        ? () => widget.onIntegrateVariant!(abot.name, branch.kuboName)
-                        : null,
-                    onDiscard: widget.onDiscardVariant != null
-                        ? () => widget.onDiscardVariant!(abot.name, branch.kuboName)
-                        : null,
+                    onIntegrate: () =>
+                        ref.read(abotServiceProvider.notifier).integrateVariant(abot.name, branch.kuboName),
+                    onDiscard: () =>
+                        ref.read(abotServiceProvider.notifier).discardVariant(abot.name, branch.kuboName),
                   ),
                 if (abot.kuboBranches.isEmpty)
                   Padding(
