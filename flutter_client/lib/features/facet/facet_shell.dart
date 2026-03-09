@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/network/abot_service.dart';
+import '../../core/network/api_client.dart';
 import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
@@ -15,7 +16,6 @@ import 'facet_manager.dart';
 import 'overlay_provider.dart';
 import 'sidebar_provider.dart';
 import 'stage_strip.dart';
-import '../../core/network/api_client.dart';
 import '../settings/settings_panel.dart';
 import '../settings/session_settings_panel.dart';
 import '../settings/kubo_settings_panel.dart';
@@ -257,28 +257,17 @@ class _FacetShellState extends ConsumerState<FacetShell>
 
   // --- Facet lifecycle ---
 
-  /// Show a dialog to create a new kubo (empty — user adds abots later).
-  Future<void> _createNewKubo() async {
-    final name = await _showNewKuboDialog();
-    if (name == null || name.isEmpty || !mounted) return;
-    try {
-      await ref.read(kuboServiceProvider.notifier).createKubo(name);
-      if (!mounted) return;
-      ref.invalidate(kuboServiceProvider);
-      ref.read(workspaceProvider.notifier).openKubo(name);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to create kubo: $e')),
-      );
-    }
-  }
+  // ── Landing page actions ──────────────────────────────────────────
 
-  /// Show a dialog to name a new abot, then add it to a kubo and open a session.
-  Future<void> _addAbotToKubo(String kubo) async {
-    final name = await _showNewAbotDialog(kubo);
-    if (name == null || name.isEmpty || !mounted) return;
-    await _createAbotSession(name, kubo);
+  void _onOpenSession(String sessionName) {
+    ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final focusedId = ref.read(facetManagerProvider).focusedId;
+      if (focusedId != null) {
+        TerminalRegistry.instance.focusTerminal(focusedId);
+      }
+    });
   }
 
   Future<void> _createAbotSession(String abotName, String kuboName) async {
@@ -298,7 +287,56 @@ class _FacetShellState extends ConsumerState<FacetShell>
     }
   }
 
-  /// Open a .kubo directory via native OS directory picker.
+  Future<void> _addAbotToKubo(String kubo) async {
+    final name = await _showNameDialog(
+        title: 'New Abot in $kubo', hint: 'abot name');
+    if (name == null || name.isEmpty || !mounted) return;
+    await _createAbotSession(name, kubo);
+  }
+
+  Future<void> _createNewKubo() async {
+    final name = await _showNameDialog(title: 'New Kubo', hint: 'kubo name');
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      await ref.read(kuboServiceProvider.notifier).createKubo(name);
+      if (!mounted) return;
+      ref.invalidate(kuboServiceProvider);
+      ref.read(workspaceProvider.notifier).openKubo(name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to create kubo: $e')),
+      );
+    }
+  }
+
+  Future<void> _openBundle() async {
+    final activeKubo = ref.read(workspaceProvider).activeKubo;
+    if (activeKubo == null) return;
+    try {
+      final data = await const ApiClient().post('/api/pick-file', {})
+          as Map<String, dynamic>;
+      final path = data['path'] as String?;
+      if (path == null || path.isEmpty || !mounted) return;
+
+      final result = await ref
+          .read(sessionServiceProvider.notifier)
+          .openBundle(path, kubo: activeKubo);
+      final sessionName = result['name'] as String?;
+      if (sessionName != null && mounted) {
+        ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
+      }
+      if (!mounted) return;
+      ref.invalidate(kuboServiceProvider);
+      ref.invalidate(abotServiceProvider);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Open failed: $e')),
+      );
+    }
+  }
+
   Future<void> _openKuboFromDisk() async {
     try {
       final data = await const ApiClient().post('/api/pick-directory', {})
@@ -322,66 +360,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
       );
     }
   }
-
-  /// Remove an abot from a kubo (unemploy).
-  Future<void> _removeAbotFromKubo(String kuboName, String abotName) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        final p = ctx.palette;
-        return AlertDialog(
-          backgroundColor: p.base,
-          title: Text('Remove abot',
-              style: TextStyle(
-                  color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
-          content: Text('Remove "$abotName" from $kuboName?',
-              style: TextStyle(
-                  color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12)),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: Text('Cancel',
-                  style: TextStyle(
-                      color: p.subtext0, fontFamily: AbotFonts.mono)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: Text('Remove',
-                  style: TextStyle(color: p.red, fontFamily: AbotFonts.mono)),
-            ),
-          ],
-        );
-      },
-    );
-    if (confirmed != true || !mounted) return;
-    try {
-      // Minimize facet if open (sessionName is qualified: abot@kubo)
-      final qualified = '$abotName@$kuboName';
-      final state = ref.read(facetManagerProvider);
-      for (final facet in state.facets.values.toList()) {
-        if (facet.sessionName == qualified) {
-          _minimizeFacet(facet.id);
-        }
-      }
-
-      await ref
-          .read(kuboServiceProvider.notifier)
-          .removeAbotFromKubo(kuboName, abotName);
-      if (!mounted) return;
-      ref.invalidate(sessionServiceProvider);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to remove abot: $e')),
-      );
-    }
-  }
-
-  Future<String?> _showNewAbotDialog(String kuboName) =>
-      _showNameDialog(title: 'New Abot in $kuboName', hint: 'abot name');
-
-  Future<String?> _showNewKuboDialog() =>
-      _showNameDialog(title: 'New Kubo', hint: 'kubo name');
 
   Future<String?> _showNameDialog({required String title, required String hint}) {
     final controller = TextEditingController();
@@ -509,96 +487,10 @@ class _FacetShellState extends ConsumerState<FacetShell>
   void _focusFacet(String facetId) {
     final currentFocused = ref.read(facetManagerProvider).focusedId;
     if (facetId == currentFocused) return;
-
-    // Instant swap — change focus and recompute transforms without animation.
     ref.read(facetManagerProvider.notifier).focus(facetId);
-
-    // Re-focus the terminal after focus switch (didUpdateWidget may not fire
-    // if xterm.js initialized after the widget was built).
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) TerminalRegistry.instance.focusTerminal(facetId);
     });
-  }
-
-  /// Open or focus a server session from the strip.
-  void _onOpenSession(String sessionName) {
-    ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
-    // Re-focus the terminal after the facet is created or focused
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final focusedId = ref.read(facetManagerProvider).focusedId;
-      if (focusedId != null) {
-        TerminalRegistry.instance.focusTerminal(focusedId);
-      }
-    });
-  }
-
-  /// Delete a server session (with confirmation).
-  Future<void> _onDeleteSession(String sessionName) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Session'),
-        content: Text('Delete session "$sessionName"?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true && mounted) {
-      try {
-        await ref
-            .read(sessionServiceProvider.notifier)
-            .deleteSession(sessionName);
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to delete session: $e')),
-          );
-        }
-      }
-    }
-  }
-
-  /// Open a .abot bundle via native OS file picker (into active kubo).
-  Future<void> _openBundle() async {
-    final activeKubo = ref.read(workspaceProvider).activeKubo;
-    if (activeKubo == null) return;
-    await _openBundleInKubo(activeKubo);
-  }
-
-  /// Open a .abot bundle via native OS file picker into a specific kubo.
-  Future<void> _openBundleInKubo(String kubo) async {
-    try {
-      final data = await const ApiClient().post('/api/pick-file', {})
-          as Map<String, dynamic>;
-      final path = data['path'] as String?;
-      if (path == null || path.isEmpty || !mounted) return;
-
-      // Open the bundle into the specified kubo via the REST endpoint.
-      final result = await ref
-          .read(sessionServiceProvider.notifier)
-          .openBundle(path, kubo: kubo);
-      final sessionName = result['name'] as String?;
-      if (sessionName != null && mounted) {
-        ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
-      }
-      if (!mounted) return;
-      ref.invalidate(kuboServiceProvider);
-      ref.invalidate(abotServiceProvider);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Open failed: $e')),
-      );
-    }
   }
 
   /// Cycle focus to the next facet in order.
@@ -966,22 +858,8 @@ class _FacetShellState extends ConsumerState<FacetShell>
           children: [
             StageStrip(
               cardKeys: _cardKeys,
-              onFocusFacet: _focusFacet,
-              onOpenSession: _onOpenSession,
-              onDeleteSession: _onDeleteSession,
-              onNewSession: () {
-                final ak = ref.read(workspaceProvider).activeKubo;
-                if (ak != null) _addAbotToKubo(ak);
-              },
-              onNewSessionInKubo: (kubo) => _addAbotToKubo(kubo),
-              onNewKubo: _createNewKubo,
-              onOpenBundle: _openBundle,
-              onOpenBundleInKubo: _openBundleInKubo,
-              onOpenKubo: _openKuboFromDisk,
-              onRemoveAbot: _removeAbotFromKubo,
               onScroll: _updateSidebarTransforms,
               onToggleCollapse: _toggleSidebar,
-              onCreateAbotSession: _createAbotSession,
             ),
             Expanded(child: _buildFocusedArea(state, sessionInfoMap)),
           ],

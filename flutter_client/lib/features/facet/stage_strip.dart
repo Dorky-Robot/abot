@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import '../../core/network/abot_service.dart';
+import '../../core/network/api_client.dart';
 import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
 import '../../core/theme/abot_theme.dart';
+import '../terminal/terminal_facet.dart';
 import 'facet.dart';
 import 'facet_manager.dart';
 import 'overlay_provider.dart';
@@ -15,41 +17,18 @@ import 'workspace_provider.dart';
 
 /// Side strip with two tabs: Kubos (grouped) and Abots (flat session list).
 /// Watches providers directly for reactive updates (no prop-drilling for data).
-/// Action callbacks that require FacetShell context (dialogs, CSS transforms,
-/// file pickers) are still passed as constructor params.
+/// Only CSS-transform callbacks remain as constructor params — everything else
+/// (dialogs, provider mutations, file pickers) is handled internally.
 class StageStrip extends ConsumerStatefulWidget {
   final Map<String, GlobalKey>? cardKeys;
-  final void Function(String facetId) onFocusFacet;
-  final void Function(String sessionName) onOpenSession;
-  final void Function(String sessionName) onDeleteSession;
-  final VoidCallback onNewSession;
-  final void Function(String kubo) onNewSessionInKubo;
-  final VoidCallback onNewKubo;
-  final VoidCallback? onOpenBundle;
-  final void Function(String kubo)? onOpenBundleInKubo;
-  final VoidCallback? onOpenKubo;
-  final void Function(String kuboName, String abotName)? onRemoveAbot;
   final VoidCallback? onScroll;
   final VoidCallback onToggleCollapse;
-  /// Create a session for an abot that's in a kubo manifest but has no session yet.
-  final void Function(String abotName, String kuboName)? onCreateAbotSession;
 
   const StageStrip({
     super.key,
     this.cardKeys,
-    required this.onFocusFacet,
-    required this.onOpenSession,
-    required this.onDeleteSession,
-    required this.onNewSession,
-    required this.onNewSessionInKubo,
-    required this.onNewKubo,
-    this.onOpenBundle,
-    this.onOpenBundleInKubo,
-    this.onOpenKubo,
-    this.onRemoveAbot,
     this.onScroll,
     required this.onToggleCollapse,
-    this.onCreateAbotSession,
   });
 
   @override
@@ -105,6 +84,255 @@ class _StageStripState extends ConsumerState<StageStrip> {
   void _persistCollapsedAbots() {
     web.window.localStorage.setItem(
         _collapsedAbotsKey, jsonEncode(_collapsedAbots.toList()));
+  }
+
+  // ── Actions (formerly callbacks from FacetShell) ──────────────────
+
+  void _focusFacet(String facetId) {
+    final currentFocused = ref.read(facetManagerProvider).focusedId;
+    if (facetId == currentFocused) return;
+    ref.read(facetManagerProvider.notifier).focus(facetId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) TerminalRegistry.instance.focusTerminal(facetId);
+    });
+  }
+
+  void _openSession(String sessionName) {
+    ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final focusedId = ref.read(facetManagerProvider).focusedId;
+      if (focusedId != null) {
+        TerminalRegistry.instance.focusTerminal(focusedId);
+      }
+    });
+  }
+
+  Future<void> _deleteSession(String sessionName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Session'),
+        content: Text('Delete session "$sessionName"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && mounted) {
+      try {
+        await ref
+            .read(sessionServiceProvider.notifier)
+            .deleteSession(sessionName);
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to delete session: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _addAbotToKubo(String kubo) async {
+    final name = await _showNameDialog(
+        title: 'New Abot in $kubo', hint: 'abot name');
+    if (name == null || name.isEmpty || !mounted) return;
+    await _createAbotSession(name, kubo);
+  }
+
+  Future<void> _createAbotSession(String abotName, String kuboName) async {
+    try {
+      await ref.read(facetManagerProvider.notifier).createAbotInKubo(
+        abotName,
+        kubo: kuboName,
+      );
+      if (!mounted) return;
+      ref.invalidate(kuboServiceProvider);
+      ref.invalidate(abotServiceProvider);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to start abot: $e')),
+      );
+    }
+  }
+
+  Future<void> _createNewKubo() async {
+    final name = await _showNameDialog(title: 'New Kubo', hint: 'kubo name');
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      await ref.read(kuboServiceProvider.notifier).createKubo(name);
+      if (!mounted) return;
+      ref.invalidate(kuboServiceProvider);
+      ref.read(workspaceProvider.notifier).openKubo(name);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to create kubo: $e')),
+      );
+    }
+  }
+
+  Future<void> _openBundle() async {
+    final activeKubo = ref.read(workspaceProvider).activeKubo;
+    if (activeKubo == null) return;
+    await _openBundleInKubo(activeKubo);
+  }
+
+  Future<void> _openBundleInKubo(String kubo) async {
+    try {
+      final data = await const ApiClient().post('/api/pick-file', {})
+          as Map<String, dynamic>;
+      final path = data['path'] as String?;
+      if (path == null || path.isEmpty || !mounted) return;
+
+      final result = await ref
+          .read(sessionServiceProvider.notifier)
+          .openBundle(path, kubo: kubo);
+      final sessionName = result['name'] as String?;
+      if (sessionName != null && mounted) {
+        ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
+      }
+      if (!mounted) return;
+      ref.invalidate(kuboServiceProvider);
+      ref.invalidate(abotServiceProvider);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Open failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _openKuboFromDisk() async {
+    try {
+      final data = await const ApiClient().post('/api/pick-directory', {})
+          as Map<String, dynamic>;
+      final path = data['path'] as String?;
+      if (path == null || path.isEmpty || !mounted) return;
+
+      final result = await ref
+          .read(kuboServiceProvider.notifier)
+          .openKubo(path);
+      if (!mounted) return;
+
+      final name = result['name'] as String?;
+      if (name != null && name.isNotEmpty) {
+        ref.read(workspaceProvider.notifier).openKubo(name);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Open kubo failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _removeAbotFromKubo(String kuboName, String abotName) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final p = ctx.palette;
+        return AlertDialog(
+          backgroundColor: p.base,
+          title: Text('Remove abot',
+              style: TextStyle(
+                  color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
+          content: Text('Remove "$abotName" from $kuboName?',
+              style: TextStyle(
+                  color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text('Cancel',
+                  style: TextStyle(
+                      color: p.subtext0, fontFamily: AbotFonts.mono)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text('Remove',
+                  style: TextStyle(color: p.red, fontFamily: AbotFonts.mono)),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      // Minimize facet if open (sessionName is qualified: abot@kubo)
+      final qualified = '$abotName@$kuboName';
+      final state = ref.read(facetManagerProvider);
+      for (final facet in state.facets.values.toList()) {
+        if (facet.sessionName == qualified) {
+          TerminalRegistry.instance.clearGenieTransform(facet.id, animate: false);
+          ref.read(facetManagerProvider.notifier).minimizeSession(facet.id);
+        }
+      }
+
+      await ref
+          .read(kuboServiceProvider.notifier)
+          .removeAbotFromKubo(kuboName, abotName);
+      if (!mounted) return;
+      ref.invalidate(sessionServiceProvider);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to remove abot: $e')),
+      );
+    }
+  }
+
+  Future<String?> _showNameDialog({required String title, required String hint}) {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        final p = ctx.palette;
+        return AlertDialog(
+          backgroundColor: p.base,
+          title: Text(title,
+              style: TextStyle(
+                  color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            style: TextStyle(
+                color: p.text, fontFamily: AbotFonts.mono, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: TextStyle(color: p.overlay0, fontFamily: AbotFonts.mono),
+              enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: p.surface1)),
+              focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: p.mauve)),
+            ),
+            onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Cancel',
+                  style:
+                      TextStyle(color: p.subtext0, fontFamily: AbotFonts.mono)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: Text('Create',
+                  style:
+                      TextStyle(color: p.mauve, fontFamily: AbotFonts.mono)),
+            ),
+          ],
+        );
+      },
+    ).whenComplete(() => controller.dispose());
   }
 
   /// Return abot names from the kubo manifest that have no sessions (neither open nor unattached).
@@ -225,8 +453,11 @@ class _StageStripState extends ConsumerState<StageStrip> {
                   icon: Icons.add,
                   color: p.subtext0,
                   onTap: activeTab == SidebarTab.kubos
-                      ? widget.onNewKubo
-                      : widget.onNewSession,
+                      ? _createNewKubo
+                      : () {
+                          final ak = ref.read(workspaceProvider).activeKubo;
+                          if (ak != null) _addAbotToKubo(ak);
+                        },
                   tooltip: activeTab == SidebarTab.kubos
                       ? 'New kubo'
                       : 'New abot',
@@ -242,19 +473,22 @@ class _StageStripState extends ConsumerState<StageStrip> {
                   tooltip: 'Collapse sidebar',
                 ),
                 const Spacer(),
-                if (activeTab == SidebarTab.kubos && widget.onOpenKubo != null)
+                if (activeTab == SidebarTab.kubos)
                   _IconBtn(
                     icon: Icons.folder_open_outlined,
                     color: p.subtext0,
-                    onTap: widget.onOpenKubo,
+                    onTap: _openKuboFromDisk,
                     tooltip: 'Open kubo',
                   ),
                 _IconBtn(
                   icon: Icons.add,
                   color: p.subtext0,
                   onTap: activeTab == SidebarTab.kubos
-                      ? widget.onNewKubo
-                      : widget.onNewSession,
+                      ? _createNewKubo
+                      : () {
+                          final ak = ref.read(workspaceProvider).activeKubo;
+                          if (ak != null) _addAbotToKubo(ak);
+                        },
                   tooltip: activeTab == SidebarTab.kubos
                       ? 'New kubo'
                       : 'New abot',
@@ -420,10 +654,8 @@ class _StageStripState extends ConsumerState<StageStrip> {
                       isDirty: sessionInfoMap[facet.sessionName]?.dirty ?? false,
                       onTap: facet.id == focusedId
                           ? null
-                          : () => widget.onFocusFacet(facet.id),
-                      onRemove: widget.onRemoveAbot != null
-                          ? () => widget.onRemoveAbot!(kuboName, sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName)
-                          : null,
+                          : () => _focusFacet(facet.id),
+                      onRemove: () => _removeAbotFromKubo(kuboName, sessionInfoMap[facet.sessionName]?.displayName ?? facet.sessionName),
                     ),
                   // Unattached abots (server sessions not open as facets)
                   for (final session in group.unattachedSessions)
@@ -432,10 +664,8 @@ class _StageStripState extends ConsumerState<StageStrip> {
                       isRunning: session.isRunning,
                       isFocused: false,
                       isDirty: session.dirty,
-                      onTap: () => widget.onOpenSession(session.name),
-                      onRemove: widget.onRemoveAbot != null
-                          ? () => widget.onRemoveAbot!(kuboName, session.displayName)
-                          : null,
+                      onTap: () => _openSession(session.name),
+                      onRemove: () => _removeAbotFromKubo(kuboName, session.displayName),
                     ),
                   // Abots from manifest that have no sessions at all
                   for (final abotName in manifestOnly)
@@ -443,12 +673,8 @@ class _StageStripState extends ConsumerState<StageStrip> {
                       name: abotName,
                       isRunning: false,
                       isFocused: false,
-                      onTap: widget.onCreateAbotSession != null
-                          ? () => widget.onCreateAbotSession!(abotName, kuboName)
-                          : () => widget.onOpenSession(abotName),
-                      onRemove: widget.onRemoveAbot != null
-                          ? () => widget.onRemoveAbot!(kuboName, abotName)
-                          : null,
+                      onTap: () => _createAbotSession(abotName, kuboName),
+                      onRemove: () => _removeAbotFromKubo(kuboName, abotName),
                     ),
                   if (group.facets.isEmpty && group.unattachedSessions.isEmpty && manifestOnly.isEmpty)
                     Padding(
@@ -466,10 +692,8 @@ class _StageStripState extends ConsumerState<StageStrip> {
                     ),
                   _KuboActionBar(
                     kuboName: kuboName,
-                    onAdd: () => widget.onNewSessionInKubo(kuboName),
-                    onOpen: widget.onOpenBundleInKubo != null
-                        ? () => widget.onOpenBundleInKubo!(kuboName)
-                        : widget.onOpenBundle,
+                    onAdd: () => _addAbotToKubo(kuboName),
+                    onOpen: () => _openBundleInKubo(kuboName),
                     onSettings: () =>
                         ref.read(overlayProvider.notifier).showKuboSettings(kuboName),
                   ),
@@ -570,7 +794,7 @@ class _StageStripState extends ConsumerState<StageStrip> {
                     isActive: true,
                     onTap: () {
                       ref.read(workspaceProvider.notifier).setActiveKubo(branch.kuboName);
-                      widget.onCreateAbotSession?.call(abot.name, branch.kuboName);
+                      _createAbotSession(abot.name, branch.kuboName);
                     },
                     onDismiss: () =>
                         ref.read(abotServiceProvider.notifier).dismissVariant(abot.name, branch.kuboName),
