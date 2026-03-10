@@ -1,8 +1,8 @@
 pub mod abots;
 pub mod anthropic_oauth;
 pub mod assets;
-pub mod browse;
 pub mod config;
+pub mod download;
 pub mod kubos;
 pub mod router;
 pub mod sessions;

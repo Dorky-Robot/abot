@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
 import '../../core/network/abot_service.dart';
-import '../../core/network/api_client.dart';
 import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
@@ -181,61 +180,6 @@ class _StageStripState extends ConsumerState<StageStrip> {
     }
   }
 
-  Future<void> _openBundle() async {
-    final activeKubo = ref.read(workspaceProvider).activeKubo;
-    if (activeKubo == null) return;
-    await _openBundleInKubo(activeKubo);
-  }
-
-  Future<void> _openBundleInKubo(String kubo) async {
-    try {
-      final data = await const ApiClient().post('/api/pick-file', {})
-          as Map<String, dynamic>;
-      final path = data['path'] as String?;
-      if (path == null || path.isEmpty || !mounted) return;
-
-      final result = await ref
-          .read(sessionServiceProvider.notifier)
-          .openBundle(path, kubo: kubo);
-      final sessionName = result['name'] as String?;
-      if (sessionName != null && mounted) {
-        ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
-      }
-      if (!mounted) return;
-      ref.invalidate(kuboServiceProvider);
-      ref.invalidate(abotServiceProvider);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Open failed: $e')),
-      );
-    }
-  }
-
-  Future<void> _openKuboFromDisk() async {
-    try {
-      final data = await const ApiClient().post('/api/pick-directory', {})
-          as Map<String, dynamic>;
-      final path = data['path'] as String?;
-      if (path == null || path.isEmpty || !mounted) return;
-
-      final result = await ref
-          .read(kuboServiceProvider.notifier)
-          .openKubo(path);
-      if (!mounted) return;
-
-      final name = result['name'] as String?;
-      if (name != null && name.isNotEmpty) {
-        ref.read(workspaceProvider.notifier).openKubo(name);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Open kubo failed: $e')),
-      );
-    }
-  }
-
   Future<void> _removeAbotFromKubo(String kuboName, String abotName) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -288,6 +232,33 @@ class _StageStripState extends ConsumerState<StageStrip> {
         SnackBar(content: Text('Failed to remove abot: $e')),
       );
     }
+  }
+
+  /// Trigger a browser download for a kubo or abot archive.
+  void _downloadArchive(String path, String filename) {
+    final origin = web.window.location.origin;
+    final url = '$origin$path';
+    final anchor = web.document.createElement('a') as web.HTMLAnchorElement;
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = 'none';
+    web.document.body!.append(anchor);
+    anchor.click();
+    anchor.remove();
+  }
+
+  void _downloadKubo(String name) {
+    _downloadArchive(
+      '/kubos/${Uri.encodeComponent(name)}/download',
+      '$name.kubo.tar.gz',
+    );
+  }
+
+  void _downloadAbot(String name) {
+    _downloadArchive(
+      '/abots/${Uri.encodeComponent(name)}/download',
+      '$name.abot.tar.gz',
+    );
   }
 
   Future<String?> _showNameDialog({required String title, required String hint}) {
@@ -473,13 +444,6 @@ class _StageStripState extends ConsumerState<StageStrip> {
                   tooltip: 'Collapse sidebar',
                 ),
                 const Spacer(),
-                if (activeTab == SidebarTab.kubos)
-                  _IconBtn(
-                    icon: Icons.folder_open_outlined,
-                    color: p.subtext0,
-                    onTap: _openKuboFromDisk,
-                    tooltip: 'Open kubo',
-                  ),
                 _IconBtn(
                   icon: Icons.add,
                   color: p.subtext0,
@@ -693,7 +657,7 @@ class _StageStripState extends ConsumerState<StageStrip> {
                   _KuboActionBar(
                     kuboName: kuboName,
                     onAdd: () => _addAbotToKubo(kuboName),
-                    onOpen: () => _openBundleInKubo(kuboName),
+                    onDownload: () => _downloadKubo(kuboName),
                     onSettings: () =>
                         ref.read(overlayProvider.notifier).showKuboSettings(kuboName),
                   ),
@@ -1275,13 +1239,13 @@ class _KuboHeader extends StatelessWidget {
 class _KuboActionBar extends StatelessWidget {
   final String kuboName;
   final VoidCallback onAdd;
-  final VoidCallback? onOpen;
+  final VoidCallback? onDownload;
   final VoidCallback? onSettings;
 
   const _KuboActionBar({
     required this.kuboName,
     required this.onAdd,
-    this.onOpen,
+    this.onDownload,
     this.onSettings,
   });
 
@@ -1300,13 +1264,13 @@ class _KuboActionBar extends StatelessWidget {
             onTap: onAdd,
             tooltip: 'New abot in $kuboName',
           ),
-          if (onOpen != null)
+          if (onDownload != null)
             _IconBtn(
-              icon: Icons.folder_open_outlined,
+              icon: Icons.download_outlined,
               color: p.overlay1,
               size: 14,
-              onTap: onOpen,
-              tooltip: 'Open abot in $kuboName',
+              onTap: onDownload,
+              tooltip: 'Download $kuboName',
             ),
           if (onSettings != null)
             _IconBtn(

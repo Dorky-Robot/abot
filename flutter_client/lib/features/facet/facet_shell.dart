@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/network/abot_service.dart';
-import '../../core/network/api_client.dart';
 import '../../core/network/kubo_service.dart';
 import '../../core/network/session_service.dart';
 import '../../core/network/websocket_service.dart';
@@ -306,57 +305,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to create kubo: $e')),
-      );
-    }
-  }
-
-  Future<void> _openBundle() async {
-    final activeKubo = ref.read(workspaceProvider).activeKubo;
-    if (activeKubo == null) return;
-    try {
-      final data = await const ApiClient().post('/api/pick-file', {})
-          as Map<String, dynamic>;
-      final path = data['path'] as String?;
-      if (path == null || path.isEmpty || !mounted) return;
-
-      final result = await ref
-          .read(sessionServiceProvider.notifier)
-          .openBundle(path, kubo: activeKubo);
-      final sessionName = result['name'] as String?;
-      if (sessionName != null && mounted) {
-        ref.read(facetManagerProvider.notifier).openOrFocusSession(sessionName);
-      }
-      if (!mounted) return;
-      ref.invalidate(kuboServiceProvider);
-      ref.invalidate(abotServiceProvider);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Open failed: $e')),
-      );
-    }
-  }
-
-  Future<void> _openKuboFromDisk() async {
-    try {
-      final data = await const ApiClient().post('/api/pick-directory', {})
-          as Map<String, dynamic>;
-      final path = data['path'] as String?;
-      if (path == null || path.isEmpty || !mounted) return;
-
-      final result = await ref
-          .read(kuboServiceProvider.notifier)
-          .openKubo(path);
-      if (!mounted) return;
-
-      final name = result['name'] as String?;
-      if (name != null && name.isNotEmpty) {
-        ref.read(workspaceProvider.notifier).openKubo(name);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Open kubo failed: $e')),
       );
     }
   }
@@ -881,7 +829,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
       onOpenSession: _onOpenSession,
       onCreateAbotSession: _createAbotSession,
       onAddAbot: _addAbotToKubo,
-      onOpenBundle: _openBundle,
     );
   }
 
@@ -898,7 +845,6 @@ class _FacetShellState extends ConsumerState<FacetShell>
       }
       return EmptyStateLandingPage(
         onCreateKubo: _createNewKubo,
-        onOpenKubo: _openKuboFromDisk,
       );
     }
 

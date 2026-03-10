@@ -128,40 +128,63 @@ class _SessionSettingsPanelState extends State<SessionSettingsPanel> {
   }
 
   Future<void> _saveSessionAs() async {
-    String defaultFileName = '$_currentName.abot';
+    String defaultName = '$_currentName.abot';
     if (_bundlePath != null) {
       final lastSlash = _bundlePath!.lastIndexOf('/');
       if (lastSlash >= 0 && lastSlash < _bundlePath!.length - 1) {
-        defaultFileName = _bundlePath!.substring(lastSlash + 1);
+        defaultName = _bundlePath!.substring(lastSlash + 1);
       }
     }
 
-    String? path;
-    try {
-      final data = await _api.post('/api/pick-save-location', {
-        'defaultName': defaultFileName,
-      }) as Map<String, dynamic>;
-      path = data['path'] as String?;
-    } catch (_) {
-      return;
-    }
+    // Prompt user for a name — the path is always ~/.abot/abots/<name>.abot
+    final controller = TextEditingController(text: defaultName.replaceAll('.abot', ''));
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        final p = ctx.palette;
+        return AlertDialog(
+          backgroundColor: p.base,
+          title: Text('Save As',
+              style: TextStyle(
+                  color: p.text, fontFamily: AbotFonts.mono, fontSize: 14)),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            style: TextStyle(
+                color: p.text, fontFamily: AbotFonts.mono, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: 'abot name',
+              suffixText: '.abot',
+              hintStyle: TextStyle(color: p.overlay0, fontFamily: AbotFonts.mono),
+              suffixStyle: TextStyle(color: p.overlay0, fontFamily: AbotFonts.mono, fontSize: 12),
+              enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: p.surface1)),
+              focusedBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: p.mauve)),
+            ),
+            onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Cancel',
+                  style: TextStyle(color: p.subtext0, fontFamily: AbotFonts.mono)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: Text('Save',
+                  style: TextStyle(color: p.mauve, fontFamily: AbotFonts.mono)),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
 
-    if (path == null || path.isEmpty || !mounted) return;
-    // Ensure .abot extension
-    if (!path.endsWith('.abot')) {
-      path = '$path.abot';
-    }
-    // Reject saving inside another .abot bundle
-    final segments = path.split('/');
-    final abotParents =
-        segments.sublist(0, segments.length - 1).where((s) => s.endsWith('.abot'));
-    if (abotParents.isNotEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot save inside another .abot bundle.')),
-      );
-      return;
-    }
+    if (name == null || name.isEmpty || !mounted) return;
+
+    // Build path in the standard location
+    final path = '~/.abot/abots/$name.abot';
 
     setState(() => _savingBundle = true);
     final url =
