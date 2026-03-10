@@ -85,8 +85,14 @@ class AuthNotifier extends Notifier<AuthState> {
       final optionsJson = optsData['options'];
       final challengeId = optsData['challengeId'] as String;
 
+      // webauthn-rs wraps in {publicKey: {...}}, simplewebauthn expects the
+      // inner object directly.
+      final unwrapped = optionsJson is Map && optionsJson.containsKey('publicKey')
+          ? optionsJson['publicKey']
+          : optionsJson;
+
       // Convert options to JSObject for WebAuthn API
-      final optionsJS = _dartToJs(optionsJson);
+      final optionsJS = _dartToJs(unwrapped);
 
       // Call browser WebAuthn API
       final credential = await webauthn.startAuthentication(optionsJS);
@@ -121,8 +127,14 @@ class AuthNotifier extends Notifier<AuthState> {
       final userId = optsData['userId'] as String;
       final challengeId = optsData['challengeId'] as String;
 
+      // webauthn-rs wraps in {publicKey: {...}}, simplewebauthn expects the
+      // inner object directly (challenge, rp, user, etc. at top level).
+      final unwrapped = optionsJson is Map && optionsJson.containsKey('publicKey')
+          ? optionsJson['publicKey']
+          : optionsJson;
+
       // Convert options to JSObject for WebAuthn API
-      final optionsJS = _dartToJs(optionsJson);
+      final optionsJS = _dartToJs(unwrapped);
 
       // Call browser WebAuthn API
       final credential = await webauthn.startRegistration(optionsJS);

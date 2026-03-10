@@ -273,7 +273,7 @@ impl Kubo {
     /// Check if a container is running by ID, without needing a Kubo reference.
     /// Used by health checks to avoid holding the kubos mutex during Docker calls.
     pub async fn check_container_running(container_id: &str) -> bool {
-        if let Ok(docker) = bollard::Docker::connect_with_socket_defaults() {
+        if let Ok(docker) = bollard::Docker::connect_with_local_defaults() {
             if let Ok(info) = docker.inspect_container(container_id, None).await {
                 return info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
             }
@@ -436,7 +436,7 @@ impl Kubo {
 
 /// Create a new Kubo instance (does not start the container).
 pub fn new_kubo(name: String, path: PathBuf) -> Result<Kubo> {
-    let docker = Docker::connect_with_socket_defaults()?;
+    let docker = Docker::connect_with_local_defaults()?;
     Ok(Kubo {
         name,
         path,
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn test_idle_timeout() {
-        let docker = Docker::connect_with_socket_defaults().unwrap();
+        let docker = Docker::connect_with_local_defaults().unwrap();
         let mut kubo = Kubo {
             name: "test".to_string(),
             path: PathBuf::from("/tmp"),

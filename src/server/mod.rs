@@ -23,7 +23,7 @@ pub struct AppState {
     pub data_dir: std::path::PathBuf,
 }
 
-pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
+pub async fn run(addr: &str, data_dir: &Path, host: Option<&str>) -> Result<()> {
     // Initialize SQLite database
     let db_path = data_dir.join("abot.db");
     let db = auth::state::init_db(&db_path)?;
@@ -31,8 +31,10 @@ pub async fn run(addr: &str, data_dir: &Path) -> Result<()> {
     // Create the engine
     let engine = Engine::new(data_dir).await?;
 
+    // Use external hostname for WebAuthn if provided, otherwise fall back to bind addr
+    let webauthn_addr = host.unwrap_or(addr);
     let state = Arc::new(AppState {
-        auth: auth::AuthState::new(db, addr)?,
+        auth: auth::AuthState::new(db, webauthn_addr)?,
         engine: engine.clone(),
         stream_clients: stream::clients::ClientTracker::new(),
         data_dir: data_dir.to_path_buf(),

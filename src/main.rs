@@ -25,6 +25,10 @@ struct Cli {
     #[arg(short, long, default_value = "0.0.0.0")]
     bind: String,
 
+    /// External hostname (for WebAuthn origin, e.g. abot.dorkyrobot.com)
+    #[arg(long)]
+    host: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -71,6 +75,7 @@ fn default_data_dir() -> PathBuf {
 struct FileConfig {
     port: Option<u16>,
     bind: Option<String>,
+    host: Option<String>,
 }
 
 fn load_config(data_dir: &std::path::Path) -> FileConfig {
@@ -108,6 +113,11 @@ async fn main() -> anyhow::Result<()> {
             cli.bind = bind;
         }
     }
+    if matches.value_source("host") != Some(clap::parser::ValueSource::CommandLine) {
+        if let Some(host) = config.host {
+            cli.host = Some(host);
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -119,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
     match command {
         Command::Start | Command::Serve => {
             let addr = format!("{}:{}", cli.bind, cli.port);
-            server::run(&addr, &cli.data_dir).await?;
+            server::run(&addr, &cli.data_dir, cli.host.as_deref()).await?;
         }
         Command::Update => cmd_update(&cli).await?,
         Command::Token { action } => cmd_token(&cli.data_dir, action)?,
@@ -246,5 +256,5 @@ async fn cmd_update(cli: &Cli) -> anyhow::Result<()> {
     }
 
     tracing::info!("starting new server");
-    server::run(&addr, &cli.data_dir).await
+    server::run(&addr, &cli.data_dir, cli.host.as_deref()).await
 }

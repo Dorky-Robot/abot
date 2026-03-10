@@ -431,7 +431,7 @@ impl KuboExecBackend {
         rows: u16,
         env: Vec<String>,
     ) -> Result<Self> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = Docker::connect_with_local_defaults()?;
         let tmux_name = tmux_session_name(abot_name);
 
         let has_tmux = check_tmux(&docker, container_id).await;
