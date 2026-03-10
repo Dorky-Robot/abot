@@ -58,6 +58,10 @@ webrtc = "0.17"
 # Bundle export/import (filesystem snapshots)
 zstd = "0.13"
 tar = "0.4"
+flate2 = "1"
 
 # Docker (container backend for sessions)
 bollard = "0.18"
+
+[dev-dependencies]
+tempfile = "3"

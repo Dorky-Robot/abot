@@ -48,6 +48,10 @@ pub struct KuboExecBackend {
     /// stdin carries tmux commands (send-keys, refresh-client) instead of raw bytes,
     /// and stdout carries `%output` protocol lines instead of terminal data.
     control_mode: bool,
+    /// True when the tmux session was just created (not a reconnection).
+    /// Used to skip scrollback capture — the control mode `%output` stream
+    /// will deliver the initial prompt, and capture-pane would duplicate it.
+    fresh_session: bool,
     /// Bounded channel for sending stdin data to the writer task.
     /// Errors on send mean the writer task is gone (pipe broken / container dead).
     stdin_chan: mpsc::Sender<Vec<u8>>,
@@ -427,7 +431,7 @@ impl KuboExecBackend {
         rows: u16,
         env: Vec<String>,
     ) -> Result<Self> {
-        let docker = Docker::connect_with_socket_defaults()?;
+        let docker = Docker::connect_with_local_defaults()?;
         let tmux_name = tmux_session_name(abot_name);
 
         let has_tmux = check_tmux(&docker, container_id).await;
@@ -524,6 +528,7 @@ impl KuboExecBackend {
                     exec_id: exec_id.to_string(),
                     tmux_name,
                     control_mode: false,
+                    fresh_session: false,
                     stdin_chan: stdin_chan_tx,
                     stdin_closer,
                     reader_rx: Some(rx),
@@ -544,6 +549,7 @@ impl KuboExecBackend {
         tmux_session: &str,
         cols: u16,
         rows: u16,
+        fresh_session: bool,
     ) -> Result<Self> {
         let attach = docker
             .start_exec(
@@ -613,6 +619,7 @@ impl KuboExecBackend {
                     exec_id: exec_id.to_string(),
                     tmux_name: Some(tmux_session.to_string()),
                     control_mode: true,
+                    fresh_session,
                     stdin_chan: stdin_chan_tx,
                     stdin_closer,
                     reader_rx: Some(rx),
@@ -667,7 +674,7 @@ impl KuboExecBackend {
             )
             .await?;
 
-        Self::attach_control_mode(docker, container_id, &exec.id, tmux_name, cols, rows).await
+        Self::attach_control_mode(docker, container_id, &exec.id, tmux_name, cols, rows, !has).await
     }
 
     /// Spawn a raw exec session (no tmux). Original behavior.
@@ -792,11 +799,11 @@ impl SessionBackend for KuboExecBackend {
     }
 
     fn restores_own_scrollback(&self) -> bool {
-        // Control mode does NOT restore its own scrollback — refresh-client -S
-        // only syncs the protocol stream, it doesn't resend existing screen
-        // content for idle sessions. Let the engine's capture-pane mechanism
-        // handle scrollback restoration.
-        false
+        // For fresh control mode sessions, the %output stream delivers the
+        // initial prompt. Running capture-pane would duplicate it. For
+        // reconnections (!fresh_session), the engine's capture-pane mechanism
+        // restores scrollback because control mode doesn't resend old content.
+        self.control_mode && self.fresh_session
     }
 
     fn inject_env(&self, env: &std::collections::HashMap<String, String>) {

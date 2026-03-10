@@ -132,4 +132,19 @@ mod tests {
         assert_eq!(buf.len(), 0);
         assert_eq!(buf.bytes(), 0);
     }
+
+    /// Regression: pre_populate + push of the same content produces duplicates.
+    /// The engine must avoid pre-populating when the live output stream will
+    /// deliver the same content (e.g. fresh control mode sessions).
+    #[test]
+    fn test_pre_populate_then_push_duplicates() {
+        let mut buf = RingBuffer::new(10, 1024);
+        let prompt = "container:/home$ ";
+        buf.pre_populate(prompt.into());
+        buf.push(prompt.into());
+        // This is the BAD state — two identical prompts in the buffer.
+        // The fix is at the engine level: skip pre_populate for fresh sessions.
+        assert_eq!(buf.to_string(), format!("{}{}", prompt, prompt));
+        assert_eq!(buf.len(), 2);
+    }
 }

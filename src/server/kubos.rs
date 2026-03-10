@@ -16,11 +16,6 @@ pub(crate) struct CreateKuboBody {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct OpenKuboBody {
-    path: String,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AddAbotBody {
     abot: String,
@@ -85,21 +80,6 @@ pub async fn stop_kubo(
     app.engine.stop_kubo(&name).await.map_err(AppError::from)?;
 
     Ok(Json(json!({ "name": name })))
-}
-
-/// POST /kubos/open — open a kubo from a path on disk
-pub async fn open_kubo(
-    _csrf: CsrfVerified,
-    State(app): State<Arc<AppState>>,
-    Json(body): Json<OpenKuboBody>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let name = app
-        .engine
-        .open_kubo(&body.path)
-        .await
-        .map_err(AppError::from)?;
-
-    Ok(Json(json!({ "name": name, "path": body.path })))
 }
 
 /// DELETE /kubos/:name/abots/:abot — remove an abot from a kubo

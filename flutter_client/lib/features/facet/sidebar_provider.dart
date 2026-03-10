@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:web/web.dart' as web;
-import 'stage_strip.dart' show SidebarTab;
+
+/// Which sidebar tab is active.
+enum SidebarTab { kubos, abots }
 
 /// Sidebar UI state — collapsed/expanded and active tab.
 /// Persisted to localStorage so it survives page reloads.
