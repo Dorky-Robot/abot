@@ -1,5 +1,7 @@
 # abot
 
+[![Discord](https://img.shields.io/discord/1483879594619568291?color=5865F2&label=Discord&logo=discord&logoColor=white)](https://discord.gg/QSdjPhbU)
+
 <div align="center">
 
 <img src="abot.png" alt="abot mascot" width="300">
