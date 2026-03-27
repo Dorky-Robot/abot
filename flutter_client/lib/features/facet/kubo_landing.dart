@@ -11,7 +11,6 @@ class KuboLandingPage extends StatelessWidget {
   final void Function(String abotName) onOpenSession;
   final void Function(String abotName, String kubo) onCreateAbotSession;
   final void Function(String kubo) onAddAbot;
-  final VoidCallback onOpenBundle;
 
   const KuboLandingPage({
     super.key,
@@ -21,7 +20,6 @@ class KuboLandingPage extends StatelessWidget {
     required this.onOpenSession,
     required this.onCreateAbotSession,
     required this.onAddAbot,
-    required this.onOpenBundle,
   });
 
   @override
@@ -43,13 +41,11 @@ class KuboLandingPage extends StatelessWidget {
               ),
           ],
           onAddAbot: onAddAbot,
-          onOpenBundle: onOpenBundle,
         );
       }
       return _EmptyKuboOnboarding(
         kubo: kubo,
         onAddAbot: onAddAbot,
-        onOpenBundle: onOpenBundle,
       );
     }
     return __AbotCardGrid(
@@ -64,7 +60,6 @@ class KuboLandingPage extends StatelessWidget {
           ),
       ],
       onAddAbot: onAddAbot,
-      onOpenBundle: onOpenBundle,
     );
   }
 }
@@ -72,12 +67,10 @@ class KuboLandingPage extends StatelessWidget {
 /// Empty state landing page — no kubos open.
 class EmptyStateLandingPage extends StatelessWidget {
   final VoidCallback onCreateKubo;
-  final VoidCallback onOpenKubo;
 
   const EmptyStateLandingPage({
     super.key,
     required this.onCreateKubo,
-    required this.onOpenKubo,
   });
 
   @override
@@ -104,38 +97,22 @@ class EmptyStateLandingPage extends StatelessWidget {
               )),
             const SizedBox(height: AbotSpacing.sm),
             Text(
-              'A kubo is a shared runtime room. Create one to get started, or open an existing one from disk.',
+              'A kubo is a shared runtime room. Create one to get started.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: p.subtext0, fontFamily: AbotFonts.mono, fontSize: 12,
               ),
             ),
             const SizedBox(height: AbotSpacing.md),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: onCreateKubo,
-                  icon: const Icon(Icons.add, size: 16),
-                  label: const Text('Create kubo'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: p.mauve,
-                    foregroundColor: p.base,
-                    textStyle: TextStyle(fontFamily: AbotFonts.mono, fontSize: 12),
-                  ),
-                ),
-                const SizedBox(width: AbotSpacing.sm),
-                OutlinedButton.icon(
-                  onPressed: onOpenKubo,
-                  icon: const Icon(Icons.folder_open, size: 16),
-                  label: const Text('Open kubo'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: p.text,
-                    side: BorderSide(color: p.surface1),
-                    textStyle: TextStyle(fontFamily: AbotFonts.mono, fontSize: 12),
-                  ),
-                ),
-              ],
+            ElevatedButton.icon(
+              onPressed: onCreateKubo,
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('Create kubo'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: p.mauve,
+                foregroundColor: p.base,
+                textStyle: TextStyle(fontFamily: AbotFonts.mono, fontSize: 12),
+              ),
             ),
           ],
         ),
@@ -149,41 +126,23 @@ class EmptyStateLandingPage extends StatelessWidget {
 class _KuboActionButtons extends StatelessWidget {
   final String kubo;
   final void Function(String kubo) onAddAbot;
-  final VoidCallback onOpenBundle;
 
   const _KuboActionButtons({
     required this.kubo,
     required this.onAddAbot,
-    required this.onOpenBundle,
   });
 
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        FilledButton.icon(
-          onPressed: () => onAddAbot(kubo),
-          icon: const Icon(Icons.add, size: 16),
-          label: Text('Add abot',
-            style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
-          style: FilledButton.styleFrom(
-            backgroundColor: p.mauve, foregroundColor: p.base,
-          ),
-        ),
-        const SizedBox(width: AbotSpacing.sm),
-        OutlinedButton.icon(
-          onPressed: onOpenBundle,
-          icon: const Icon(Icons.folder_open, size: 16),
-          label: Text('Open .abot bundle',
-            style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: p.subtext0,
-            side: BorderSide(color: p.surface1),
-          ),
-        ),
-      ],
+    return FilledButton.icon(
+      onPressed: () => onAddAbot(kubo),
+      icon: const Icon(Icons.add, size: 16),
+      label: Text('Add abot',
+        style: TextStyle(fontFamily: AbotFonts.mono, fontSize: 13)),
+      style: FilledButton.styleFrom(
+        backgroundColor: p.mauve, foregroundColor: p.base,
+      ),
     );
   }
 }
@@ -192,13 +151,11 @@ class __AbotCardGrid extends StatelessWidget {
   final String kubo;
   final List<Widget> cards;
   final void Function(String kubo) onAddAbot;
-  final VoidCallback onOpenBundle;
 
   const __AbotCardGrid({
     required this.kubo,
     required this.cards,
     required this.onAddAbot,
-    required this.onOpenBundle,
   });
 
   @override
@@ -222,7 +179,7 @@ class __AbotCardGrid extends StatelessWidget {
               children: cards,
             ),
             const SizedBox(height: AbotSpacing.lg),
-            _KuboActionButtons(kubo: kubo, onAddAbot: onAddAbot, onOpenBundle: onOpenBundle),
+            _KuboActionButtons(kubo: kubo, onAddAbot: onAddAbot),
           ],
         ),
       ),
@@ -233,12 +190,10 @@ class __AbotCardGrid extends StatelessWidget {
 class _EmptyKuboOnboarding extends StatelessWidget {
   final String kubo;
   final void Function(String kubo) onAddAbot;
-  final VoidCallback onOpenBundle;
 
   const _EmptyKuboOnboarding({
     required this.kubo,
     required this.onAddAbot,
-    required this.onOpenBundle,
   });
 
   @override
@@ -270,7 +225,7 @@ class _EmptyKuboOnboarding extends StatelessWidget {
               ),
             ),
             const SizedBox(height: AbotSpacing.md),
-            _KuboActionButtons(kubo: kubo, onAddAbot: onAddAbot, onOpenBundle: onOpenBundle),
+            _KuboActionButtons(kubo: kubo, onAddAbot: onAddAbot),
           ],
         ),
       ),

@@ -23,8 +23,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
   int _tabIndex = 0; // 0 = General, 1 = Remote
   final _nameController = TextEditingController();
   final _nameFocus = FocusNode();
-  final _bundleDirController = TextEditingController();
-  final _kubosDirController = TextEditingController();
   bool _nameInitialized = false;
 
   @override
@@ -38,8 +36,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     _nameController.dispose();
     _nameFocus.removeListener(_onNameFocusChange);
     _nameFocus.dispose();
-    _bundleDirController.dispose();
-    _kubosDirController.dispose();
     super.dispose();
   }
 
@@ -56,60 +52,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     }
   }
 
-  void _saveBundleDir() {
-    final dir = _bundleDirController.text.trim();
-    ref.read(configProvider.notifier).setBundleDir(dir);
-  }
-
-  Future<void> _pickBundleDir() async {
-    try {
-      final data =
-          await const ApiClient().post('/api/pick-directory', {}) as Map<String, dynamic>;
-      if (!mounted) return;
-      final path = data['path'] as String?;
-      if (path != null && path.isNotEmpty) {
-        _bundleDirController.text = path;
-        _saveBundleDir();
-        setState(() {});
-      }
-    } catch (_) {
-      // User cancelled or picker unavailable
-    }
-  }
-
-  void _resetBundleDir() {
-    _bundleDirController.text = '';
-    ref.read(configProvider.notifier).setBundleDir('');
-    setState(() {});
-  }
-
-  void _saveKubosDir() {
-    final dir = _kubosDirController.text.trim();
-    ref.read(configProvider.notifier).setKubosDir(dir);
-  }
-
-  Future<void> _pickKubosDir() async {
-    try {
-      final data =
-          await const ApiClient().post('/api/pick-directory', {}) as Map<String, dynamic>;
-      if (!mounted) return;
-      final path = data['path'] as String?;
-      if (path != null && path.isNotEmpty) {
-        _kubosDirController.text = path;
-        _saveKubosDir();
-        setState(() {});
-      }
-    } catch (_) {
-      // User cancelled or picker unavailable
-    }
-  }
-
-  void _resetKubosDir() {
-    _kubosDirController.text = '';
-    ref.read(configProvider.notifier).setKubosDir('');
-    setState(() {});
-  }
-
   @override
   Widget build(BuildContext context) {
     final p = context.palette;
@@ -120,8 +62,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
     configAsync.whenData((config) {
       if (!_nameInitialized) {
         _nameController.text = config.instanceName;
-        _bundleDirController.text = config.bundleDir;
-        _kubosDirController.text = config.kubosDir;
         _nameInitialized = true;
       }
     });
@@ -264,29 +204,16 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         ),
         const SizedBox(height: AbotSpacing.lg),
 
-        // Abots location
-        AbotSectionLabel(label: 'Abots Location'),
+        // Storage info
+        AbotSectionLabel(label: 'Storage'),
         const SizedBox(height: AbotSpacing.xs),
-        _buildDirPicker(
-          p,
-          controller: _bundleDirController,
-          defaultPath: '~/.abot/abots',
-          onPick: _pickBundleDir,
-          onReset: _resetBundleDir,
-          helpText: 'Default directory for .abot bundles.',
-        ),
-        const SizedBox(height: AbotSpacing.lg),
-
-        // Kubos location
-        AbotSectionLabel(label: 'Kubos Location'),
-        const SizedBox(height: AbotSpacing.xs),
-        _buildDirPicker(
-          p,
-          controller: _kubosDirController,
-          defaultPath: '~/.abot/kubos',
-          onPick: _pickKubosDir,
-          onReset: _resetKubosDir,
-          helpText: 'Default directory for .kubo rooms.',
+        Text(
+          'Abots and kubos are stored in ~/.abot/',
+          style: TextStyle(
+            fontSize: 11,
+            color: p.subtext0,
+            fontFamily: AbotFonts.mono,
+          ),
         ),
         const SizedBox(height: AbotSpacing.lg),
 
@@ -294,84 +221,6 @@ class _SettingsPanelState extends ConsumerState<SettingsPanel> {
         AbotSectionLabel(label: 'Appearance'),
         const SizedBox(height: AbotSpacing.xs),
         _ThemeToggle(),
-      ],
-    );
-  }
-
-  Widget _buildDirPicker(
-    CatPalette p, {
-    required TextEditingController controller,
-    required String defaultPath,
-    required VoidCallback onPick,
-    required VoidCallback onReset,
-    required String helpText,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        GestureDetector(
-          onTap: onPick,
-          child: Container(
-            height: 32,
-            padding: const EdgeInsets.symmetric(horizontal: AbotSpacing.sm),
-            decoration: BoxDecoration(
-              color: p.surface0,
-              borderRadius: BorderRadius.circular(AbotRadius.sm),
-              border: Border.all(color: p.surface1),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    controller.text.isNotEmpty ? controller.text : defaultPath,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: controller.text.isNotEmpty ? p.text : p.overlay0,
-                      fontFamily: AbotFonts.mono,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                Icon(Icons.folder_open, size: 14, color: p.overlay0),
-              ],
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: AbotSpacing.xs),
-          child: Text.rich(
-            TextSpan(
-              children: [
-                TextSpan(
-                  text: helpText,
-                  style: TextStyle(color: p.overlay0),
-                ),
-                if (controller.text.isNotEmpty) ...[
-                  const TextSpan(text: ' '),
-                  WidgetSpan(
-                    alignment: PlaceholderAlignment.baseline,
-                    baseline: TextBaseline.alphabetic,
-                    child: GestureDetector(
-                      onTap: onReset,
-                      child: Text(
-                        'Reset',
-                        style: TextStyle(
-                          fontSize: 10,
-                          color: p.red,
-                          fontFamily: AbotFonts.mono,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-            style: TextStyle(
-              fontSize: 10,
-              fontFamily: AbotFonts.mono,
-            ),
-          ),
-        ),
       ],
     );
   }

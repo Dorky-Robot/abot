@@ -85,14 +85,6 @@ class SessionServiceNotifier extends AsyncNotifier<List<SessionInfo>> {
     state = AsyncData(await listSessions());
   }
 
-  /// Open a .abot bundle as a new session in a kubo.
-  Future<Map<String, dynamic>> openBundle(String path, {required String kubo}) async {
-    final data =
-        await _api.post('/sessions/open', {'path': path, 'kubo': kubo}) as Map<String, dynamic>;
-    state = AsyncData(await listSessions());
-    return data;
-  }
-
   /// Save session to its tracked bundle path.
   Future<Map<String, dynamic>> saveSession(String name) async {
     final data = await _api.post(

@@ -75,14 +75,9 @@ pub async fn register_options(
             .db
             .lock()
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let cred_count = state::credential_count(&db)?;
-
-        // First registration: localhost only. Subsequent: need setup token or localhost.
-        if cred_count == 0 && !is_local {
-            return Err(AppError::Unauthorized);
-        }
+        // Registration requires localhost OR a valid setup token.
         let mut setup_token_id: Option<String> = None;
-        if cred_count > 0 && !is_local {
+        if !is_local {
             let setup_token = body.get("setupToken").and_then(|v| v.as_str());
             if setup_token.is_none() {
                 return Err(AppError::Unauthorized);

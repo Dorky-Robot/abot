@@ -28,12 +28,6 @@ pub(crate) struct ApiKeyBody {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct OpenBundleBody {
-    path: String,
-    kubo: String,
-}
-
-#[derive(Deserialize)]
 pub(crate) struct SaveAsBody {
     path: String,
 }
@@ -188,21 +182,6 @@ pub async fn delete_session_credentials(
         .map_err(AppError::from)?;
 
     Ok(Json(json!({ "session": name, "status": "disconnected" })))
-}
-
-/// POST /sessions/open — open a .abot bundle as a new session
-pub async fn open_bundle(
-    _csrf: CsrfVerified,
-    State(app): State<Arc<AppState>>,
-    Json(body): Json<OpenBundleBody>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let (name, bundle_path) = app
-        .engine
-        .open_bundle(&body.path, DEFAULT_COLS, DEFAULT_ROWS, &body.kubo)
-        .await
-        .map_err(AppError::from)?;
-
-    Ok(Json(json!({ "name": name, "path": bundle_path })))
 }
 
 /// POST /sessions/:name/save — save session to its tracked bundle path

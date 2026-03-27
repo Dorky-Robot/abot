@@ -69,7 +69,7 @@ impl Engine {
             let kubos = self.kubos.lock().await;
             if let Some(k) = kubos.get(kubo) {
                 if let Some(ref cid) = k.container_id {
-                    match bollard::Docker::connect_with_socket_defaults() {
+                    match bollard::Docker::connect_with_local_defaults() {
                         Ok(docker) => {
                             let tmux_name = kubo_exec::tmux_session_name(abot);
                             kubo_exec::tmux_kill_session(&docker, cid, &tmux_name).await;

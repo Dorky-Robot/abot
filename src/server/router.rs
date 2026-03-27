@@ -5,8 +5,8 @@ use std::sync::Arc;
 use super::abots;
 use super::anthropic_oauth;
 use super::assets;
-use super::browse;
 use super::config as config_routes;
+use super::download;
 use super::kubos;
 use super::sessions;
 use super::shortcuts;
@@ -57,8 +57,7 @@ pub fn build(state: Arc<AppState>) -> Router {
             "/sessions/{name}/credentials",
             delete(sessions::delete_session_credentials),
         )
-        // Session open/save/close
-        .route("/sessions/open", post(sessions::open_bundle))
+        // Session save/close
         .route("/sessions/{name}/save", post(sessions::save_session))
         .route("/sessions/{name}/save-as", post(sessions::save_session_as))
         .route("/sessions/{name}/close", post(sessions::close_session))
@@ -72,7 +71,6 @@ pub fn build(state: Arc<AppState>) -> Router {
         // Kubos
         .route("/kubos", get(kubos::list_kubos))
         .route("/kubos", post(kubos::create_kubo))
-        .route("/kubos/open", post(kubos::open_kubo))
         .route("/kubos/{name}/start", post(kubos::start_kubo))
         .route("/kubos/{name}/stop", post(kubos::stop_kubo))
         .route("/kubos/{name}/abots", post(kubos::add_abot_to_kubo))
@@ -88,19 +86,15 @@ pub fn build(state: Arc<AppState>) -> Router {
             "/health",
             get(|| async { axum::Json(serde_json::json!({"ok": true})) }),
         )
-        // File browser
-        .route("/api/browse", get(browse::browse_dir))
-        .route("/api/pick-directory", post(browse::pick_directory))
-        .route("/api/pick-file", post(browse::pick_file))
-        .route("/api/pick-save-location", post(browse::pick_save_location))
+        // Downloads
+        .route("/kubos/{name}/download", get(download::download_kubo))
+        .route("/abots/{name}/download", get(download::download_abot))
         // Config
         .route("/api/config", get(config_routes::get_config))
         .route(
             "/api/config/instance-name",
             put(config_routes::set_instance_name),
         )
-        .route("/api/config/bundle-dir", put(config_routes::set_bundle_dir))
-        .route("/api/config/kubos-dir", put(config_routes::set_kubos_dir))
         // Token/credential API aliases (legacy client uses /api/tokens, /api/credentials)
         .route("/api/tokens", get(auth_handlers::list_tokens))
         .route("/api/credentials", get(auth_handlers::list_credentials))
