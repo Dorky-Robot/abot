@@ -1,5 +1,6 @@
 {
   "name": "abot",
+  "license": "MIT OR Apache-2.0",
   "private": true,
   "scripts": {
     "test:e2e": "npx playwright test",
