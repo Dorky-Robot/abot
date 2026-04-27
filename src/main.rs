@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 
+mod config;
 mod git;
+mod manifest;
 mod paths;
 
 #[derive(Parser)]
