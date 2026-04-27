@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+mod paths;
+
 #[derive(Parser)]
 #[command(name = "abot", version, about = "Headless CLI for AI agent identities")]
 struct Cli {
