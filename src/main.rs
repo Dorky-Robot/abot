@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 
+mod git;
 mod paths;
 
 #[derive(Parser)]
