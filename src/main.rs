@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::io::Read;
 
 mod agent;
 mod clone;
@@ -8,6 +9,7 @@ mod git;
 mod integrate;
 mod manifest;
 mod paths;
+mod run;
 mod settings;
 
 #[derive(Parser)]
@@ -136,7 +138,13 @@ fn main() -> anyhow::Result<()> {
             let out = agent::diff(&root, &name, &room)?;
             print!("{out}");
         }
-        Command::Run { .. } => todo!("phase 1: not yet implemented"),
+        Command::Run { name, room } => {
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            let client = run::OllamaClient::default();
+            let mut stdout = std::io::stdout();
+            run::run(&root, &name, room.as_deref(), &input, &client, &mut stdout)?;
+        }
     }
 
     Ok(())
