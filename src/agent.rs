@@ -170,6 +170,31 @@ pub fn config_get(root: &Path, name: &str, key: &str) -> Result<String> {
     }
 }
 
+/// `git log` for the agent. Without `room`, returns the agent's full history;
+/// with `room`, returns just that branch's commits.
+pub fn log(root: &Path, name: &str, room: Option<&str>) -> Result<String> {
+    let dir = paths::agent_dir(root, name);
+    if !dir.exists() {
+        bail!("no such agent: {name}");
+    }
+    let target = room.map(paths::room_branch);
+    git::log(&dir, target.as_deref())
+}
+
+/// `git diff <main>..kubo/<room>` — what changed in `room` vs the agent's main.
+pub fn diff(root: &Path, name: &str, room: &str) -> Result<String> {
+    let dir = paths::agent_dir(root, name);
+    if !dir.exists() {
+        bail!("no such agent: {name}");
+    }
+    let branch = paths::room_branch(room);
+    if !git::branch_exists(&dir, &branch)? {
+        bail!("no branch {branch} on agent {name}");
+    }
+    let head = git::current_branch(&dir)?;
+    git::diff(&dir, &format!("{head}..{branch}"))
+}
+
 /// Set one config value by key. Same allow-list as `config_get`.
 pub fn config_set(root: &Path, name: &str, key: &str, value: &str) -> Result<()> {
     let dir = paths::agent_dir(root, name);
@@ -187,7 +212,7 @@ pub fn config_set(root: &Path, name: &str, key: &str, value: &str) -> Result<()>
     Ok(())
 }
 
-fn validate_name(name: &str) -> Result<()> {
+pub(crate) fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("agent name must not be empty");
     }

@@ -20,6 +20,29 @@ pub fn set_config(repo: &Path, key: &str, value: &str) -> Result<()> {
     run(&["config", key, value], Some(repo))
 }
 
+/// Return the short name of the branch HEAD currently points to.
+/// Errors if the repo is in detached-HEAD state.
+pub fn current_branch(repo: &Path) -> Result<String> {
+    let raw = capture(&["rev-parse", "--abbrev-ref", "HEAD"], Some(repo))?;
+    let name = raw.trim().to_string();
+    if name == "HEAD" {
+        return Err(anyhow!("repo is in detached-HEAD state: {}", repo.display()));
+    }
+    Ok(name)
+}
+
+/// Remove the named remote if it exists. Idempotent — does not error if absent.
+pub fn remove_remote_if_exists(repo: &Path, remote: &str) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["remote", "remove", remote])
+        .output()
+        .context("running git remote remove")?;
+    let _ = output; // success or "no such remote" — both acceptable
+    Ok(())
+}
+
 /// `git clone <src> <dst>`.
 pub fn clone(src: &Path, dst: &Path) -> Result<()> {
     run(

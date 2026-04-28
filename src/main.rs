@@ -1,8 +1,11 @@
 use clap::{Parser, Subcommand};
 
 mod agent;
+mod clone;
 mod config;
+mod employ;
 mod git;
+mod integrate;
 mod manifest;
 mod paths;
 mod settings;
@@ -105,14 +108,35 @@ fn main() -> anyhow::Result<()> {
                 agent::config_set(&root, &name, &k, &v)?;
             }
         },
-        Command::Clone { .. }
-        | Command::Employ { .. }
-        | Command::Dismiss { .. }
-        | Command::Integrate { .. }
-        | Command::Discard { .. }
-        | Command::Run { .. }
-        | Command::Log { .. }
-        | Command::Diff { .. } => todo!("phase 1: not yet implemented"),
+        Command::Clone { source, new_name } => {
+            clone::clone(&root, &source, &new_name)?;
+            eprintln!("cloned {source} -> {new_name}");
+        }
+        Command::Employ { name, room } => {
+            employ::employ(&root, &name, &room)?;
+            eprintln!("employed {name} in {room}");
+        }
+        Command::Dismiss { name, room } => {
+            employ::dismiss(&root, &name, &room)?;
+            eprintln!("dismissed {name} from {room}");
+        }
+        Command::Integrate { name, room } => {
+            integrate::integrate(&root, &name, &room)?;
+            eprintln!("integrated {room} into {name}");
+        }
+        Command::Discard { name, room } => {
+            integrate::discard(&root, &name, &room)?;
+            eprintln!("discarded {room} from {name}");
+        }
+        Command::Log { name, room } => {
+            let out = agent::log(&root, &name, room.as_deref())?;
+            print!("{out}");
+        }
+        Command::Diff { name, room } => {
+            let out = agent::diff(&root, &name, &room)?;
+            print!("{out}");
+        }
+        Command::Run { .. } => todo!("phase 1: not yet implemented"),
     }
 
     Ok(())
