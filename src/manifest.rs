@@ -25,11 +25,6 @@ impl Manifest {
             updated: now,
         }
     }
-
-    /// Bump `updated` to now.
-    pub fn touch(&mut self) {
-        self.updated = Utc::now();
-    }
 }
 
 pub fn read(agent_dir: &Path) -> Result<Manifest> {
@@ -67,16 +62,6 @@ mod tests {
         write(dir, &original).unwrap();
         let read_back = read(dir).unwrap();
         assert_eq!(original, read_back);
-    }
-
-    #[test]
-    fn touch_advances_updated_but_not_created() {
-        let mut m = Manifest::new("alice");
-        let original_created = m.created;
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        m.touch();
-        assert_eq!(m.created, original_created);
-        assert!(m.updated > m.created);
     }
 
     #[test]
