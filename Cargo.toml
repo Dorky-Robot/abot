@@ -1,63 +1,17 @@
 [package]
 name = "abot"
-description = "AI-native spatial interface"
-version = "0.1.0"
-edition = "2021"
+description = "Headless CLI for AI agent identities"
+version = "1.0.0"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-# HTTP + WebSocket
-axum = { version = "0.8", features = ["ws"] }
-axum-extra = { version = "0.10", features = ["typed-header"] }
-tokio = { version = "1", features = ["full"] }
-tower = "0.5"
-tower-http = { version = "0.6", features = ["fs", "cors"] }
-hyper = { version = "1", features = ["full"] }
-
-# Serialization
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ureq = { version = "2", features = ["json"] }
 
-# Embedded assets
-rust-embed = { version = "8", features = ["compression"] }
-
-# Auth
-webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
-webauthn-rs-proto = "0.5"
-argon2 = "0.5"
-openssl = { version = "0.10", features = ["vendored"] }
-
-# Database
-rusqlite = { version = "0.32", features = ["bundled"] }
-
-# Error handling
-anyhow = "1"
-thiserror = "2"
-
-# Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap = { version = "4", features = ["derive"] }
-base64 = "0.22"
-rand = "0.8"
-mime_guess = "2"
-cookie = "0.18"
-sha2 = "0.10"
-hex = "0.4"
-futures-util = "0.3"
-dirs = "5"
-toml = "0.8"
-url = "2"
-libc = "0.2"
-
-# WebRTC
-webrtc = "0.17"
-
-# Bundle export/import (filesystem snapshots)
-zstd = "0.13"
-tar = "0.4"
-
-# Docker (container backend for sessions)
-bollard = "0.18"
+[dev-dependencies]
+tempfile = "3"
