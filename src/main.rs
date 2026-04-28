@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand};
 
+mod agent;
 mod config;
 mod git;
 mod manifest;
 mod paths;
+mod settings;
 
 #[derive(Parser)]
 #[command(name = "abot", version, about = "Headless CLI for AI agent identities")]
@@ -70,19 +72,71 @@ enum Command {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let root = paths::default_root()?;
+
     match cli.command {
-        Command::Create { .. } => todo!("phase 1"),
-        Command::List => todo!("phase 1"),
-        Command::Show { .. } => todo!("phase 1"),
-        Command::Clone { .. } => todo!("phase 1"),
-        Command::Employ { .. } => todo!("phase 1"),
-        Command::Dismiss { .. } => todo!("phase 1"),
-        Command::Integrate { .. } => todo!("phase 1"),
-        Command::Discard { .. } => todo!("phase 1"),
-        Command::Run { .. } => todo!("phase 1"),
-        Command::Log { .. } => todo!("phase 1"),
-        Command::Diff { .. } => todo!("phase 1"),
-        Command::Config { .. } => todo!("phase 1"),
-        Command::Rm { .. } => todo!("phase 1"),
+        Command::Create { name } => {
+            agent::create(&root, &name)?;
+            eprintln!("created agent: {name}");
+        }
+        Command::List => {
+            for n in agent::list(&root)? {
+                println!("{n}");
+            }
+        }
+        Command::Show { name } => {
+            let info = agent::show(&root, &name)?;
+            print_show(&info);
+        }
+        Command::Rm { name } => {
+            agent::rm(&root, &name)?;
+            eprintln!("removed agent: {name}");
+        }
+        Command::Config { name, key, value } => match (key, value) {
+            (None, _) => {
+                let cfg = agent::config_read(&root, &name)?;
+                println!("{}", serde_json::to_string_pretty(&cfg)?);
+            }
+            (Some(k), None) => {
+                let v = agent::config_get(&root, &name, &k)?;
+                println!("{v}");
+            }
+            (Some(k), Some(v)) => {
+                agent::config_set(&root, &name, &k, &v)?;
+            }
+        },
+        Command::Clone { .. }
+        | Command::Employ { .. }
+        | Command::Dismiss { .. }
+        | Command::Integrate { .. }
+        | Command::Discard { .. }
+        | Command::Run { .. }
+        | Command::Log { .. }
+        | Command::Diff { .. } => todo!("phase 1: not yet implemented"),
+    }
+
+    Ok(())
+}
+
+fn print_show(info: &agent::AgentInfo) {
+    println!("name:    {}", info.manifest.name);
+    println!("model:   {}", info.config.model);
+    println!("shell:   {}", info.config.shell);
+    println!("created: {}", info.manifest.created.to_rfc3339());
+    println!("updated: {}", info.manifest.updated.to_rfc3339());
+    if !info.config.instructions.is_empty() {
+        println!("instructions:");
+        for line in info.config.instructions.lines() {
+            println!("  {line}");
+        }
+    }
+    println!("branches:");
+    for b in &info.branches {
+        println!("  {b}");
+    }
+    println!("worktrees:");
+    for wt in &info.worktrees {
+        let branch = wt.branch.as_deref().unwrap_or("?");
+        println!("  {branch}\t{}", wt.path.display());
     }
 }

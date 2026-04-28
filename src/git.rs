@@ -15,6 +15,11 @@ pub fn init(path: &Path) -> Result<()> {
     run(&["init", "--quiet"], Some(path))
 }
 
+/// `git -C <repo> config <key> <value>` — set a repo-local config value.
+pub fn set_config(repo: &Path, key: &str, value: &str) -> Result<()> {
+    run(&["config", key, value], Some(repo))
+}
+
 /// `git clone <src> <dst>`.
 pub fn clone(src: &Path, dst: &Path) -> Result<()> {
     run(
@@ -71,16 +76,17 @@ pub fn worktree_add(repo: &Path, path: &Path, branch: &str) -> Result<()> {
     }
 }
 
-/// `git worktree remove <path>`. Does NOT delete the branch.
-pub fn worktree_remove(repo: &Path, path: &Path) -> Result<()> {
-    run(
-        &[
-            "worktree",
-            "remove",
-            path.to_str().ok_or_else(|| anyhow!("worktree path is not utf-8"))?,
-        ],
-        Some(repo),
-    )
+/// `git worktree remove [--force] <path>`. Does NOT delete the branch.
+///
+/// `force = true` lets removal succeed even if the worktree has uncommitted
+/// changes — useful when the agent itself is being deleted.
+pub fn worktree_remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
+    let path_str = path.to_str().ok_or_else(|| anyhow!("worktree path is not utf-8"))?;
+    if force {
+        run(&["worktree", "remove", "--force", path_str], Some(repo))
+    } else {
+        run(&["worktree", "remove", path_str], Some(repo))
+    }
 }
 
 /// Parse `git worktree list --porcelain` into structured records.
@@ -279,7 +285,7 @@ mod tests {
         assert!(wt.exists());
         let listed = worktree_list(&repo).unwrap();
         assert!(listed.iter().any(|w| w.branch.as_deref() == Some("kubo/test")));
-        worktree_remove(&repo, &wt).unwrap();
+        worktree_remove(&repo, &wt, false).unwrap();
         assert!(!wt.exists());
     }
 
@@ -298,7 +304,7 @@ mod tests {
         run(&["config", "user.name", "abot tests"], Some(&wt)).unwrap();
         write(&wt, "b", "2");
         commit_all(&wt, "work commit").unwrap();
-        worktree_remove(&repo, &wt).unwrap();
+        worktree_remove(&repo, &wt, false).unwrap();
 
         merge_and_delete(&repo, "kubo/work", "integrate work").unwrap();
         assert!(!branch_exists(&repo, "kubo/work").unwrap());
@@ -319,7 +325,7 @@ mod tests {
         run(&["config", "user.name", "abot tests"], Some(&wt)).unwrap();
         write(&wt, "b", "2");
         commit_all(&wt, "discard me").unwrap();
-        worktree_remove(&repo, &wt).unwrap();
+        worktree_remove(&repo, &wt, false).unwrap();
 
         // -d would refuse because the branch isn't merged; -D should succeed.
         assert!(delete_branch(&repo, "kubo/throwaway", false).is_err());
@@ -341,7 +347,7 @@ mod tests {
         run(&["config", "user.name", "abot tests"], Some(&wt)).unwrap();
         write(&wt, "new-file", "hello");
         commit_all(&wt, "add new-file").unwrap();
-        worktree_remove(&repo, &wt).unwrap();
+        worktree_remove(&repo, &wt, false).unwrap();
 
         let out = diff(&repo, &format!("{head}..kubo/diff-test")).unwrap();
         assert!(out.contains("new-file"));
