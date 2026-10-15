@@ -1,52 +1,79 @@
-# abot v0 (archived)
+# abot
 
-This commit retires abot v0. The name goes to the CLI for the ecosystem log
-(Dorky-Robot/ecosystem-log), which lands in the commits after this one.
+The CLI for a git-based ecosystem log: the shared memory of a group of
+agents and the person they work for.
 
-## What v0 was
+The log is a plain git repo (`~/Projects/ecosystem-log`):
 
-A headless Rust CLI in which **an agent identity was a git repository**
-(`~/.abot/agents/<name>.abot`). History was the agent's memory, and the
-lifecycle verbs were thin mappings onto git:
+- `state/` is **what is true now**, overwritten as it changes;
+- commits are **what happened and why**, never rewritten;
+- `<project>/<task>` branches are **what is being tried**, and every one
+  ends as landed, a dead end (which still lands, as its lesson), or parked.
 
-- `employ <name> <room>`: a worktree on a `kubo/<room>` branch
-- `integrate <name> <room>`: merge that branch back into the agent's main
-- `discard <name> <room>`: drop the branch
-- `run <name>`: stdin to a local Ollama model, stream to stdout
+abot is the easy path through that. Everything it does is plain git
+underneath and can be done by hand. It holds no locks, installs no hooks
+and wraps nothing; its guard rails are templates, checks and refusals.
+diwa (semantic search over commits) is called as a user would call it.
 
-plus create, list, show, clone, dismiss, log, diff, config and rm. Before
-the headless rewrite (v1.0.0, April 2026) it was a spatial terminal with an
-Axum server, a Flutter client and Docker sandboxes ("kubos").
+## Install
 
-## Why it is archived
+```sh
+brew install dorky-robot/tap/abot
+```
 
-Felix, 2026-10-15: "why dont we just take abot arhieve it and then take its
-place with this and call this abot. i feel like that was a failed attempt
-heavy handed thing and this is actually a more elegant solution that we can
-use to what we need now."
+## The lifecycle
 
-- **The unit was wrong.** One repo per agent. What the org needed was one
-  shared log with a branch per task, so that any agent on any machine can
-  pick up where the last one stopped. Memory belongs to the work, not to
-  the worker.
-- **It was heavy.** Per-agent repos under `~/.abot`, a manifest and config
-  per agent, an Ollama dispatcher, a server and client before that. None of
-  it had users.
+```sh
+abot orient everyday-vet                 # what the log knows, capped at ~150 lines
+abot start everyday-vet/group-thread "why this is worth trying"
+#   worktrees: ../ecosystem-log-group-thread and ../<code-repo>-group-thread
+#   first commit: "Start everyday-vet/group-thread: …"  Outcome: in-flight
+#   the log branch is pushed, so everyone can see the path is taken
+cd ../ecosystem-log-group-thread
+#   work; edit state/projects/everyday-vet.md when the truth changes; commit
+abot land                                # rebase, ff main, push, clean up (both repos)
+abot dead-end --tried "…" --failed "…" --instead "…"
+abot park "waits on Felix's answer about X"
+```
 
-## What survived
+| verb | does | refuses |
+|---|---|---|
+| `orient <p> [--cross p2 …]` | pull main; ecosystem summary, state file, how it got here, decisions, dead ends, in-flight branches, diwa | a bad slug |
+| `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
+| `land` | `Outcome: landed` commit if needed, rebase on main, ff main, push, remove worktree, delete branch; code repo first | no change under state/ecosystem/how/people (unless `--no-state-change "<why>"`); secrets in the diff; uncommitted work |
+| `dead-end --tried --failed --instead` | lesson commit (`Dead end: <p>/<t>. …`, `Outcome: dead-end`), `merge -s ours --no-ff`, a Traps line on main, push, clean up; code branch pushed and kept | any part missing |
+| `park "<why>"` | `Outcome: parked` commit, push the branch, a Parked line on main, remove the worktree, keep the branch | |
+| `dig <sha>` | the commit, its `Refs:` into code repos, `diwa show` | |
+| `decide "<text>" --why … --about p1,p2` | appends to `~/Projects/ceo/felix-decisions.json` | the machine that doesn't hold it |
+| `map [--json]` | every project: live, next, waits on Felix, in flight, dead ends, last change, uses/serves | |
+| `check [--json]` | state-file shape and length, map.md current, stale branches (>7 days), branches with no project, secrets | exits 1 on any problem |
+| `tree <p> [--json]` | `git log --graph` of main and `<p>/*` with outcomes | |
+| `mirror` | decisions JSON → `decisions/<id>.md`, one commit each, idempotent, push | the main checkout off main |
 
-The shape of the verbs. A task is a branch with a worktree; work that pays
-off is merged; work that doesn't is dropped, and git keeps the record. The
-new abot keeps that shape (`start`, `land`, `dead-end`, `park`) and applies
-it to the ecosystem log, where a dead end lands as a lesson instead of
-being thrown away.
+Never force-pushes; never rewrites main. Run `abot <verb> --help` for details.
 
-## Where the old code is
+## Where things are
 
-Nothing is deleted from history. The tag `v0-archived` points at the last v0
-commit, and the releases v0.1.0, v0.2.0 and v1.0.0 still have their binaries:
+| | default | override |
+|---|---|---|
+| the log | `~/Projects/ecosystem-log` | `ABOT_LOG` |
+| code repos | main checkouts in `~/Projects/*/` and `~/Projects/*/*/` | `ABOT_PROJECTS`; `--repo <path>` |
+| decisions | `~/Projects/ceo/felix-decisions.json` | `ABOT_DECISIONS` |
+| diwa | `diwa` on PATH | `ABOT_DIWA` (empty skips it) |
 
-    git checkout v0-archived
+A project's code repo is the one named by a `Repo:` line in its state file
+(`Repo: Dorky-Robot/overview`, or a path), else the repo whose origin has
+the project's name.
 
-diwa holds about 60 insights on those 70 commits:
-`diwa search Dorky-Robot/abot "<query>"`.
+## History
+
+abot v0 (2026) was a different tool: an agent identity as a git repo, with
+employ/integrate/discard as worktree/merge/drop and an Ollama `run`. It was
+archived as a dead end, because one repo per agent was the wrong unit and
+the stack around it was heavy; the shape of its verbs survives here. Its
+code is at tag `v0-archived`, and its releases (up to v1.0.0) are still on
+the releases page.
+
+## License
+
+MIT OR Apache-2.0.
