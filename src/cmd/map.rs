@@ -280,9 +280,9 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
     Ok(problems.is_empty())
 }
 
-/// Run bin/map (if the log has one) in a throwaway worktree of main and
-/// compare: either what it prints, or what it writes, against ecosystem/map.md.
-fn map_current(ctx: &Ctx, g: &Git, problems: &mut Vec<String>, notes: &mut Vec<String>) {
+/// Run bin/map (if the log has one) in a throwaway worktree of main, so a
+/// generator that writes in place never touches the main checkout.
+fn map_current(_ctx: &Ctx, g: &Git, problems: &mut Vec<String>, notes: &mut Vec<String>) {
     if !g.ok(&["cat-file", "-e", "main:bin/map"]) {
         notes.push("no bin/map yet; map.md not checked".into());
         return;
@@ -301,19 +301,13 @@ fn map_current(ctx: &Ctx, g: &Git, problems: &mut Vec<String>, notes: &mut Vec<S
     let wt = Git::new(&tmp);
     match out {
         Ok(o) if o.status.success() => {
-            let printed = String::from_utf8_lossy(&o.stdout).into_owned();
-            let committed = ctx.read_at("main", "ecosystem/map.md");
-            let wrote_change = !wt.ok(&["diff", "--quiet", "--", "ecosystem/map.md"])
-                || wt.try_run(&["status", "--porcelain", "--", "ecosystem/map.md"]).is_some_and(|s| !s.is_empty());
-            let stale = if wrote_change {
-                true
-            } else if printed.trim().is_empty() {
-                committed.is_none()
-            } else {
-                committed.as_deref().map(str::trim) != Some(printed.trim())
-            };
-            if stale {
-                problems.push("ecosystem/map.md: not what bin/map generates now; regenerate it on a branch and land it".into());
+            // bin/map writes ecosystem/map.md where it stands. If running it
+            // on a clean copy of main changes the file, main's map is stale.
+            let changed = wt
+                .try_run(&["status", "--porcelain", "--", "ecosystem/map.md"])
+                .is_some_and(|s| !s.is_empty());
+            if changed {
+                problems.push("ecosystem/map.md: not what bin/map generates from main; run bin/map on a branch and land it".into());
             }
         }
         Ok(o) => problems.push(format!(
