@@ -519,3 +519,70 @@ fn a_closed_pipe_ends_quietly() {
     assert!(!err.contains("panicked") && !err.contains("Broken pipe"), "{err}");
     assert_ne!(out.status.code(), Some(101), "no panic exit");
 }
+
+/// The Code: trailer: land writes the exact range it fast-forwarded, a dead
+/// end and a park the branch they kept; dig follows it and tree carries it.
+#[test]
+fn the_log_records_the_code_each_task_carried() {
+    let w = World::new();
+    let code_before = w.git(&w.code, &["rev-parse", "--short=7", "main"]);
+
+    // land: the range on the code trunk, in the Land commit
+    ok(&w.abot(&["start", "demo/feat", "try the feature"]));
+    let wt = w.wt("feat");
+    let cwt = w.code_wt("feat");
+    let state = std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap();
+    w.commit(&wt, "state/projects/demo.md", &state.replace("- dr1, v1", "- dr1, v2"), "v2 is live");
+    w.commit(&cwt, "a.txt", "a\n", "Add part one");
+    w.commit(&cwt, "b.txt", "b\n", "Add part two");
+    ok(&w.abot_in(&wt, &["land"]));
+    let code_after = w.git(&w.code_origin, &["rev-parse", "--short=7", "main"]);
+    let land = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(land.contains(&format!("Code: remotes/demo {code_before}..{code_after}\nOutcome: landed")), "{land}");
+    // git itself reads it as a trailer
+    let t = w.git(&w.log_origin, &["log", "-1", "--format=%(trailers:key=Code,valueonly)", "main"]);
+    assert_eq!(t.trim(), format!("remotes/demo {code_before}..{code_after}"));
+
+    // dig on the Land commit lists the code it carried
+    let land_sha = w.git(&w.log_origin, &["rev-parse", "--short", "main"]);
+    let d = ok(&w.abot(&["dig", &land_sha]));
+    assert!(d.contains(&format!("Code remotes/demo {code_before}..{code_after}")), "{d}");
+    let one = d.find("Add part one").expect("part one listed");
+    let two = d.find("Add part two").expect("part two listed");
+    assert!(one < two, "oldest first: {d}");
+
+    // tree --json carries it
+    let tj: serde_json::Value = serde_json::from_str(&ok(&w.abot(&["tree", "demo", "--json"]))).unwrap();
+    let node = tj["nodes"].as_array().unwrap().iter().find(|n| n["subject"] == "Land demo/feat").unwrap();
+    assert_eq!(node["code"][0]["repo"], "remotes/demo");
+    assert_eq!(node["code"][0]["to"], code_after.as_str());
+
+    // a log-only task records no code
+    ok(&w.abot(&["start", "demo/words", "only words"]));
+    let wt2 = w.wt("words");
+    let st2 = std::fs::read_to_string(wt2.join("state/projects/demo.md")).unwrap();
+    w.commit(&wt2, "state/projects/demo.md", &format!("{st2}\nmore words\n"), "More words");
+    ok(&w.abot_in(&wt2, &["land"]));
+    let land2 = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(!land2.contains("Code:"), "{land2}");
+
+    // dead end: the lesson names the branch's own commits
+    ok(&w.abot(&["start", "demo/hunch", "maybe"]));
+    let hwt = w.wt("hunch");
+    let hcwt = w.code_wt("hunch");
+    w.commit(&hcwt, "h.txt", "h\n", "Try the hunch");
+    let tip = w.git(&hcwt, &["rev-parse", "--short=7", "HEAD"]);
+    ok(&w.abot_in(&hwt, &["dead-end", "--tried", "a", "--failed", "b", "--instead", "c"]));
+    let lesson = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main^^2"]);
+    assert!(lesson.contains(&format!("Code: remotes/demo {code_after}..{tip}\nOutcome: dead-end")), "{lesson}");
+
+    // park: the same, on the parked tip
+    ok(&w.abot(&["start", "demo/later", "not yet"]));
+    let pwt = w.wt("later");
+    let pcwt = w.code_wt("later");
+    w.commit(&pcwt, "p.txt", "p\n", "Half of the code");
+    let ptip = w.git(&pcwt, &["rev-parse", "--short=7", "HEAD"]);
+    ok(&w.abot_in(&pwt, &["park", "waits"]));
+    let park = w.git(&w.log_origin, &["log", "-1", "--format=%B", "demo/later"]);
+    assert!(park.contains(&format!("Code: remotes/demo {code_after}..{ptip}\nOutcome: parked")), "{park}");
+}
