@@ -38,7 +38,7 @@ abot park "waits on Felix's answer about X"
 
 | verb | does | refuses |
 |---|---|---|
-| `orient <p> [--cross p2 …]` | pull main; ecosystem summary, state file, how it got here, decisions, dead ends, in-flight branches, diwa | a bad slug |
+| `orient <p> [--cross p2 …]` | fetch, then read `origin/main`: ecosystem summary, state file, how it got here, decisions, dead ends, in-flight branches, diwa | a bad slug |
 | `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
 | `land` | `Outcome: landed` commit if needed, rebase on main, ff main, push, remove worktree, delete branch; code repo first | no change under state/ecosystem/how/people (unless `--no-state-change "<why>"`); secrets in the diff; uncommitted work |
 | `dead-end --tried --failed --instead` | lesson commit (`Dead end: <p>/<t>. …`, `Outcome: dead-end`), `merge -s ours --no-ff`, a Traps line on main, push, clean up; code branch pushed and kept | any part missing |
@@ -49,6 +49,8 @@ abot park "waits on Felix's answer about X"
 | `check [--json]` | state-file shape and length, map.md current, stale branches (>7 days), branches with no project, secrets | exits 1 on any problem |
 | `tree <p> [--json]` | `git log --graph` of main and `<p>/*` with outcomes | |
 | `mirror` | decisions JSON → `decisions/<id>.md`, one commit each, idempotent, push | the main checkout off main |
+
+Reads (`orient`, `map`, `tree`, `dig`, `check`) fetch and read `origin/main`, the copy of record, never the local checkout, so a stale, dirty or detached clone can't mislead them; if origin can't be reached they say "origin unreachable, reading local main as of <date>" and go on. `start` branches from `origin/main`.
 
 Never force-pushes; never rewrites main. Run `abot <verb> --help` for details.
 

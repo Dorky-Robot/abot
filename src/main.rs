@@ -45,7 +45,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Everything the log knows about a project, from main, in a screen or two
-    #[command(long_about = "Pull main (--ff-only), then print: the ecosystem/ summary, the \
+    #[command(long_about = "Fetch origin and read origin/main (never the local checkout; local main, said loudly, only if origin is unreachable), then print: the ecosystem/ summary, the \
 project's state file, how it got here, decisions about it, dead ends, in-flight branches, \
 and the nearest diwa insights for the log and the code repo. Output is capped; empty \
 sections say (nothing). With --cross, several projects with the map rows between them.")]
@@ -58,7 +58,7 @@ sections say (nothing). With --cross, several projects with the map rows between
     },
     /// Start <project>/<task>: worktrees in the log and code repo, a first commit with the why, push
     #[command(long_about = "Create the worktree ../ecosystem-log-<task> on branch <project>/<task> \
-from main, and ../<repo>-<task> in the project's code repo if one is found. The first log \
+from origin/main, and ../<repo>-<task> in the project's code repo if one is found. The first log \
 commit is empty, says why, and carries `Outcome: in-flight`; the log branch is pushed so \
 everyone can see the path is taken. Refuses a bare <project>, a project with no state file \
 (--new scaffolds one), and a branch that already exists on origin.")]
