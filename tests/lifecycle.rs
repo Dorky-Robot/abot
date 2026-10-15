@@ -319,6 +319,7 @@ fn check_finds_problems() {
     w.commit(&w.log, "state/projects/bad.md", "# bad\n## Next\n", "A malformed state file");
     w.commit(&w.log, "state/leak.md", "call 512-555-0134\n", "A phone number");
     w.commit(&w.log, "docs/transcripts/t.md", "call 512-555-0134\n", "A transcript");
+    w.git(&w.log, &["push", "-q", "origin", "main"]);
     w.git(&w.log, &["branch", "ghost/x"]);
     w.git(&w.log, &["push", "-q", "origin", "ghost/x"]);
     w.git(&w.log, &["branch", "stray"]);
@@ -423,4 +424,74 @@ fn dig_shows_a_commit_and_its_refs() {
     let o = ok(&w.abot(&["dig", &code_sha]));
     assert!(o.contains("Seed the code") && o.contains("dev/demo"), "{o}");
     assert!(fails(&w.abot(&["dig", "abcdef1234"])).contains("no commit"));
+}
+
+/// A second clone moves origin on; the World's own clone stays behind.
+fn move_origin(w: &World) -> String {
+    let other = w.root.join("other");
+    w.git(&w.root, &["clone", "-q", w.log_origin.to_str().unwrap(), other.to_str().unwrap()]);
+    let state = std::fs::read_to_string(other.join("state/projects/demo.md")).unwrap();
+    w.commit(&other, "state/projects/demo.md", &state.replace("- dr1, v1", "- dr1, v9 from origin"), "Origin moved on");
+    w.git(&other, &["push", "-q", "origin", "main"]);
+    w.git(&other, &["push", "-q", "origin", "main:refs/heads/demo/elsewhere"]);
+    w.git(&other, &["rev-parse", "--short", "HEAD"])
+}
+
+#[test]
+fn reads_come_from_origin_not_the_clone() {
+    let w = World::new();
+    let local_main = w.git(&w.log, &["rev-parse", "main"]);
+    let sha = move_origin(&w);
+    // The local checkout is stale, dirty and detached; none of it may show.
+    std::fs::write(w.log.join("state/projects/demo.md"), "# dirty\n").unwrap();
+    w.git(&w.log, &["checkout", "-q", "--detach"]);
+
+    let o = ok(&w.abot(&["orient", "demo"]));
+    assert!(o.contains("origin/main at") && o.contains("- dr1, v9 from origin"), "{o}");
+    assert!(o.contains("Origin moved on") && o.contains("demo/elsewhere"), "{o}");
+    assert!(!o.contains("# dirty") && !o.contains("unreachable"), "{o}");
+
+    let m: serde_json::Value = serde_json::from_slice(&w.abot(&["map", "--json"]).stdout).unwrap();
+    assert_eq!(m["read_from"], "origin/main");
+    assert_eq!(m["projects"][0]["live"], "dr1, v9 from origin");
+    assert_eq!(m["projects"][0]["in_flight"][0], "demo/elsewhere");
+
+    assert!(ok(&w.abot(&["tree", "demo"])).contains("Origin moved on"));
+    assert!(ok(&w.abot(&["dig", &sha])).contains("Origin moved on"));
+    assert!(ok(&w.abot(&["check"])).starts_with("ok: 1 state file"));
+    // Reading never moved the clone's main.
+    assert_eq!(w.git(&w.log, &["rev-parse", "main"]), local_main);
+}
+
+#[test]
+fn reads_fall_back_loudly_when_origin_is_unreachable() {
+    let w = World::new();
+    w.git(&w.log, &["remote", "set-url", "origin", w.root.join("gone.git").to_str().unwrap()]);
+    let o = ok(&w.abot(&["orient", "demo"]));
+    assert!(o.contains("origin unreachable, reading local main as of 20"), "{o}");
+    assert!(o.contains("- dr1, v1"), "{o}");
+    assert!(ok(&w.abot(&["map"])).contains("origin unreachable"));
+    assert!(ok(&w.abot(&["tree", "demo"])).contains("origin unreachable"));
+    let c = w.abot(&["check"]);
+    assert!(c.status.success() && String::from_utf8_lossy(&c.stderr).contains("origin unreachable"));
+    // A write that needs origin refuses instead.
+    assert!(fails(&w.abot(&["start", "demo/x", "why"])).contains("origin unreachable"));
+}
+
+#[test]
+fn start_branches_from_origin_main() {
+    let w = World::new();
+    let local_main = w.git(&w.log, &["rev-parse", "main"]);
+    move_origin(&w);
+    let origin_main = w.git(&w.log_origin, &["rev-parse", "main"]);
+    ok(&w.abot(&["start", "demo/fresh", "from the copy of record"]));
+    let wt = w.wt("fresh");
+    assert_eq!(w.git(&wt, &["rev-parse", "HEAD^"]), origin_main);
+    assert!(std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap().contains("v9 from origin"));
+    assert_eq!(w.git(&w.log, &["rev-parse", "main"]), local_main, "start leaves the main checkout alone");
+    // Landing from a stale clone still works: land pulls main first.
+    let state = std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap();
+    w.commit(&wt, "state/projects/demo.md", &state.replace("v9 from origin", "v10"), "v10 is live");
+    ok(&w.abot_in(&wt, &["land"]));
+    assert!(w.git(&w.log_origin, &["show", "main:state/projects/demo.md"]).contains("v10"));
 }
