@@ -40,10 +40,10 @@ abot park "waits on Felix's answer about X"
 |---|---|---|
 | `orient <p> [--cross p2 …]` | fetch, then read `origin/main`: ecosystem summary, state file, how it got here, decisions, dead ends, in-flight branches, diwa | a bad slug |
 | `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
-| `land` | `Outcome: landed` commit if needed, rebase on main, ff main, push, remove worktree, delete branch; code repo first | no change under state/ecosystem/how/people (unless `--no-state-change "<why>"`); secrets in the diff; uncommitted work |
-| `dead-end --tried --failed --instead` | lesson commit (`Dead end: <p>/<t>. …`, `Outcome: dead-end`), `merge -s ours --no-ff`, a Traps line on main, push, clean up; code branch pushed and kept | any part missing |
-| `park "<why>"` | `Outcome: parked` commit, push the branch, a Parked line on main, remove the worktree, keep the branch | |
-| `dig <sha>` | the commit, its `Refs:` into code repos, `diwa show` | |
+| `land` | `Outcome: landed` commit if needed (with `Code: <org/repo> <from>..<to>`, the exact range it put on the code trunk), rebase on main, ff main, push, remove worktree, delete branch; code repo first | no change under state/ecosystem/how/people (unless `--no-state-change "<why>"`); secrets in the diff; uncommitted work |
+| `dead-end --tried --failed --instead` | lesson commit (`Dead end: <p>/<t>. …`, `Code:` the branch's own commits, `Outcome: dead-end`), `merge -s ours --no-ff`, a Traps line on main, push, clean up; code branch pushed and kept | any part missing |
+| `park "<why>"` | `Outcome: parked` commit (with `Code:` the kept branch), push the branch, a Parked line on main, remove the worktree, keep the branch | |
+| `dig <sha>` | the commit, its `Refs:` into code repos, its `Code:` range as commits with diwa's insights on each, `diwa show` | |
 | `decide "<text>" --why … --about p1,p2` | appends to `~/Projects/ceo/felix-decisions.json` | the machine that doesn't hold it |
 | `map [--json]` | every project: live, next, waits on Felix, in flight, dead ends, last change, uses/serves | |
 | `check [--json]` | state-file shape and length, map.md current, stale branches (>7 days), branches with no project, secrets | exits 1 on any problem |
