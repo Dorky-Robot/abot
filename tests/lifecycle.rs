@@ -391,6 +391,19 @@ fn decide_appends_and_mirror_lands_once() {
     std::fs::write(&file, raw.replace("Old one.", "Old one, revised.")).unwrap();
     assert!(ok(&w.abot(&["mirror"])).contains("mirrored 1 decision(s)"));
     assert!(w.git(&w.log, &["log", "-1", "--format=%s"]).starts_with("d-9 revised: Old one, revised"));
+    // A string `supersedes` mangled one character at a time by the old
+    // Python mirror is stale: one revised commit, then nothing.
+    let d9 = w.log.join("decisions/d-9.md");
+    let with_sup = std::fs::read_to_string(&file).unwrap().replace("\"why\": \"w\",", "\"why\": \"w\",\n   \"supersedes\": \"d-2\",");
+    std::fs::write(&file, &with_sup).unwrap();
+    assert!(ok(&w.abot(&["mirror"])).contains("mirrored 1 decision(s)"));
+    let good = std::fs::read_to_string(&d9).unwrap();
+    assert!(good.contains("supersedes: d-2\n"), "{good}");
+    std::fs::write(&d9, good.replace("supersedes: d-2", "supersedes: d, -, 2")).unwrap();
+    w.git(&w.log, &["commit", "-q", "-am", "mangle as the old mirror did"]);
+    assert!(ok(&w.abot(&["mirror"])).contains("mirrored 1 decision(s)"));
+    assert!(std::fs::read_to_string(&d9).unwrap().contains("supersedes: d-2\n"));
+    assert!(ok(&w.abot(&["mirror"])).contains("mirrored 0 decision(s)"));
     // The orient of org sees decisions about it.
     let o = ok(&w.abot(&["orient", "org"]));
     assert!(o.contains("d-10: Felix"), "{o}");

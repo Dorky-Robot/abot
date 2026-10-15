@@ -96,31 +96,17 @@ fn list(d: &Value, k: &str) -> Vec<String> {
     }
 }
 
-/// decisions/<id>.md, byte for byte what bin/mirror-decisions writes, so the
-/// two can run against the same log and agree that nothing changed. One
-/// difference: a `supersedes` that is a string ("d-21") is written as is,
-/// where the Python joined its characters ("d, -, 2, 1").
+/// decisions/<id>.md. The same bytes bin/mirror-decisions wrote, except a
+/// `supersedes` that is a string ("d-21") is written as is, where the Python
+/// joined its characters ("d, -, 2, 1"). Files with that mangling read as
+/// stale, so the first run lands them once as "revised", and then never again.
 pub fn render(d: &Value) -> String {
-    render_with(d, false)
-}
-
-/// What bin/mirror-decisions wrote for the same decision, quirk included.
-/// A file that already holds this is current: rewriting it would land a
-/// "revised" commit for a decision nobody revised.
-pub fn render_legacy(d: &Value) -> String {
-    render_with(d, true)
-}
-
-fn render_with(d: &Value, legacy: bool) -> String {
     let about = list(d, "about").join(", ");
     let mut lines = vec![format!("# {} · {} · {}", s(d, "id"), s(d, "at"), s(d, "by")), String::new()];
     if !about.is_empty() {
         lines.push(format!("about: {about}"));
     }
-    let sup = match d.get("supersedes") {
-        Some(Value::String(x)) if legacy => x.chars().map(String::from).collect(),
-        _ => list(d, "supersedes"),
-    };
+    let sup = list(d, "supersedes");
     if !sup.is_empty() {
         lines.push(format!("supersedes: {}", sup.join(", ")));
     }
@@ -198,7 +184,7 @@ pub fn mirror(ctx: &Ctx) -> Result<()> {
         let path = format!("decisions/{id}.md");
         let body = render(d);
         let have = g.try_raw(&["show", &format!("HEAD:{path}")]);
-        if have.as_deref() == Some(body.as_str()) || have.as_deref() == Some(render_legacy(d).as_str()) {
+        if have.as_deref() == Some(body.as_str()) {
             continue;
         }
         std::fs::create_dir_all(ctx.log.join("decisions"))?;
@@ -240,10 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn string_supersedes_renders_right_and_legacy_is_kept() {
+    fn string_supersedes_renders_whole() {
         let d = json!({"id":"d-114","at":"2026-10-13","by":"Felix","text":"t","why":"w","about":["org"],"supersedes":"d-21"});
         assert!(render(&d).contains("supersedes: d-21\n"));
-        assert!(render_legacy(&d).contains("supersedes: d, -, 2, 1\n"));
+        assert!(!render(&d).contains("d, -"));
     }
 
     #[test]
