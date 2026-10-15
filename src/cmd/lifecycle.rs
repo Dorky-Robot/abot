@@ -29,10 +29,14 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -
         bail!("say why: abot start {b} \"<why this is worth trying>\"");
     }
     let log = ctx.require_log()?;
-    require_on_main(&log, "the log's main checkout")?;
-    sync_main(&log, "main", "the log")?;
+    // Branch from origin's main, the copy of record, not from this clone's
+    // main, which may be stale; nothing in the main checkout is touched.
+    if let Some(why) = ctx.read_from_origin()? {
+        bail!("can't start {b} from origin's main: {why}");
+    }
+    let base = ctx.base();
 
-    let state = ctx.state_path_at("main", &b.project);
+    let state = ctx.state_path_at(&base, &b.project);
     match (&state, new) {
         (None, false) => bail!(
             "no state file for `{}`: state/projects/{}.md doesn't exist on main. \
@@ -81,11 +85,11 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -
     }
 
     // Act.
-    log.run(&["worktree", "add", "-q", "-b", &bs, &display(&wt), "main"])?;
+    log.run(&["worktree", "add", "-q", "--no-track", "-b", &bs, &display(&wt), &base])?;
     let wg = Git::new(&wt);
     if new {
         let f = format!("state/projects/{}.md", b.project);
-        let text = match ctx.read_at("main", "how/project-template.md").and_then(|d| statefile::extract_template(&d)) {
+        let text = match ctx.read_at(&base, "how/project-template.md").and_then(|d| statefile::extract_template(&d)) {
             Some(t) => statefile::fill_template(&t, &b.project),
             None => statefile::template(&b.project),
         };
@@ -132,7 +136,7 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -
     for l in lines {
         println!("{l}");
     }
-    let f = ctx.state_path_at("main", &b.project).unwrap_or(format!("state/projects/{}.md", b.project));
+    let f = ctx.state_path_at(&base, &b.project).unwrap_or(format!("state/projects/{}.md", b.project));
     println!("next: work in the worktrees; when the truth changes, edit {f} on the branch; then from {}: abot land (or dead-end, or park)", wt.display());
     Ok(())
 }
