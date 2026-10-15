@@ -144,6 +144,7 @@ fn start_then_land() {
 
     let out = ok(&w.abot_in(&wt, &["land"]));
     assert!(out.contains("landed demo/feat"), "{out}");
+    assert_eq!(out.lines().last().unwrap(), format!("cd {}", w.log.display()), "the last line is runnable");
     assert!(out.contains("landed the code branch"), "{out}");
 
     // Log: main has start, change and land; pushed; branch and worktree gone.
@@ -166,7 +167,10 @@ fn start_refuses_what_it_should() {
     let w = World::new();
     assert!(fails(&w.abot(&["start", "demo", "why"])).contains("bare project"));
     assert!(fails(&w.abot(&["start", "nope/x", "why"])).contains("no state file"));
-    assert!(fails(&w.abot(&["start", "demo/x", " "])).contains("say why"));
+    assert!(fails(&w.abot(&["start", "demo/x", " "])).contains("missing WHY"));
+    assert!(fails(&w.abot(&["start", "demo/x"])).contains("missing WHY: abot start demo/x \"<why>\""));
+    let help = ok(&w.abot(&["start", "--help"]));
+    assert!(help.contains("Usage: abot start [OPTIONS] <project>/<task> \"<why>\""), "{help}");
     // Someone else has the branch on origin.
     w.git(&w.log, &["branch", "demo/taken"]);
     w.git(&w.log, &["push", "-q", "origin", "demo/taken"]);
@@ -176,7 +180,7 @@ fn start_refuses_what_it_should() {
     // --new scaffolds a state file and refuses an existing one.
     assert!(fails(&w.abot(&["start", "demo/y", "why", "--new"])).contains("drop --new"));
     let out = ok(&w.abot(&["start", "fresh/first", "a new project", "--new"]));
-    assert!(out.contains("none found"), "{out}");
+    assert!(out.contains("code repo:     none (log only; add a Repo: line or --repo if there is one)"), "{out}");
     let scaffold = std::fs::read_to_string(w.wt("first").join("state/projects/fresh.md")).unwrap();
     assert!(scaffold.starts_with("# fresh\nUses:"), "{scaffold}");
     assert!(scaffold.contains("## Waits on Felix"));
@@ -494,4 +498,24 @@ fn start_branches_from_origin_main() {
     w.commit(&wt, "state/projects/demo.md", &state.replace("v9 from origin", "v10"), "v10 is live");
     ok(&w.abot_in(&wt, &["land"]));
     assert!(w.git(&w.log_origin, &["show", "main:state/projects/demo.md"]).contains("v10"));
+}
+
+#[test]
+fn a_closed_pipe_ends_quietly() {
+    let w = World::new();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+    c.args(["orient", "demo"])
+        .current_dir(&w.log)
+        .env("ABOT_LOG", &w.log)
+        .env("ABOT_PROJECTS", w.root.join("Projects"))
+        .env("ABOT_DIWA", "")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    git_env(&mut c, &w.root);
+    let mut child = c.spawn().unwrap();
+    drop(child.stdout.take()); // the reader goes away before abot writes
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("panicked") && !err.contains("Broken pipe"), "{err}");
+    assert_ne!(out.status.code(), Some(101), "no panic exit");
 }
