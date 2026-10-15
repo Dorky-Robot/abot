@@ -122,18 +122,30 @@ pub fn render(d: &Value) -> String {
 
 pub fn first_sentence(text: &str, limit: usize) -> String {
     let s: Vec<char> = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+    // A sentence ends at ". " or "; ", but never inside a quotation: decisions
+    // open with Felix's words verbatim, and his quotes have periods in them.
     let mut end = s.len();
+    let mut quoted = false;
     for (i, ch) in s.iter().enumerate() {
-        if (*ch == '.' || *ch == ';') && (i + 1 == s.len() || s[i + 1] == ' ') {
-            end = i;
-            break;
+        match ch {
+            '"' => quoted = !quoted,
+            '“' => quoted = true,
+            '”' => quoted = false,
+            '.' | ';' if !quoted && (i + 1 == s.len() || s[i + 1] == ' ') => {
+                end = i;
+                break;
+            }
+            _ => {}
         }
     }
     let s = &s[..end];
     if s.len() <= limit {
         s.iter().collect()
     } else {
-        let cut: String = s[..limit - 1].iter().collect();
+        // Cut at a word boundary so a long quote never ends mid-word.
+        let head = &s[..limit - 1];
+        let at = head.iter().rposition(|c| *c == ' ').filter(|&p| p > limit / 2).unwrap_or(limit - 1);
+        let cut: String = head[..at].iter().collect();
         format!("{}…", cut.trim_end())
     }
 }
@@ -241,6 +253,20 @@ mod tests {
         let f = first_sentence(&long, 150);
         assert_eq!(f.chars().count(), 150);
         assert!(f.ends_with('…'));
+    }
+
+    #[test]
+    fn first_sentence_runs_to_the_end_of_a_quote() {
+        // d-132 was cut to `Felix, 10-15: "yes` by the period inside the quote.
+        assert_eq!(
+            first_sentence("Felix, 10-15: \"yes. lets do it. ship it\". Then more.", 150),
+            "Felix, 10-15: \"yes. lets do it. ship it\""
+        );
+        assert_eq!(first_sentence("Felix: “ok. go” then. Rest.", 150), "Felix: “ok. go” then");
+        let long = format!("Felix: \"{}\"", "word ".repeat(60));
+        let f = first_sentence(&long, 150);
+        assert!(f.ends_with("word…"), "{f}");
+        assert!(f.chars().count() <= 150);
     }
 
     #[test]
