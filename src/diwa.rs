@@ -31,3 +31,16 @@ pub fn lines(ctx: &Ctx, args: &[&str]) -> Vec<String> {
     }
     v
 }
+
+/// Run diwa with `--json` and parse what it prints; None when diwa is skipped,
+/// missing, failing or prints something else (it is context, never a step).
+pub fn json(ctx: &Ctx, args: &[&str]) -> Option<serde_json::Value> {
+    let bin = ctx.diwa.as_deref()?;
+    let mut a: Vec<&str> = args.to_vec();
+    a.push("--json");
+    let o = Command::new(bin).args(&a).output().ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&o.stdout).ok()
+}

@@ -63,6 +63,45 @@ pub fn run(ctx: &Ctx, sha: &str) -> Result<()> {
         }
     }
 
+    // Code: the exact commits a task carried (abot land writes it; a dead end
+    // and a park name the branch they kept), each with what diwa learned on it.
+    let ranges = trailers::code(&msg);
+    if !ranges.is_empty() {
+        let all = ctx.code_repos();
+        for r in ranges {
+            o.header(&format!("Code {r}"));
+            let Some(repo) = repos::find_by_origin(&all, &r.repo) else {
+                o.line(format!("no clone of {} under {}", r.repo, ctx.projects.display()));
+                continue;
+            };
+            let cg = Git::new(&repo.path);
+            let span = format!("{}..{}", r.from, r.to);
+            let Some(list) = cg.try_run(&["log", "--reverse", "--date=short", "--format=%h%x1f%ad%x1f%s", &span]) else {
+                o.line(format!("{span} is not in {} (fetch it?)", repo.path.display()));
+                continue;
+            };
+            let commits: Vec<&str> = list.lines().filter(|l| !l.is_empty()).collect();
+            const SHOWN: usize = 20;
+            for line in commits.iter().take(SHOWN) {
+                let f: Vec<&str> = line.split('\x1f').collect();
+                let (h, d, s) = (f[0], f.get(1).copied().unwrap_or(""), f.get(2).copied().unwrap_or(""));
+                o.line(format!("{h}  {d}  {s}"));
+                let insights = diwa::json(ctx, &["show", &r.repo, h])
+                    .and_then(|v| v.get("insights").and_then(|i| i.as_array()).cloned())
+                    .unwrap_or_default();
+                for i in insights.iter().take(4) {
+                    let cat = i.get("category").and_then(|c| c.as_str()).unwrap_or("");
+                    let title = i.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                    o.line(format!("    ◆ {cat}: {title}"));
+                }
+            }
+            if commits.len() > SHOWN {
+                o.line(format!("… {} more: git -C {} log {span}", commits.len() - SHOWN, repo.path.display()));
+            }
+            o.line(format!("(in {})", repo.path.display()));
+        }
+    }
+
     o.header(&format!("diwa show {slug} {}", &full[..7.min(full.len())]));
     o.block(diwa::lines(ctx, &["show", &slug, &full[..12.min(full.len())]]), 60, "diwa show");
     o.print(usize::MAX);

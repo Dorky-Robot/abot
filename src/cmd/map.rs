@@ -336,7 +336,7 @@ pub fn tree(ctx: &Ctx, p: &str, limit: usize, json_out: bool) -> Result<()> {
     let more = g.try_run(&fe).unwrap_or_default();
     refs.extend(more.lines().map(String::from));
     let n = limit.to_string();
-    let fmt = "%x1e%h%x1f%ad%x1f%s%x1f%(trailers:key=Outcome,valueonly,separator=%x2C)%x1f%D%x1f%P%x1f%H";
+    let fmt = "%x1e%h%x1f%ad%x1f%s%x1f%(trailers:key=Outcome,valueonly,separator=%x2C)%x1f%D%x1f%P%x1f%H%x1f%(trailers:key=Code,valueonly,separator=%x2C)";
     let mut args: Vec<&str> = vec!["log", "--date=short", "-n", &n];
     if !json_out {
         args.push("--graph");
@@ -361,6 +361,7 @@ pub fn tree(ctx: &Ctx, p: &str, limit: usize, json_out: bool) -> Result<()> {
                     "outcome": outcome(subject, f.get(3).copied().unwrap_or(""), p),
                     "refs": f.get(4).copied().unwrap_or(""),
                     "project": mentions(subject, p),
+                    "code": f.get(7).map(|c| trailers::code(&format!("x\n\nCode: {c}")).iter().map(|r| json!({ "repo": r.repo, "from": r.from, "to": r.to })).collect::<Vec<_>>()).unwrap_or_default(),
                 })
             })
             .collect();
@@ -378,10 +379,11 @@ pub fn tree(ctx: &Ctx, p: &str, limit: usize, json_out: bool) -> Result<()> {
             Some((graph, rest)) => {
                 let f: Vec<&str> = rest.split('\x1f').collect();
                 let (h, d, s, t, dec) = (f[0], f.get(1).copied().unwrap_or(""), f.get(2).copied().unwrap_or(""), f.get(3).copied().unwrap_or(""), f.get(4).copied().unwrap_or(""));
+                let code = f.get(7).map(|c| c.trim()).filter(|c| !c.is_empty()).map(|c| format!("  → code {c}")).unwrap_or_default();
                 let tag = outcome(s, t, p).map(|o| format!("[{o}] ")).unwrap_or_default();
                 let dec = if dec.is_empty() { String::new() } else { format!(" ({dec})") };
                 let mark = if mentions(s, p) && ctx.tty { ("\x1b[1m", "\x1b[0m") } else { ("", "") };
-                o.line(format!("{graph}{h} {d} {}{tag}{s}{}{dec}", mark.0, mark.1));
+                o.line(format!("{graph}{h} {d} {}{tag}{s}{}{dec}{code}", mark.0, mark.1));
             }
             None => o.line(line.to_string()),
         }
