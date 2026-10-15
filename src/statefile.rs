@@ -199,12 +199,55 @@ pub fn template(project: &str) -> String {
     )
 }
 
-/// Fill a template from the log: `<project>` and `{project}` become the slug.
-pub fn fill_template(tpl: &str, project: &str) -> String {
-    let mut s = tpl.replace("<project>", project).replace("{project}", project);
-    if !s.ends_with('\n') {
-        s.push('\n');
+fn indent(l: &str) -> Option<&str> {
+    l.strip_prefix("    ").or_else(|| l.strip_prefix('\t'))
+}
+
+/// The log's `how/project-template.md` is prose around an indented example
+/// block. The block is the template: the first indented run that starts
+/// with `# <`. A file that is itself a bare template (starts `# <`) is used
+/// whole.
+pub fn extract_template(doc: &str) -> Option<String> {
+    if doc.starts_with("# <") || doc.starts_with("# {") {
+        return Some(doc.to_string());
     }
+    let lines: Vec<&str> = doc.lines().collect();
+    let start = lines.iter().position(|l| indent(l).is_some_and(|x| x.starts_with("# <") || x.starts_with("# {")))?;
+    let mut out = vec![];
+    for (i, l) in lines.iter().enumerate().skip(start) {
+        match indent(l) {
+            Some(x) => out.push(x.to_string()),
+            // A blank line inside the block, when the block goes on after it.
+            None if l.trim().is_empty() && lines.get(i + 1).is_some_and(|n| indent(n).is_some()) => out.push(String::new()),
+            None => break,
+        }
+    }
+    Some(out.join("\n"))
+}
+
+/// Fill a template for a project: `<project>`, `<slug>` and `{project}`
+/// become the slug, and the example values on `Uses:` and `Serves:` are
+/// cleared, since an example is not a fact about this project. Each `##`
+/// heading gets a blank line before it so the file reads as sections.
+pub fn fill_template(tpl: &str, project: &str) -> String {
+    let filled = tpl
+        .replace("<project>", project)
+        .replace("<slug>", project)
+        .replace("{project}", project);
+    let mut out: Vec<String> = vec![];
+    for line in filled.lines() {
+        let key = line.split_once(':').map(|(k, _)| k.trim());
+        if key.is_some_and(|k| k.eq_ignore_ascii_case("Uses") || k.eq_ignore_ascii_case("Serves")) && !line.starts_with('#') {
+            out.push(format!("{}: ", key.unwrap()));
+            continue;
+        }
+        if line.starts_with("## ") && out.last().is_some_and(|l| !l.trim().is_empty()) {
+            out.push(String::new());
+        }
+        out.push(line.to_string());
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
     s
 }
 
@@ -290,7 +333,12 @@ mod tests {
         let t = template("demo");
         assert!(missing_headings(&t).is_empty());
         assert!(lint(&t).is_empty(), "{:?}", lint(&t));
-        assert_eq!(fill_template("# <project>\nUses: x", "demo"), "# demo\nUses: x\n");
+        assert_eq!(fill_template("# <project>\nUses: x", "demo"), "# demo\nUses: \n");
+        let doc = "# Project state file: the template\n\nCopy the block below.\n\n    # <slug>\n    Uses: pocket-id, kita\n    Serves: Sara\n    ## What it is\n    ## Live now\n    ## Next\n    ## Waits on Felix\n    ## Traps\n    ## Parked\n\n## The two lines\n\nprose\n";
+        let t = fill_template(&extract_template(doc).unwrap(), "demo");
+        assert!(t.starts_with("# demo\nUses: \nServes: \n\n## What it is\n\n## Live now\n"), "{t}");
+        assert!(missing_headings(&t).is_empty() && !t.contains("prose") && !t.contains("pocket-id"));
+        assert!(extract_template("no block here").is_none());
     }
 
     #[test]

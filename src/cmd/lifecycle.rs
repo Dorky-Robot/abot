@@ -85,7 +85,7 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -
     let wg = Git::new(&wt);
     if new {
         let f = format!("state/projects/{}.md", b.project);
-        let text = match ctx.read_at("main", "how/project-template.md") {
+        let text = match ctx.read_at("main", "how/project-template.md").and_then(|d| statefile::extract_template(&d)) {
             Some(t) => statefile::fill_template(&t, &b.project),
             None => statefile::template(&b.project),
         };
