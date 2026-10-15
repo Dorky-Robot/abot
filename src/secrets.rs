@@ -45,10 +45,12 @@ fn patterns() -> &'static [(&'static str, Regex)] {
 
 fn phone() -> &'static Regex {
     // North American numbers: area codes start 2-9, which keeps 10-digit
-    // unix timestamps (1xxxxxxxxx) out.
+    // unix timestamps (1xxxxxxxxx) out. The number must stand on its own: ten
+    // digits inside a run of letters and digits (a sha256 in Cargo.lock, a
+    // commit hash, an id) are not a phone number.
     static P: OnceLock<Regex> = OnceLock::new();
     P.get_or_init(|| {
-        Regex::new(r"(?:^|[^\d])(\(?[2-9]\d{2}\)?[-. ]\d{3}[-. ]\d{4}|[2-9]\d{2}[2-9]\d{6})(?:$|[^\d])")
+        Regex::new(r"(?:^|[^0-9A-Za-z_])(\(?[2-9]\d{2}\)?[-. ]\d{3}[-. ]\d{4}|[2-9]\d{2}[2-9]\d{6})(?:$|[^0-9A-Za-z_])")
             .expect("phone pattern")
     })
 }
@@ -141,6 +143,17 @@ mod tests {
         for c in clean {
             assert!(scan_text("state/x.md", c).is_empty(), "{c}: {:?}", scan_text("state/x.md", c));
         }
+    }
+
+    #[test]
+    fn digits_inside_a_hash_are_not_a_phone_number() {
+        // archive/org-kita/Cargo.lock:119 tripped the old pattern.
+        let lock = r#"checksum = "3b1c8a9e5125550134f0d2c6a7e8b9fa0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f""#;
+        assert!(scan_text("archive/x/Cargo.lock", lock).is_empty());
+        assert!(scan_text("state/x.md", "sha 9d2f6a5125550134bc").is_empty());
+        // A number standing on its own is still caught.
+        assert_eq!(scan_text("state/x.md", "call 5125550134 today").len(), 1);
+        assert_eq!(scan_text("state/x.md", "tel:512-555-0134.").len(), 1);
     }
 
     #[test]
