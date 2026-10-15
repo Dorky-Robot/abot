@@ -160,6 +160,25 @@ fn code_side(ctx: &Ctx, b: &TaskBranch, repo: Option<&Path>) -> Result<Option<Co
     Ok(Some(Code { repo: g, wt, trunk }))
 }
 
+/// The code repo's name for a `Code:` trailer: its origin's `Org/name`, else its folder.
+fn code_name(c: &Code) -> String {
+    crate::repos::origin_url(&c.repo.dir)
+        .and_then(|u| crate::repos::org_name(&u))
+        .unwrap_or_else(|| c.repo.dir.display().to_string())
+}
+
+/// The kept branch's own commits, `<fork>..<tip>`, for a dead end or a park;
+/// None when the branch has nothing past where it left the trunk.
+fn branch_range(c: &Code, bs: &str) -> Option<trailers::CodeRange> {
+    let fork = c.repo.try_run(&["merge-base", &c.trunk, bs])?;
+    let tip = c.repo.try_run(&["rev-parse", bs])?;
+    if fork == tip {
+        return None;
+    }
+    let short = |s: &str| s[..7.min(s.len())].to_string();
+    Some(trailers::CodeRange { repo: code_name(c), from: short(&fork), to: short(&tip) })
+}
+
 fn remove_code_worktree(c: &Code, notes: &mut Vec<String>) {
     let Some(wt) = &c.wt else { return };
     if Git::new(wt).is_dirty().unwrap_or(true) {
@@ -241,19 +260,26 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
     }
 
     let mut notes = vec![];
+    let mut landed_code = None;
     if let Some(c) = &code {
-        land_code(c, &bs, &mut notes)?;
+        landed_code = land_code(c, &bs, &mut notes)?;
     }
 
-    // Mark the outcome, unless the last commit already did.
+    // Mark the outcome, unless the last commit already did. The Land commit
+    // also records the code it carried (Code:), so the log's task opens onto
+    // its exact commits; when there is code to record, it is always made.
     let last = h.wt.commit_message("HEAD")?;
     let already = trailers::get(&last, "Outcome").is_some_and(|o| o.eq_ignore_ascii_case("landed"));
-    if !already {
+    if !already || landed_code.is_some() {
         let mut msg = format!("Land {bs}");
-        if let Some(w) = no_state_change {
+        if let Some(w) = no_state_change.filter(|_| !already) {
             msg.push_str(&format!("\n\nNo state change: {}", w.trim()));
         }
-        msg.push_str("\n\nOutcome: landed");
+        msg.push_str("\n\n");
+        if let Some(r) = &landed_code {
+            msg.push_str(&format!("Code: {r}\n"));
+        }
+        msg.push_str("Outcome: landed");
         h.wt.run(&["commit", "-q", "--allow-empty", "-m", &msg])?;
     } else if let Some(w) = no_state_change {
         notes.push(format!("no state change: {w} (not recorded: the last commit already says landed)"));
@@ -285,13 +311,16 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
     Ok(())
 }
 
-fn land_code(c: &Code, bs: &str, notes: &mut Vec<String>) -> Result<()> {
+/// Land the code branch, and return the range it put on the trunk
+/// (`<trunk before>..<trunk after>`), None when the branch carried nothing.
+fn land_code(c: &Code, bs: &str, notes: &mut Vec<String>) -> Result<Option<trailers::CodeRange>> {
     let cwt = c.wt.as_ref().expect("checked");
     let wg = Git::new(cwt);
     sync_main(&c.repo, &c.trunk, "the code repo")?;
+    let before = c.repo.run(&["rev-parse", "--short=7", &c.trunk])?;
     rebase_onto(&wg, cwt, &c.trunk, bs)?;
     c.repo.run(&["merge", "-q", "--ff-only", bs])?;
-    let head = c.repo.run(&["rev-parse", "--short", &c.trunk])?;
+    let head = c.repo.run(&["rev-parse", "--short=7", &c.trunk])?;
     if c.repo.has_origin() {
         c.repo
             .run(&["push", "-q", "origin", &c.trunk])
@@ -308,7 +337,7 @@ fn land_code(c: &Code, bs: &str, notes: &mut Vec<String>) -> Result<()> {
         c.trunk,
         cwt.display()
     ));
-    Ok(())
+    Ok((before != head).then(|| trailers::CodeRange { repo: code_name(c), from: before, to: head }))
 }
 
 fn rebase_onto(wt: &Git, path: &Path, onto: &str, bs: &str) -> Result<()> {
@@ -396,8 +425,10 @@ pub fn dead_end(ctx: &Ctx, tried: &str, failed: &str, instead: &str, repo: Optio
     let code = code_side(ctx, &h.branch, repo)?;
 
     // The lesson is the branch's last commit: diwa indexes it, and skips merges.
+    // It names the code that was tried (Code:), which the branch keeps.
+    let tried_code = code.as_ref().and_then(|c| branch_range(c, &bs)).map(|r| format!("Code: {r}\n")).unwrap_or_default();
     let msg = format!(
-        "Dead end: {bs}. {}\n\nTried: {}\n\nFailed: {}\n\nInstead: {}\n\nOutcome: dead-end",
+        "Dead end: {bs}. {}\n\nTried: {}\n\nFailed: {}\n\nInstead: {}\n\n{tried_code}Outcome: dead-end",
         clip(one_line(failed).trim_end_matches('.'), 100),
         tried.trim(),
         failed.trim(),
@@ -474,7 +505,8 @@ pub fn park(ctx: &Ctx, why: &str, repo: Option<&Path>) -> Result<()> {
     let state = state_on_main(ctx, &log, &h.branch.project)?;
     let code = code_side(ctx, &h.branch, repo)?;
 
-    let msg = format!("Park {bs}: {}\n\nOutcome: parked", flatten(why));
+    let kept = code.as_ref().and_then(|c| branch_range(c, &bs)).map(|r| format!("Code: {r}\n")).unwrap_or_default();
+    let msg = format!("Park {bs}: {}\n\n{kept}Outcome: parked", flatten(why));
     h.wt.run(&["commit", "-q", "--allow-empty", "-m", &msg])?;
     if h.wt.has_origin() {
         h.wt.run(&["push", "-q", "-u", "origin", &bs])
