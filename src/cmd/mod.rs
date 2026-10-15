@@ -3,6 +3,7 @@ pub mod dig;
 pub mod lifecycle;
 pub mod map;
 pub mod orient;
+pub mod sessions;
 
 use crate::git::Git;
 use anyhow::{Result, bail};

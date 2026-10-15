@@ -75,7 +75,8 @@ impl World {
             .env("ABOT_PROJECTS", self.root.join("Projects"))
             .env("ABOT_DECISIONS", self.root.join("decisions.json"))
             .env("ABOT_DIWA", "")
-            .env("NO_COLOR", "1");
+            .env("NO_COLOR", "1")
+            .env_remove("CLAUDE_CODE_BRIDGE_SESSION_ID");
         git_env(&mut c, &self.root);
         c.output().unwrap()
     }
@@ -585,4 +586,64 @@ fn the_log_records_the_code_each_task_carried() {
     ok(&w.abot_in(&pwt, &["park", "waits"]));
     let park = w.git(&w.log_origin, &["log", "-1", "--format=%B", "demo/later"]);
     assert!(park.contains(&format!("Code: remotes/demo {code_after}..{ptip}\nOutcome: parked")), "{park}");
+}
+
+/// The Session: trailer: start records the session working the task (from
+/// Remote Control's env, or --session), land, dead-end and park carry it onto
+/// the commit that ends the task, and `abot sessions` reads where each stands.
+#[test]
+fn the_log_records_the_session_that_worked_each_task() {
+    let w = World::new();
+    let with_env = |cwd: &Path, args: &[&str], id: &str| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+        c.args(args)
+            .current_dir(cwd)
+            .env("ABOT_LOG", &w.log)
+            .env("ABOT_PROJECTS", w.root.join("Projects"))
+            .env("ABOT_DIWA", "")
+            .env("CLAUDE_CODE_BRIDGE_SESSION_ID", id);
+        git_env(&mut c, &w.root);
+        c.output().unwrap()
+    };
+
+    // from the env, cse_ spelled as the sidebar's session_
+    ok(&with_env(&w.log, &["start", "demo/feat", "try the feature"], "cse_AAA"));
+    let wt = w.wt("feat");
+    let first = w.git(&wt, &["log", "-1", "--format=%B"]);
+    assert!(first.contains("Session: session_AAA\nOutcome: in-flight"), "{first}");
+    let t = w.git(&wt, &["log", "-1", "--format=%(trailers:key=Session,valueonly)"]);
+    assert_eq!(t.trim(), "session_AAA", "git reads it as a trailer");
+    let state = std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap();
+    w.commit(&wt, "state/projects/demo.md", &state.replace("- dr1, v1", "- dr1, v2"), "v2 is live");
+    // landed by someone else's shell: the Land commit still names the worker
+    ok(&with_env(&wt, &["land"], "session_OTHER"));
+    let land = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(land.contains("Session: session_AAA\n") && !land.contains("OTHER"), "{land}");
+
+    // --session wins over the env; dead-end carries it
+    ok(&with_env(&w.log, &["start", "demo/hunch", "maybe", "--session", "session_BBB"], "cse_IGNORED"));
+    ok(&w.abot_in(&w.wt("hunch"), &["dead-end", "--tried", "a", "--failed", "b", "--instead", "c"]));
+    let lesson = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main^^2"]);
+    assert!(lesson.contains("Session: session_BBB\n") && lesson.contains("Outcome: dead-end"), "{lesson}");
+
+    // park carries it; no session at all records none
+    ok(&with_env(&w.log, &["start", "demo/later", "not yet"], "session_CCC"));
+    ok(&w.abot_in(&w.wt("later"), &["park", "waits"]));
+    ok(&w.abot(&["start", "demo/now", "in flight, no session"]));
+    let none = w.git(&w.wt("now"), &["log", "-1", "--format=%B"]);
+    assert!(!none.contains("Session:"), "{none}");
+    ok(&with_env(&w.log, &["start", "demo/busy", "still going"], "session_DDD"));
+
+    let v: serde_json::Value = serde_json::from_str(&ok(&w.abot(&["sessions", "--json"]))).unwrap();
+    let rows = v.as_array().unwrap();
+    let find = |s: &str| rows.iter().find(|r| r["session"] == s).unwrap_or_else(|| panic!("{s} in {v}"));
+    assert_eq!(find("session_AAA")["outcome"], "landed");
+    assert_eq!(find("session_AAA")["branch"], "demo/feat");
+    assert_eq!(find("session_BBB")["outcome"], "dead-end");
+    assert_eq!(find("session_CCC")["outcome"], "parked");
+    assert_eq!(find("session_CCC")["branch"], "demo/later");
+    assert_eq!(find("session_DDD")["outcome"], "in-flight");
+    assert_eq!(rows.len(), 4, "{v}");
+    let text = ok(&w.abot(&["sessions"]));
+    assert!(text.contains("session_AAA  landed     demo/feat"), "{text}");
 }

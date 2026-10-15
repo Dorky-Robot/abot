@@ -23,7 +23,7 @@ fn display(p: &Path) -> String {
 
 // ---------------------------------------------------------------- start
 
-pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -> Result<()> {
+pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>, session: Option<&str>) -> Result<()> {
     let b = branch::parse(name).map_err(|e| anyhow!(e))?;
     if why.trim().is_empty() {
         bail!("missing WHY: abot start {b} \"<why>\" (one sentence on why this path is worth trying; it becomes the first commit)");
@@ -106,7 +106,11 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -
     if new {
         msg.push_str(&format!("\n\nA new project: state/projects/{}.md is scaffolded from the template.", b.project));
     }
-    msg.push_str("\n\nOutcome: in-flight");
+    msg.push_str("\n\n");
+    if let Some(id) = session.map(str::to_string).or_else(session_from_env) {
+        msg.push_str(&format!("Session: {}\n", session_id(&id)));
+    }
+    msg.push_str("Outcome: in-flight");
     wg.run(&["commit", "-q", "--allow-empty", "-m", &msg])?;
 
     let mut lines = vec![format!("started {bs}: {}", one_line(why)), format!("log worktree:  {}", wt.display())];
@@ -138,6 +142,43 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -
     let f = ctx.state_path_at(&base, &b.project).unwrap_or(format!("state/projects/{}.md", b.project));
     println!("next: work in the worktrees; when the truth changes, edit {f} on the branch; then from {}: abot land (or dead-end, or park)", wt.display());
     Ok(())
+}
+
+// ---------------------------------------------------------------- sessions
+
+/// The Claude Code session this shell runs in, as the sidebar knows it. A
+/// Remote Control session exports it; anything else has none.
+fn session_from_env() -> Option<String> {
+    std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID").ok().filter(|s| !s.trim().is_empty())
+}
+
+/// One spelling for an id: the sidebar's `session_…`. The bridge's own
+/// `cse_…` is the same session.
+pub fn session_id(id: &str) -> String {
+    let id = id.trim();
+    match id.strip_prefix("cse_") {
+        Some(rest) => format!("session_{rest}"),
+        None => id.to_string(),
+    }
+}
+
+/// The `Session:` lines of the branch's Start commit, so the commit that
+/// ends the task names who worked it. Read from the Start commit itself, not
+/// a range from main: a stale main would pull in other tasks' sessions.
+fn session_lines(wt: &Git, bs: &str) -> String {
+    let start = format!("^Start {bs}:");
+    let log = wt
+        .try_run(&["log", "--format=%B%x1e", "--fixed-strings", "--grep", &start[1..], "HEAD"])
+        .unwrap_or_default();
+    let mut ids: Vec<String> = vec![];
+    for m in log.split('\x1e').filter(|m| m.trim_start().starts_with(&start[1..])) {
+        for (k, v) in trailers::parse(m) {
+            if k.eq_ignore_ascii_case("Session") && !ids.contains(&v) {
+                ids.push(v);
+            }
+        }
+    }
+    ids.into_iter().map(|i| format!("Session: {i}\n")).collect()
 }
 
 // ---------------------------------------------------------------- code repo
@@ -276,6 +317,7 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
             msg.push_str(&format!("\n\nNo state change: {}", w.trim()));
         }
         msg.push_str("\n\n");
+        msg.push_str(&session_lines(&h.wt, &bs));
         if let Some(r) = &landed_code {
             msg.push_str(&format!("Code: {r}\n"));
         }
@@ -428,11 +470,12 @@ pub fn dead_end(ctx: &Ctx, tried: &str, failed: &str, instead: &str, repo: Optio
     // It names the code that was tried (Code:), which the branch keeps.
     let tried_code = code.as_ref().and_then(|c| branch_range(c, &bs)).map(|r| format!("Code: {r}\n")).unwrap_or_default();
     let msg = format!(
-        "Dead end: {bs}. {}\n\nTried: {}\n\nFailed: {}\n\nInstead: {}\n\n{tried_code}Outcome: dead-end",
+        "Dead end: {bs}. {}\n\nTried: {}\n\nFailed: {}\n\nInstead: {}\n\n{}{tried_code}Outcome: dead-end",
         clip(one_line(failed).trim_end_matches('.'), 100),
         tried.trim(),
         failed.trim(),
-        instead.trim()
+        instead.trim(),
+        session_lines(&h.wt, &bs),
     );
     h.wt.run(&["commit", "-q", "--allow-empty", "-m", &msg])?;
     let lesson = h.wt.run(&["rev-parse", "--short", "HEAD"])?;
@@ -506,7 +549,7 @@ pub fn park(ctx: &Ctx, why: &str, repo: Option<&Path>) -> Result<()> {
     let code = code_side(ctx, &h.branch, repo)?;
 
     let kept = code.as_ref().and_then(|c| branch_range(c, &bs)).map(|r| format!("Code: {r}\n")).unwrap_or_default();
-    let msg = format!("Park {bs}: {}\n\n{kept}Outcome: parked", flatten(why));
+    let msg = format!("Park {bs}: {}\n\n{}{kept}Outcome: parked", flatten(why), session_lines(&h.wt, &bs));
     h.wt.run(&["commit", "-q", "--allow-empty", "-m", &msg])?;
     if h.wt.has_origin() {
         h.wt.run(&["push", "-q", "-u", "origin", &bs])

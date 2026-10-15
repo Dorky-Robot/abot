@@ -76,6 +76,10 @@ everyone can see the path is taken. Refuses a bare <project>, a project with no 
         /// The code repo, when it can't be found from the state file or by name
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// The Claude Code session working this task, recorded as a `Session:` trailer
+        /// (default: $CLAUDE_CODE_BRIDGE_SESSION_ID, which Remote Control sessions have)
+        #[arg(long)]
+        session: Option<String>,
     },
     /// Land the task you are standing in: rebase, fast-forward main, push, clean up
     #[command(long_about = "Run inside a log worktree. Refuses if nothing under state/, \
@@ -162,6 +166,16 @@ what main reaches.")]
     },
     /// Mirror felix-decisions.json into decisions/ on main, one commit per decision
     Mirror,
+    /// Which Claude Code session worked which task, and how the task ended
+    #[command(long_about = "Read origin/main and every task branch on origin for `Session:` \
+trailers (abot start records the session; land, dead-end and park carry it onto the commit \
+that ends the task). One row per session, from the newest commit that names it: session, \
+outcome (in-flight, landed, dead-end, parked), branch, sha, date. The session sweeper reads \
+--json to know whose work is finished.")]
+    Sessions {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -179,8 +193,9 @@ fn main() -> ExitCode {
             all.extend(cross);
             cmd::orient::run(&ctx, all).map(|_| true)
         }
-        Cmd::Start { branch, why, new, repo } => {
-            cmd::lifecycle::start(&ctx, &branch, why.as_deref().unwrap_or(""), new, repo.as_deref()).map(|_| true)
+        Cmd::Start { branch, why, new, repo, session } => {
+            cmd::lifecycle::start(&ctx, &branch, why.as_deref().unwrap_or(""), new, repo.as_deref(), session.as_deref())
+                .map(|_| true)
         }
         Cmd::Land { no_state_change, repo } => {
             cmd::lifecycle::land(&ctx, no_state_change.as_deref(), repo.as_deref()).map(|_| true)
@@ -197,6 +212,7 @@ fn main() -> ExitCode {
         Cmd::Check { json } => cmd::map::check(&ctx, json),
         Cmd::Tree { project, limit, json } => cmd::map::tree(&ctx, &project, limit, json).map(|_| true),
         Cmd::Mirror => cmd::decisions::mirror(&ctx).map(|_| true),
+        Cmd::Sessions { json } => cmd::sessions::run(&ctx, json).map(|_| true),
     };
     match r {
         Ok(true) => ExitCode::SUCCESS,

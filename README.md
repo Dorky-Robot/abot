@@ -39,7 +39,7 @@ abot park "waits on Felix's answer about X"
 | verb | does | refuses |
 |---|---|---|
 | `orient <p> [--cross p2 …]` | fetch, then read `origin/main`: ecosystem summary, state file, how it got here, decisions, dead ends, in-flight branches, diwa | a bad slug |
-| `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
+| `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Session: session_…` from `$CLAUDE_CODE_BRIDGE_SESSION_ID` or `--session`, `Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
 | `land` | `Outcome: landed` commit if needed (with `Code: <org/repo> <from>..<to>`, the exact range it put on the code trunk), rebase on main, ff main, push, remove worktree, delete branch; code repo first | no change under state/ecosystem/how/people (unless `--no-state-change "<why>"`); secrets in the diff; uncommitted work |
 | `dead-end --tried --failed --instead` | lesson commit (`Dead end: <p>/<t>. …`, `Code:` the branch's own commits, `Outcome: dead-end`), `merge -s ours --no-ff`, a Traps line on main, push, clean up; code branch pushed and kept | any part missing |
 | `park "<why>"` | `Outcome: parked` commit (with `Code:` the kept branch), push the branch, a Parked line on main, remove the worktree, keep the branch | |
@@ -48,6 +48,7 @@ abot park "waits on Felix's answer about X"
 | `map [--json]` | every project: live, next, waits on Felix, in flight, dead ends, last change, uses/serves | |
 | `check [--json]` | state-file shape and length, map.md current, stale branches (>7 days), branches with no project, secrets | exits 1 on any problem |
 | `tree <p> [--json]` | `git log --graph` of main and `<p>/*` with outcomes | |
+| `sessions [--json]` | one row per `Session:` trailer on origin (main and task branches): session, outcome, branch, sha, date; land, dead-end and park carry the Start commit's `Session:` onto the commit that ends the task, so the session sweeper knows whose work is finished | |
 | `mirror` | decisions JSON → `decisions/<id>.md`, one commit each, idempotent, push | the main checkout off main |
 
 Reads (`orient`, `map`, `tree`, `dig`, `check`) fetch and read `origin/main`, the copy of record, never the local checkout, so a stale, dirty or detached clone can't mislead them; if origin can't be reached they say "origin unreachable, reading local main as of <date>" and go on. `start` branches from `origin/main`.
