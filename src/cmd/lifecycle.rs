@@ -26,7 +26,7 @@ fn display(p: &Path) -> String {
 pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -> Result<()> {
     let b = branch::parse(name).map_err(|e| anyhow!(e))?;
     if why.trim().is_empty() {
-        bail!("say why: abot start {b} \"<why this is worth trying>\"");
+        bail!("missing WHY: abot start {b} \"<why>\" (one sentence on why this path is worth trying; it becomes the first commit)");
     }
     let log = ctx.require_log()?;
     // Branch from origin's main, the copy of record, not from this clone's
@@ -115,8 +115,7 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>) -
         lines.push(format!("code worktree: {} (from {trunk}; not pushed)", cwt.display()));
     } else {
         lines.push(format!(
-            "code repo:     none found for `{}` (a `Repo: Org/name` line in the state file, or --repo, names it)",
-            b.project
+            "code repo:     none (log only; add a Repo: line or --repo if there is one)"
         ));
     }
 
@@ -281,7 +280,8 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
         println!("{n}");
     }
     println!("removed {} and deleted {bs}", h.path.display());
-    println!("you are standing in a removed directory: cd {}", ctx.log.display());
+    println!("the worktree you were in is gone; to continue:");
+    println!("cd {}", ctx.log.display());
     Ok(())
 }
 
@@ -453,7 +453,8 @@ pub fn dead_end(ctx: &Ctx, tried: &str, failed: &str, instead: &str, repo: Optio
         println!("{n}");
     }
     println!("removed {} and deleted {bs}", h.path.display());
-    println!("you are standing in a removed directory: cd {}", ctx.log.display());
+    println!("the worktree you were in is gone; to continue:");
+    println!("cd {}", ctx.log.display());
     Ok(())
 }
 
@@ -514,6 +515,7 @@ pub fn park(ctx: &Ctx, why: &str, repo: Option<&Path>) -> Result<()> {
     }
     println!("removed {}; the branch is kept{}", h.path.display(), if log.has_origin() { " and on origin" } else { "" });
     println!("pick it up again: git -C {} worktree add {} {bs}", ctx.log.display(), h.path.display());
-    println!("you are standing in a removed directory: cd {}", ctx.log.display());
+    println!("the worktree you were in is gone; to continue:");
+    println!("cd {}", ctx.log.display());
     Ok(())
 }
