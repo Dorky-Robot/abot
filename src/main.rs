@@ -61,12 +61,15 @@ sections say (nothing). With --cross, several projects with the map rows between
 from origin/main, and ../<repo>-<task> in the project's code repo if one is found. The first log \
 commit is empty, says why, and carries `Outcome: in-flight`; the log branch is pushed so \
 everyone can see the path is taken. Refuses a bare <project>, a project with no state file \
-(--new scaffolds one), and a branch that already exists on origin.")]
+(--new scaffolds one), and a branch that already exists on origin.",
+        override_usage = "abot start [OPTIONS] <project>/<task> \"<why>\"")]
     Start {
-        /// <project>/<task>
+        /// The branch: <project>/<task>, e.g. everyday-vet/group-thread
+        #[arg(value_name = "<project>/<task>")]
         branch: String,
-        /// Why this is worth trying (becomes the first commit)
-        why: String,
+        /// Why this path is worth trying, in quotes (becomes the first commit)
+        #[arg(value_name = "\"<why>\"")]
+        why: Option<String>,
         /// Scaffold state/projects/<project>.md for a new project
         #[arg(long)]
         new: bool,
@@ -162,6 +165,12 @@ what main reaches.")]
 }
 
 fn main() -> ExitCode {
+    // Die quietly when the reader goes away (`abot … | head`), as a Unix
+    // tool should, instead of panicking on a write to a closed pipe.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     let ctx = ctx::Ctx::from_env();
     let r = match cli.cmd {
@@ -171,7 +180,7 @@ fn main() -> ExitCode {
             cmd::orient::run(&ctx, all).map(|_| true)
         }
         Cmd::Start { branch, why, new, repo } => {
-            cmd::lifecycle::start(&ctx, &branch, &why, new, repo.as_deref()).map(|_| true)
+            cmd::lifecycle::start(&ctx, &branch, why.as_deref().unwrap_or(""), new, repo.as_deref()).map(|_| true)
         }
         Cmd::Land { no_state_change, repo } => {
             cmd::lifecycle::land(&ctx, no_state_change.as_deref(), repo.as_deref()).map(|_| true)
