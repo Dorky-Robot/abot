@@ -15,6 +15,10 @@ pub fn run(ctx: &Ctx, sha: &str) -> Result<()> {
     }
     let log = ctx.require_log()?;
     let mut o = Out::new(ctx.tty);
+    // Fetch first, so a commit that is on origin but not yet here is found.
+    if let Some(n) = ctx.read_from_origin()? {
+        o.line(format!("({n})"));
+    }
     let commit = format!("{sha}^{{commit}}");
 
     let (g, slug, where_) = if log.has_ref(&commit) {

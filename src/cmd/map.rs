@@ -27,11 +27,11 @@ pub struct Summary {
 
 /// Subjects of dead ends for a project: `Dead end: <p>/...`, merges left out
 /// (the lesson is the branch's last commit; the merge only joins it in).
-pub fn dead_ends(g: &Git, p: &str) -> Vec<String> {
+pub fn dead_ends(g: &Git, base: &str, p: &str) -> Vec<String> {
     let want = format!("dead end: {p}/");
     g.try_run(&[
         "log",
-        "main",
+        base,
         "--no-merges",
         "--format=%h %ad %s",
         "--date=short",
@@ -59,10 +59,11 @@ pub fn origin_branches(g: &Git, p: &str) -> Vec<String> {
 
 pub fn summarize(ctx: &Ctx, p: &str) -> Summary {
     let g = ctx.log_git();
-    let state = ctx.state_path_at("main", p);
-    let text = state.as_deref().and_then(|f| ctx.read_at("main", f)).unwrap_or_default();
+    let base = ctx.base();
+    let state = ctx.state_path_at(&base, p);
+    let text = state.as_deref().and_then(|f| ctx.read_at(&base, f)).unwrap_or_default();
     let last_change = state.as_deref().and_then(|f| {
-        g.try_run(&["log", "-1", "--format=%ad", "--date=short", "main", "--", f])
+        g.try_run(&["log", "-1", "--format=%ad", "--date=short", &base, "--", f])
             .filter(|s| !s.is_empty())
     });
     Summary {
@@ -71,7 +72,7 @@ pub fn summarize(ctx: &Ctx, p: &str) -> Summary {
         next: statefile::items(&text, "Next").into_iter().next(),
         waits: statefile::items(&text, "Waits on Felix"),
         in_flight: origin_branches(&g, p),
-        dead_ends: dead_ends(&g, p).len(),
+        dead_ends: dead_ends(&g, &base, p).len(),
         last_change,
         uses: statefile::list_field(&text, "Uses"),
         serves: statefile::list_field(&text, "Serves"),
@@ -79,17 +80,11 @@ pub fn summarize(ctx: &Ctx, p: &str) -> Summary {
     }
 }
 
-fn fetch(g: &Git) -> Option<String> {
-    if !g.has_origin() {
-        return Some("no origin remote".into());
-    }
-    g.run(&["fetch", "-q", "--prune", "origin"]).err().map(|e| format!("{e:#}"))
-}
 
 pub fn map(ctx: &Ctx, json_out: bool) -> Result<()> {
     let g = ctx.require_log()?;
-    let fetched = fetch(&g);
-    let projects = ctx.projects_on_main();
+    let fetched = ctx.read_from_origin()?;
+    let projects = ctx.projects();
     let rows: Vec<Summary> = projects.iter().map(|p| summarize(ctx, p)).collect();
     if json_out {
         let v: Vec<Value> = rows
@@ -111,15 +106,17 @@ pub fn map(ctx: &Ctx, json_out: bool) -> Result<()> {
             .collect();
         let doc = json!({
             "log": ctx.log.display().to_string(),
-            "main": g.try_run(&["rev-parse", "--short", "main"]),
+            "read_from": ctx.base(),
+            "main": g.try_run(&["rev-parse", "--short", &ctx.base()]),
             "fetched": fetched.is_none(),
+            "note": fetched,
             "projects": v,
         });
         println!("{}", serde_json::to_string_pretty(&doc)?);
         return Ok(());
     }
     if let Some(why) = &fetched {
-        println!("(origin not fetched: {why}; branches may be stale)");
+        println!("({why})");
     }
     if rows.is_empty() {
         println!("(no projects: state/projects/ on main is empty)");
@@ -182,15 +179,16 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
     let g = ctx.require_log()?;
     let mut problems: Vec<String> = vec![];
     let mut notes: Vec<String> = vec![];
-    if let Some(why) = fetch(&g) {
-        notes.push(format!("origin not fetched ({why}); branch checks use what is local"));
+    if let Some(why) = ctx.read_from_origin()? {
+        notes.push(why);
     }
+    let base = ctx.base();
 
     // 1. State files keep their shape.
-    let projects = ctx.projects_on_main();
+    let projects = ctx.projects();
     for p in &projects {
         let f = format!("state/projects/{p}.md");
-        let text = ctx.read_at("main", &f).unwrap_or_default();
+        let text = ctx.read_at(&base, &f).unwrap_or_default();
         for issue in statefile::lint(&text) {
             problems.push(format!("{f}: {issue}"));
         }
@@ -219,7 +217,7 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
                 continue;
             }
         };
-        if ctx.state_path_at("main", &b.project).is_none() {
+        if ctx.state_path_at(&base, &b.project).is_none() {
             problems.push(format!("origin/{name}: no state file for project `{}` (state/projects/{}.md)", b.project, b.project));
         }
         let days = now.saturating_sub(unix) / 86_400;
@@ -237,13 +235,13 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
     }
 
     // 4. No secrets in what is tracked on main.
-    let files = g.run(&["ls-tree", "-r", "--name-only", "main"])?;
+    let files = g.run(&["ls-tree", "-r", "--name-only", &base])?;
     let mut scanned = 0;
     for f in files.lines() {
         if secrets::is_transcript(f) {
             continue;
         }
-        let Some(text) = ctx.read_at("main", f) else { continue };
+        let Some(text) = ctx.read_at(&base, f) else { continue };
         if text.contains('\0') {
             continue;
         }
@@ -282,14 +280,15 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
 
 /// Run bin/map (if the log has one) in a throwaway worktree of main, so a
 /// generator that writes in place never touches the main checkout.
-fn map_current(_ctx: &Ctx, g: &Git, problems: &mut Vec<String>, notes: &mut Vec<String>) {
-    if !g.ok(&["cat-file", "-e", "main:bin/map"]) {
+fn map_current(ctx: &Ctx, g: &Git, problems: &mut Vec<String>, notes: &mut Vec<String>) {
+    let base = ctx.base();
+    if !g.ok(&["cat-file", "-e", &format!("{base}:bin/map")]) {
         notes.push("no bin/map yet; map.md not checked".into());
         return;
     }
     let tmp = std::env::temp_dir().join(format!("abot-check-map-{}", std::process::id()));
     let tmp_s = tmp.display().to_string();
-    if g.run(&["worktree", "add", "-q", "--detach", &tmp_s, "main"]).is_err() {
+    if g.run(&["worktree", "add", "-q", "--detach", &tmp_s, &base]).is_err() {
         notes.push("could not make a scratch worktree to run bin/map".into());
         return;
     }
@@ -325,10 +324,16 @@ pub fn tree(ctx: &Ctx, p: &str, limit: usize, json_out: bool) -> Result<()> {
         bail!("`{p}` is not a project slug");
     }
     let g = ctx.require_log()?;
-    let mut refs: Vec<String> = vec!["main".into()];
-    let more = g
-        .try_run(&["for-each-ref", "--format=%(refname)", &format!("refs/heads/{p}/"), &format!("refs/remotes/origin/{p}/")])
-        .unwrap_or_default();
+    let note = ctx.read_from_origin()?;
+    let base = ctx.base();
+    let mut refs: Vec<String> = vec![base.clone()];
+    let mut patterns = vec![format!("refs/remotes/origin/{p}/")];
+    if note.is_some() {
+        patterns.push(format!("refs/heads/{p}/"));
+    }
+    let mut fe = vec!["for-each-ref", "--format=%(refname)"];
+    fe.extend(patterns.iter().map(String::as_str));
+    let more = g.try_run(&fe).unwrap_or_default();
     refs.extend(more.lines().map(String::from));
     let n = limit.to_string();
     let fmt = "%x1e%h%x1f%ad%x1f%s%x1f%(trailers:key=Outcome,valueonly,separator=%x2C)%x1f%D%x1f%P%x1f%H";
@@ -359,11 +364,14 @@ pub fn tree(ctx: &Ctx, p: &str, limit: usize, json_out: bool) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json!({ "project": p, "nodes": nodes }))?);
+        println!("{}", serde_json::to_string_pretty(&json!({ "project": p, "read_from": base, "note": note, "nodes": nodes }))?);
         return Ok(());
     }
 
     let mut o = Out::new(ctx.tty);
+    if let Some(n) = &note {
+        o.line(format!("({n})"));
+    }
     for line in raw.lines() {
         // Graph prefix, then \x1e and the fields.
         match line.split_once('\x1e') {

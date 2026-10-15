@@ -6,6 +6,7 @@ use crate::branch::{self, TaskBranch};
 use crate::git::{Git, canon};
 use crate::repos::{self, Repo};
 use anyhow::{Result, bail};
+use std::cell::RefCell;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,8 @@ pub struct Ctx {
     pub decisions: PathBuf,
     pub diwa: Option<String>,
     pub tty: bool,
+    /// The ref reads come from: `origin/main` once fetched, else `main`.
+    base: RefCell<String>,
 }
 
 fn home() -> PathBuf {
@@ -49,7 +52,37 @@ impl Ctx {
             decisions: env_path("ABOT_DECISIONS", "~/Projects/ceo/felix-decisions.json"),
             diwa,
             tty: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+            base: RefCell::new("main".to_string()),
         }
+    }
+
+    /// The ref every read comes from.
+    pub fn base(&self) -> String {
+        self.base.borrow().clone()
+    }
+
+    /// Reads come from origin, the copy of record, never from a checkout
+    /// that may be stale, dirty or detached. Fetch, and read `origin/main`.
+    /// If origin can't be reached, say so and read local `main`: Ok(Some)
+    /// carries that sentence.
+    pub fn read_from_origin(&self) -> Result<Option<String>> {
+        let g = self.require_log()?;
+        let fetched = if g.has_origin() {
+            g.run(&["fetch", "-q", "--prune", "origin"]).map_err(|e| format!("{e:#}"))
+        } else {
+            Err("no origin remote".to_string())
+        };
+        if fetched.is_ok() && g.has_ref("refs/remotes/origin/main") {
+            *self.base.borrow_mut() = "origin/main".into();
+            return Ok(None);
+        }
+        *self.base.borrow_mut() = "main".into();
+        let when = g
+            .try_run(&["log", "-1", "--format=%cd", "--date=format:%Y-%m-%d %H:%M", "main"])
+            .unwrap_or_else(|| "unknown".into());
+        let why = fetched.err().unwrap_or_else(|| "origin has no main".into());
+        let why = why.lines().last().unwrap_or("").trim().to_string();
+        Ok(Some(format!("origin unreachable, reading local main as of {when} ({why})")))
     }
 
     pub fn log_git(&self) -> Git {
@@ -100,11 +133,11 @@ impl Ctx {
         self.log_git().try_run(&["show", &format!("{rev}:{path}")])
     }
 
-    /// Project slugs: the stems of `state/projects/*.md` on main.
-    pub fn projects_on_main(&self) -> Vec<String> {
+    /// Project slugs: the stems of `state/projects/*.md` on the read base.
+    pub fn projects(&self) -> Vec<String> {
         let out = self
             .log_git()
-            .try_run(&["ls-tree", "--name-only", "main", "state/projects/"])
+            .try_run(&["ls-tree", "--name-only", &self.base(), "state/projects/"])
             .unwrap_or_default();
         let mut v: Vec<String> = out
             .lines()
@@ -137,8 +170,8 @@ impl Ctx {
             return Ok(Some(p));
         }
         let state = self
-            .state_path_at("main", project)
-            .and_then(|f| self.read_at("main", &f))
+            .state_path_at(&self.base(), project)
+            .and_then(|f| self.read_at(&self.base(), &f))
             .unwrap_or_default();
         let named = crate::statefile::field(&state, "Repo");
         if let Some(r) = named.as_deref() {

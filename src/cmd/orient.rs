@@ -2,7 +2,7 @@
 //! file), why (the commits and decisions), what was already tried (dead
 //! ends), what is in flight (branches), and the nearest insights.
 
-use super::{map, pull_main};
+use super::map;
 use crate::branch::valid_slug;
 use crate::ctx::Ctx;
 use crate::diwa;
@@ -25,12 +25,13 @@ pub fn run(ctx: &Ctx, projects: Vec<String>) -> Result<()> {
     let g = ctx.require_log()?;
     let mut o = Out::new(ctx.tty);
 
-    let note = match pull_main(&g, "main")? {
-        None => String::new(),
-        Some(why) => format!(" (not pulled: {why}; showing local main)"),
-    };
-    let head = g.try_run(&["log", "-1", "--format=%h %ad", "--date=short", "main"]).unwrap_or_default();
-    o.line(format!("log: {} main at {head}{note}", ctx.log.display()));
+    let note = ctx.read_from_origin()?;
+    let base = ctx.base();
+    let head = g.try_run(&["log", "-1", "--format=%h %ad", "--date=short", &base]).unwrap_or_default();
+    o.line(format!("log: {} {base} at {head}", ctx.log_slug()));
+    if let Some(n) = note {
+        o.line(format!("({n})"));
+    }
 
     ecosystem(ctx, &mut o, &projects);
 
@@ -68,19 +69,19 @@ fn ecosystem(ctx: &Ctx, o: &mut Out, projects: &[String]) {
     o.header("ecosystem");
     let files = ctx
         .log_git()
-        .try_run(&["ls-tree", "--name-only", "main", "ecosystem/"])
+        .try_run(&["ls-tree", "--name-only", &ctx.base(), "ecosystem/"])
         .unwrap_or_default();
     if files.trim().is_empty() {
         o.line("(no ecosystem/ yet)");
         return;
     }
-    if let Some(obj) = ctx.read_at("main", "ecosystem/objectives.md") {
+    if let Some(obj) = ctx.read_at(&ctx.base(), "ecosystem/objectives.md") {
         let lines: Vec<&str> = obj.lines().filter(|l| !l.trim().is_empty()).collect();
         o.block(lines, 15, "see ecosystem/objectives.md");
     } else {
         o.line("(no ecosystem/objectives.md yet)");
     }
-    if let Some(m) = ctx.read_at("main", "ecosystem/map.md") {
+    if let Some(m) = ctx.read_at(&ctx.base(), "ecosystem/map.md") {
         let hits: Vec<&str> = m
             .lines()
             .filter(|l| {
@@ -103,11 +104,12 @@ fn ecosystem(ctx: &Ctx, o: &mut Out, projects: &[String]) {
 }
 
 fn project(ctx: &Ctx, g: &Git, o: &mut Out, p: &str) {
-    let state = ctx.state_path_at("main", p);
+    let base = ctx.base();
+    let state = ctx.state_path_at(&base, p);
     match &state {
         Some(f) => {
             o.header(&format!("{p}: {f}"));
-            let text = ctx.read_at("main", f).unwrap_or_default();
+            let text = ctx.read_at(&base, f).unwrap_or_default();
             o.block(text.lines().map(String::from), 70, &format!("see {f}"));
         }
         None => {
@@ -121,7 +123,7 @@ fn project(ctx: &Ctx, g: &Git, o: &mut Out, p: &str) {
     if let Some(f) = &state {
         o.header("how it got here");
         let log = g
-            .try_run(&["log", "main", "--format=%h %ad %s", "--date=short", "-n", "10", "--", f])
+            .try_run(&["log", &base, "--format=%h %ad %s", "--date=short", "-n", "10", "--", f])
             .unwrap_or_default();
         o.block(log.lines().map(String::from), 10, &format!("git log -- {f}"));
     }
@@ -129,16 +131,16 @@ fn project(ctx: &Ctx, g: &Git, o: &mut Out, p: &str) {
     o.header(&format!("decisions about {p}"));
     let re = format!("^About: (.*, *)?{}( *,|$)", regex::escape(p));
     let dec = g
-        .try_run(&["log", "main", "--format=%h %ad %s", "--date=short", "-n", "12", "-E", "-i", &format!("--grep={re}")])
+        .try_run(&["log", &base, "--format=%h %ad %s", "--date=short", "-n", "12", "-E", "-i", &format!("--grep={re}")])
         .unwrap_or_default();
     o.block(dec.lines().map(String::from), 12, "git log --grep About:");
 
     o.header("dead ends");
-    let dead = map::dead_ends(g, p);
+    let dead = map::dead_ends(g, &base, p);
     o.block(dead, 10, &format!("abot tree {p}"));
 
     o.header(&format!("in flight: {p}/*"));
-    o.block(in_flight(g, p), 15, "git branch -a");
+    o.block(in_flight(g, p, base == "main"), 15, "git branch -r");
 
     o.header(&format!("diwa: {} \"{p}\"", ctx.log_slug()));
     o.block(diwa::lines(ctx, &["search", &ctx.log_slug(), p, "-n", "5"]), 30, "diwa search");
@@ -180,17 +182,16 @@ fn project(ctx: &Ctx, g: &Git, o: &mut Out, p: &str) {
     }
 }
 
-/// `<p>/*` branches, local and on origin, newest first, one line each.
-pub fn in_flight(g: &Git, p: &str) -> Vec<String> {
-    let raw = g
-        .try_run(&[
-            "for-each-ref",
-            "--sort=-committerdate",
-            "--format=%(refname)\t%(committerdate:short)\t%(subject)",
-            &format!("refs/heads/{p}/"),
-            &format!("refs/remotes/origin/{p}/"),
-        ])
-        .unwrap_or_default();
+/// `<p>/*` branches on origin, newest first, one line each; local ones too
+/// only when origin couldn't be reached.
+pub fn in_flight(g: &Git, p: &str, with_local: bool) -> Vec<String> {
+    let remote = format!("refs/remotes/origin/{p}/");
+    let local = format!("refs/heads/{p}/");
+    let mut args = vec!["for-each-ref", "--sort=-committerdate", "--format=%(refname)\t%(committerdate:short)\t%(subject)", remote.as_str()];
+    if with_local {
+        args.push(local.as_str());
+    }
+    let raw = g.try_run(&args).unwrap_or_default();
     let mut seen: Vec<(String, String, String, Vec<&str>)> = vec![];
     for line in raw.lines() {
         let mut it = line.splitn(3, '\t');
