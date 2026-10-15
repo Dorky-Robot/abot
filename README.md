@@ -1,108 +1,52 @@
-# abot
+# abot v0 (archived)
 
-A headless CLI that manages AI agent identities as git repositories.
+This commit retires abot v0. The name goes to the CLI for the ecosystem log
+(Dorky-Robot/ecosystem-log), which lands in the commits after this one.
 
-abot does one thing: agent lifecycle management. Each agent is a git repo
-with a name, config, instructions, and a `home/` working directory.
-Cloning, employing into rooms (worktrees), and folding work back
-(merging) are just git operations under the hood.
+## What v0 was
 
-abot intentionally does not run containers (kubo's job), serve
-HTTP/WebSocket (no server, no daemon), render UI (CLI-only), or
-orchestrate workflows (humOS or shell scripts compose these tools).
+A headless Rust CLI in which **an agent identity was a git repository**
+(`~/.abot/agents/<name>.abot`). History was the agent's memory, and the
+lifecycle verbs were thin mappings onto git:
 
-## Install
+- `employ <name> <room>`: a worktree on a `kubo/<room>` branch
+- `integrate <name> <room>`: merge that branch back into the agent's main
+- `discard <name> <room>`: drop the branch
+- `run <name>`: stdin to a local Ollama model, stream to stdout
 
-```sh
-brew install dorky-robot/tap/abot
-```
+plus create, list, show, clone, dismiss, log, diff, config and rm. Before
+the headless rewrite (v1.0.0, April 2026) it was a spatial terminal with an
+Axum server, a Flutter client and Docker sandboxes ("kubos").
 
-Requirements:
-- macOS aarch64 (Apple Silicon)
-- An [Ollama](https://ollama.com) install with at least one chat model
-  pulled, for `abot run`
+## Why it is archived
 
-## Quick start
+Felix, 2026-10-15: "why dont we just take abot arhieve it and then take its
+place with this and call this abot. i feel like that was a failed attempt
+heavy handed thing and this is actually a more elegant solution that we can
+use to what we need now."
 
-```sh
-# One-time: tell abot which identity to use for git commits.
-echo "you@example.com" > ~/.abot/commit_email
-echo "Your Name"       > ~/.abot/commit_name
+- **The unit was wrong.** One repo per agent. What the org needed was one
+  shared log with a branch per task, so that any agent on any machine can
+  pick up where the last one stopped. Memory belongs to the work, not to
+  the worker.
+- **It was heavy.** Per-agent repos under `~/.abot`, a manifest and config
+  per agent, an Ollama dispatcher, a server and client before that. None of
+  it had users.
 
-# Create an agent.
-abot create alice
+## What survived
 
-# Tune her disposition and model.
-abot config alice instructions "You are alice, a terse triager."
-abot config alice model gemma4:31b
+The shape of the verbs. A task is a branch with a worktree; work that pays
+off is merged; work that doesn't is dropped, and git keeps the record. The
+new abot keeps that shape (`start`, `land`, `dead-end`, `park`) and applies
+it to the ecosystem log, where a dead end lands as a lesson instead of
+being thrown away.
 
-# Read stdin, dispatch to Ollama, stream stdout.
-echo "say hi in one word" | abot run alice
-```
+## Where the old code is
 
-## Verbs
+Nothing is deleted from history. The tag `v0-archived` points at the last v0
+commit, and the releases v0.1.0, v0.2.0 and v1.0.0 still have their binaries:
 
-```
-abot create <name>                     New agent identity
-abot list                              All agents (alias: ls)
-abot show <name>                       Manifest, config, branches, worktrees
-abot clone <source> <new>              Full repo copy with fresh manifest
-abot employ <name> <room>              Worktree at ~/.abot/kubos/<room>/<name>/
-abot dismiss <name> <room>             Remove worktree, keep branch
-abot integrate <name> <room>           Merge kubo/<room> into main, drop branch
-abot discard <name> <room>             Force-drop kubo/<room> branch
-abot run <name> [--in <room>]          stdin → LLM → stdout (Ollama)
-abot log <name> [--room <room>]        git log
-abot diff <name> <room>                git diff <main>..kubo/<room>
-abot config <name> [key] [value]       Get/set per-agent config
-abot rm <name>                         Delete agent entirely
-```
+    git checkout v0-archived
 
-## Data model
-
-```
-~/.abot/
-  commit_email              one line — applied as repo-local user.email
-  commit_name               one line — applied as repo-local user.name
-  agents/
-    alice.abot/             canonical git repo (alice's identity)
-      .git/
-      manifest.json         {name, version, created, updated}
-      config.json           {shell, env, instructions, model}
-      home/                 working directory
-  kubos/
-    daily-room/             a room
-      alice/                git worktree on branch kubo/daily-room
-        .git                file (not dir) pointing to alice.abot
-        manifest.json
-        config.json
-        home/
-```
-
-`commit_email` and `commit_name` are file-per-fact settings (matching
-humOS's "no god files" convention). If unset, abot falls back to the
-user's git global identity. If neither is set, `abot create` errors with
-a helpful pointer.
-
-Each agent's `config.json` has `model` (default `gemma4:31b`),
-`instructions` (the system prompt), `shell`, and `env`.
-
-## Composition
-
-abot pairs naturally with two siblings:
-
-- **kubo** runs containers / rooms. Bind-mount
-  `~/.abot/kubos/<room>/<name>/home/` into the container; commits
-  autosave to `kubo/<room>` in the agent's canonical repo.
-- **tao** suspends a pipeline on a human. abot agents and humans both
-  implement the same actor interface — same pipe shape works for either.
-
-```sh
-echo "what's wrong with this PR?" \
-  | abot run alice \
-  | tao approve developer felix
-```
-
-## License
-
-MIT OR Apache-2.0.
+diwa holds about 60 insights on those 70 commits:
+`diwa search Dorky-Robot/abot "<query>"`.
