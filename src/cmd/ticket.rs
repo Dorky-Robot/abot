@@ -121,6 +121,9 @@ pub fn answer(ctx: &Ctx, session: &str, text: &str) -> Result<bool> {
 /// the questions and keep the conversation for `answer`.
 fn settle_turn(ctx: &Ctx, p: &mut Pending, reply: Reply) -> Result<bool> {
     let mut reply = reply;
+    if let (Reply::File(t, _), Some(id)) = (&mut reply, &p.draft.id) {
+        t.id = id.clone();
+    }
     // The rules are checked here too. When the writer files something they
     // refuse, it gets one more turn with the refusal, in the same session.
     if let Reply::File(t, _) = &reply {
@@ -157,6 +160,10 @@ fn settle_turn(ctx: &Ctx, p: &mut Pending, reply: Reply) -> Result<bool> {
             Ok(false)
         }
         Reply::File(mut t, note) => {
+            // The agent's own --id wins over the writer's.
+            if let Some(id) = &p.draft.id {
+                t.id = id.clone();
+            }
             t.filed = Some(today());
             let project = p.draft.project.clone();
             let msg = filing_message(p, &t, &note);

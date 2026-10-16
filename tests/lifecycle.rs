@@ -824,6 +824,9 @@ fn steps_are_added_and_marked_and_tickets_retired_through_abot() {
     assert_eq!(v["retired"].as_array().unwrap().len(), 2);
     assert_eq!(v["retired"][1]["note"], "four of six done; the rest has no detail, Felix 10-15");
     assert!(fails(&w.abot(&["ticket", "add", "demo", "again", "--id", "old-epic"])).contains("taken"));
+    // the agent's own --id wins over the one the writer picks
+    ok(&w.abot(&["ticket", "add", "demo", "own model again", "--id", "mine"]));
+    assert!(w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]).contains("### mine: The demo answers"));
     assert!(ok(&w.abot(&["check"])).starts_with("ok:"));
 }
 
