@@ -272,6 +272,37 @@ pub fn step(ctx: &Ctx, target: &str, text: Option<&str>, done: bool, by: Option<
             println!("a commit names it with: Ready: {}/{}.{n}", r.project, r.id);
             Ok(true)
         }
+        (Some(n), Some(text), false) => {
+            // Reword a step: its number, and any commit naming it, stay.
+            if n == 0 || n > t.steps.len() {
+                bail!("{}/{} has {} step(s), not {n}", r.project, r.id, t.steps.len());
+            }
+            let mut probe = t.clone();
+            probe.steps[n - 1].text = text.trim().to_string();
+            let problems: Vec<String> = ticket::lint(&probe).into_iter().filter(|p| p.starts_with(&format!("step {n}"))).collect();
+            if !problems.is_empty() {
+                bail!("not reworded: {}", problems.join("; "));
+            }
+            let msg = format!(
+                "Ticket {}/{}: step {n} says what it means, {}\n\nWas: {}\n\nTicket: {}/{}\n",
+                r.project,
+                r.id,
+                clip(&flatten(text), 80),
+                t.steps[n - 1].text,
+                r.project,
+                r.id
+            );
+            let (id, new) = (r.id.clone(), text.trim().to_string());
+            let sha = onmain::commit_file(ctx, &ticket::path(&r.project), &msg, |old| {
+                let mut f = ticket::parse(&r.project, old.unwrap_or(""));
+                let t = f.find_mut(&id).ok_or_else(|| anyhow!("{}/{id} is no longer open", r.project))?;
+                let st = t.steps.get_mut(n - 1).ok_or_else(|| anyhow!("{}/{id} no longer has step {n}", r.project))?;
+                st.text = new.clone();
+                Ok(ticket::render(&f))
+            })?;
+            println!("reworded {r} at {sha}: {}", flatten(text));
+            Ok(true)
+        }
         (Some(n), None, true) => {
             let by = format!("{}, {}", today(), by.map(flatten).unwrap_or_else(|| "by hand".into()));
             let sha = mark(ctx, &[(r.clone(), by)], &format!("{}/{}.{n} is done", r.project, r.id), None)?;
@@ -279,7 +310,9 @@ pub fn step(ctx: &Ctx, target: &str, text: Option<&str>, done: bool, by: Option<
             Ok(true)
         }
         _ => bail!(
-            "say one thing: add a step with abot ticket step {}/{} \"<a plain sentence>\", or mark one done with abot ticket step {}/{}.<n> --done",
+            "say one thing: add a step with abot ticket step {}/{} \"<a plain sentence>\", reword one with abot ticket step {}/{}.<n> \"<a plain sentence>\", or mark one done with abot ticket step {}/{}.<n> --done",
+            r.project,
+            r.id,
             r.project,
             r.id,
             r.project,

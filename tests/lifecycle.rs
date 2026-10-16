@@ -676,7 +676,7 @@ fn written(id: &str, steps: &[&str]) -> serde_json::Value {
             "title": "The demo answers from its own model",
             "why": "The demo's desk answers questions without sending them to an outside service.",
             "done_when": "Asking the demo desk a question gets an answer within ten seconds, and the request log shows only our own machine.",
-            "steps": steps,
+            "steps": steps.iter().map(|s| match s.strip_prefix("(done) ") { Some(t) => serde_json::json!({ "text": t, "done": true }), None => serde_json::json!({ "text": s, "done": false }) }).collect::<Vec<_>>(),
             "waits_on_who": "felix",
             "waits_on_what": "say which machine the model runs on",
             "detail": "state/projects/demo.md"
@@ -692,7 +692,7 @@ fn status(o: &Output) -> i32 {
 fn a_ticket_is_asked_about_then_filed_with_the_conversation_in_its_commit() {
     let w = World::new();
     let ask = serde_json::json!({ "status": "ask", "note": "two things only you know", "questions": ["What would someone see when it is done?", "Which machine?"] });
-    fake_writer(&w, ask, written("own-model", &["The model runs on our own machine and answers a test question", "The demo desk sends its questions to that model"]));
+    fake_writer(&w, ask, written("own-model", &["(done) The model runs on our own machine and answers a test question", "The demo desk sends its questions to that model"]));
 
     let o = w.abot(&["ticket", "add", "demo", "own model", "--why", "privacy", "--step", "C: model"]);
     assert_eq!(status(&o), 2, "not filed yet is exit 2: {}", String::from_utf8_lossy(&o.stderr));
@@ -715,7 +715,7 @@ fn a_ticket_is_asked_about_then_filed_with_the_conversation_in_its_commit() {
     let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
     assert!(file.contains("### own-model: The demo answers from its own model"), "{file}");
     assert!(file.contains("Waits on: felix: say which machine the model runs on"), "{file}");
-    assert!(file.contains("1. [todo] The model runs on our own machine"), "{file}");
+    assert!(file.contains("1. [done] The model runs on our own machine and answers a test question (") && file.contains("done before it was filed)"), "the writer can say a step is already done: {file}");
     let msg = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main"]);
     assert!(msg.starts_with("Ticket demo/own-model: The demo's desk answers questions"), "{msg}");
     for want in ["The agent's draft:", "step 1: C: model", "Asked (round 1):", "What would someone see", "Answered: 1. an answer in ten seconds 2. dr1", "Ticket: demo/own-model"] {
@@ -734,8 +734,9 @@ fn a_ticket_is_asked_about_then_filed_with_the_conversation_in_its_commit() {
     assert_eq!(t["written_out"], true);
     assert_eq!(t["waits_on"]["who"], "felix");
     assert_eq!(t["steps"][1]["ready"], "demo/own-model.2");
+    assert_eq!(t["steps"][0]["done"], true);
     assert!(ok(&w.abot(&["check"])).starts_with("ok:"), "a filed ticket passes check");
-    assert!(ok(&w.abot(&["orient", "demo"])).contains("demo/own-model  The demo answers from its own model  [0/2 steps done] · waits on felix"));
+    assert!(ok(&w.abot(&["orient", "demo"])).contains("demo/own-model  The demo answers from its own model  [1/2 steps done] · waits on felix"));
 }
 
 #[test]
@@ -805,6 +806,11 @@ fn steps_are_added_and_marked_and_tickets_retired_through_abot() {
     let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
     assert!(file.contains("answers a test question (") && file.contains("demo 1234567)") && file.contains("2. [todo] The desk shows"), "{file}");
     assert!(fails(&w.abot(&["ticket", "step", "demo/own-model.9", "--done"])).contains("has 2 step(s), not 9"));
+    assert!(fails(&w.abot(&["ticket", "step", "demo/own-model.2", "Done: the desk shows it"])).contains("reads like a label"));
+    ok(&w.abot(&["ticket", "step", "demo/own-model.2", "The desk shows which machine answered each question"]));
+    let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
+    assert!(file.contains("2. [todo] The desk shows which machine answered each question"), "{file}");
+    assert!(w.git(&w.log_origin, &["log", "-1", "--format=%B", "main"]).contains("Was: The desk shows which machine answered"));
 
     // retiring an open ticket, and recording an old one so its id stays taken
     ok(&w.abot(&["ticket", "retire", "demo/own-model", "the desk is going away, Felix 10-15"]));

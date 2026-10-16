@@ -200,6 +200,7 @@ these verbs and never by hand; every change is one commit on origin's main.
   abot ticket add <project> \"<title>\" --why … --done-when … --step … [--waits-on felix:…]
   abot ticket answer <session> \"…\"          when the writer asked questions
   abot ticket step <project>/<id> \"…\"       add a step
+  abot ticket step <project>/<id>.<n> \"…\"   reword one (its number stays)
   abot ticket step <project>/<id>.<n> --done  mark one done (land does this from Ready: lines)
   abot ticket retire <project>/<id> \"<why>\"
   abot ticket list [<project>] [--json]
@@ -250,7 +251,7 @@ enum TicketCmd {
         /// The answers, all in one go
         text: String,
     },
-    /// Add a step (<project>/<id> "…") or mark one done (<project>/<id>.<n> --done)
+    /// Add a step (<project>/<id> "…"), reword one (<project>/<id>.<n> "…") or mark one done (<project>/<id>.<n> --done)
     Step {
         /// <project>/<id> to add a step, <project>/<id>.<n> to mark one
         target: String,
