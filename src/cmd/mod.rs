@@ -4,6 +4,7 @@ pub mod lifecycle;
 pub mod map;
 pub mod orient;
 pub mod sessions;
+pub mod ticket;
 
 use crate::git::Git;
 use anyhow::{Result, bail};
