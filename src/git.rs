@@ -48,6 +48,27 @@ impl Git {
         Ok(trim_nl(String::from_utf8_lossy(&o.stdout).into_owned()))
     }
 
+    /// Run with `input` on stdin (and extra environment), returning stdout
+    /// trimmed; a failure is an error carrying git's own words.
+    pub fn run_input(&self, args: &[&str], env: &[(&str, &str)], input: &str) -> Result<String> {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut c = self.command(args, env);
+        c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = match c.spawn() {
+            Ok(ch) => ch,
+            Err(e) => bail!("could not run git ({e}); is git installed?"),
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input.as_bytes())?;
+        }
+        let o = child.wait_with_output()?;
+        if !o.status.success() {
+            bail!("git {} failed in {}: {}", args.join(" "), self.dir.display(), String::from_utf8_lossy(&o.stderr).trim());
+        }
+        Ok(trim_nl(String::from_utf8_lossy(&o.stdout).into_owned()))
+    }
+
     /// Run and return stdout exactly as git printed it, or None on failure.
     pub fn try_raw(&self, args: &[&str]) -> Option<String> {
         let o = self.output(args, &[]).ok()?;
