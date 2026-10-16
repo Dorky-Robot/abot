@@ -76,6 +76,9 @@ impl World {
             .env("ABOT_DECISIONS", self.root.join("decisions.json"))
             .env("ABOT_DIWA", "")
             .env("NO_COLOR", "1")
+            .env("ABOT_CLAUDE", self.root.join("fake-claude"))
+            .env("FAKE_DIR", &self.root)
+            .env_remove("ABOT_TICKET_MODEL")
             .env_remove("CLAUDE_CODE_BRIDGE_SESSION_ID");
         git_env(&mut c, &self.root);
         c.output().unwrap()
@@ -646,4 +649,188 @@ fn the_log_records_the_session_that_worked_each_task() {
     assert_eq!(rows.len(), 4, "{v}");
     let text = ok(&w.abot(&["sessions"]));
     assert!(text.contains("session_AAA  landed     demo/feat"), "{text}");
+}
+
+// ---------------------------------------------------------------- tickets
+
+/// A stand-in for `claude -p`: it records its arguments, and answers with
+/// `first.json` on a new session and `resume.json` on a resumed one, in the
+/// shape `claude --output-format json` prints.
+fn fake_writer(w: &World, first: serde_json::Value, resume: serde_json::Value) {
+    let wrap = |so: serde_json::Value| serde_json::json!({ "type": "result", "is_error": false, "session_id": "sess-1234abcd", "total_cost_usd": 0.004, "structured_output": so }).to_string();
+    std::fs::write(w.root.join("first.json"), wrap(first)).unwrap();
+    std::fs::write(w.root.join("resume.json"), wrap(resume)).unwrap();
+    let script = "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$FAKE_DIR/args.log\"\necho ---- >> \"$FAKE_DIR/args.log\"\nfor a in \"$@\"; do if [ \"$a\" = --resume ]; then cat \"$FAKE_DIR/resume.json\"; exit 0; fi; done\ncat \"$FAKE_DIR/first.json\"\n";
+    let p = w.root.join("fake-claude");
+    std::fs::write(&p, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn written(id: &str, steps: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "status": "file",
+        "note": "made the done-when checkable",
+        "ticket": {
+            "id": id,
+            "title": "The demo answers from its own model",
+            "why": "The demo's desk answers questions without sending them to an outside service.",
+            "done_when": "Asking the demo desk a question gets an answer within ten seconds, and the request log shows only our own machine.",
+            "steps": steps,
+            "waits_on_who": "felix",
+            "waits_on_what": "say which machine the model runs on",
+            "detail": "state/projects/demo.md"
+        }
+    })
+}
+
+fn status(o: &Output) -> i32 {
+    o.status.code().unwrap_or(-1)
+}
+
+#[test]
+fn a_ticket_is_asked_about_then_filed_with_the_conversation_in_its_commit() {
+    let w = World::new();
+    let ask = serde_json::json!({ "status": "ask", "note": "two things only you know", "questions": ["What would someone see when it is done?", "Which machine?"] });
+    fake_writer(&w, ask, written("own-model", &["The model runs on our own machine and answers a test question", "The demo desk sends its questions to that model"]));
+
+    let o = w.abot(&["ticket", "add", "demo", "own model", "--why", "privacy", "--step", "C: model"]);
+    assert_eq!(status(&o), 2, "not filed yet is exit 2: {}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("not filed yet") && out.contains("1. What would someone see") && out.contains("abot ticket answer sess-123"), "{out}");
+    let before = w.git(&w.log_origin, &["rev-parse", "main"]);
+
+    // the writer was run cheaply and on purpose: a named model, no tools
+    let args = std::fs::read_to_string(w.root.join("args.log")).unwrap();
+    for want in ["-p\n", "--model\nsonnet\n", "--effort\nlow\n", "--tools\n\n", "--json-schema\n"] {
+        assert!(args.contains(want), "claude ran without {want:?}:\n{args}");
+    }
+
+    let out = ok(&w.abot(&["ticket", "answer", "sess-1234", "1. an answer in ten seconds 2. dr1"]));
+    assert!(out.contains("filed demo/own-model on main"), "{out}");
+    assert!(std::fs::read_to_string(w.root.join("args.log")).unwrap().contains("--resume\nsess-1234abcd\n"), "answer resumes the same session");
+    assert_ne!(w.git(&w.log_origin, &["rev-parse", "main"]), before);
+
+    // one commit on origin's main, the file written, the Q&A in the body
+    let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
+    assert!(file.contains("### own-model: The demo answers from its own model"), "{file}");
+    assert!(file.contains("Waits on: felix: say which machine the model runs on"), "{file}");
+    assert!(file.contains("1. [todo] The model runs on our own machine"), "{file}");
+    let msg = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(msg.starts_with("Ticket demo/own-model: The demo's desk answers questions"), "{msg}");
+    for want in ["The agent's draft:", "step 1: C: model", "Asked (round 1):", "What would someone see", "Answered: 1. an answer in ten seconds 2. dr1", "Ticket: demo/own-model"] {
+        assert!(msg.contains(want), "missing {want:?} in:\n{msg}");
+    }
+    // the main checkout was brought along, and nothing in it was touched by hand
+    assert_eq!(w.git(&w.log, &["rev-parse", "main"]), w.git(&w.log_origin, &["rev-parse", "main"]));
+    assert!(w.git(&w.log, &["status", "--porcelain"]).is_empty());
+
+    // the conversation is gone once filed
+    assert!(fails(&w.abot(&["ticket", "answer", "sess-1234", "more"])).contains("no ticket waiting"));
+
+    let v: serde_json::Value = serde_json::from_str(&ok(&w.abot(&["ticket", "list", "--json"]))).unwrap();
+    let t = &v["tickets"][0];
+    assert_eq!(t["ref"], "demo/own-model");
+    assert_eq!(t["written_out"], true);
+    assert_eq!(t["waits_on"]["who"], "felix");
+    assert_eq!(t["steps"][1]["ready"], "demo/own-model.2");
+    assert!(ok(&w.abot(&["check"])).starts_with("ok:"), "a filed ticket passes check");
+    assert!(ok(&w.abot(&["orient", "demo"])).contains("demo/own-model  The demo answers from its own model  [0/2 steps done] · waits on felix"));
+}
+
+#[test]
+fn a_thin_ticket_never_lands_even_if_the_writer_files_it() {
+    let w = World::new();
+    let thin = serde_json::json!({ "status": "file", "note": "", "ticket": { "id": "views", "title": "C: views", "why": "views", "done_when": "it works", "steps": ["Docs pass 2"] } });
+    fake_writer(&w, thin.clone(), thin);
+    let before = w.git(&w.log_origin, &["rev-parse", "main"]);
+    let o = w.abot(&["ticket", "add", "demo", "C: views"]);
+    assert_eq!(status(&o), 2);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(out.contains("abot's check: title") && out.contains("Done when"), "the refusal comes back as questions: {out}");
+    assert_eq!(w.git(&w.log_origin, &["rev-parse", "main"]), before, "nothing was filed");
+    let args = std::fs::read_to_string(w.root.join("args.log")).unwrap();
+    assert!(args.contains("abot's check refused that ticket"), "the writer got one more turn with the refusal:\n{args}");
+
+    // and a thin ticket written by hand is caught by check
+    let thin_file = "# demo: tickets\n\n## Open\n\n### views: C: views\nWhy: views\nDone when: done\n1. [todo] Docs pass 2\n";
+    w.commit(&w.log, "state/tickets/demo.md", thin_file, "hand-written");
+    w.git(&w.log, &["push", "-q", "origin", "main"]);
+    let o = w.abot(&["check"]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(!o.status.success() && out.contains("state/tickets/demo.md: views: title"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&ok(&w.abot(&["ticket", "list", "--json"]))).unwrap();
+    assert_eq!(v["tickets"][0]["written_out"], false, "overview can label it");
+}
+
+#[test]
+fn land_marks_the_steps_a_task_finished() {
+    let w = World::new();
+    fake_writer(&w, written("own-model", &["The model runs on our own machine and answers a test question", "The demo desk sends its questions to that model"]), serde_json::json!({}));
+    ok(&w.abot(&["ticket", "add", "demo", "own model"]));
+
+    // a task names step 1 in a code commit
+    ok(&w.abot(&["start", "demo/model-box", "run the model"]));
+    let (wt, cwt) = (w.wt("model-box"), w.code_wt("model-box"));
+    w.commit(&cwt, "model.txt", "x\n", "Run the model on our own machine\n\nReady: demo/own-model.1\n\nCo-Authored-By: someone");
+    let out = ok(&w.abot_in(&wt, &["land"]));
+    assert!(out.contains("ticket: demo/own-model.1"), "{out}");
+    let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
+    let sha = w.git(&w.code_origin, &["log", "-1", "--format=%h", "main"]);
+    assert!(file.contains(&format!("1. [done] The model runs on our own machine and answers a test question ({}, demo {sha})", chrono_today())) || file.contains(&format!("{sha})")), "{file}");
+    assert!(file.contains("2. [todo]"), "{file}");
+    let subjects = w.git(&w.log_origin, &["log", "--format=%s", "-3", "main"]);
+    assert!(subjects.starts_with("Land demo/model-box\nTicket steps done by demo/model-box"), "{subjects}");
+
+    // a branch named for the ticket, with one step left, finishes it
+    ok(&w.abot(&["start", "demo/own-model", "wire the desk"]));
+    w.commit(&w.code_wt("own-model"), "desk.txt", "x\n", "The desk asks our model");
+    let out = ok(&w.abot_in(&w.wt("own-model"), &["land"]));
+    assert!(out.contains("every step done, moved to Done"), "{out}");
+    let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
+    assert!(file.contains("## Done\n- own-model: The demo answers from its own model"), "{file}");
+    assert!(file.contains("(nothing open)"), "{file}");
+}
+
+#[test]
+fn steps_are_added_and_marked_and_tickets_retired_through_abot() {
+    let w = World::new();
+    fake_writer(&w, written("own-model", &["The model runs on our own machine and answers a test question"]), serde_json::json!({}));
+    ok(&w.abot(&["ticket", "add", "demo", "own model"]));
+
+    assert!(fails(&w.abot(&["ticket", "step", "demo/own-model", "Docs pass 2"])).contains("plain sentence"));
+    let out = ok(&w.abot(&["ticket", "step", "demo/own-model", "The desk shows which machine answered"]));
+    assert!(out.contains("Ready: demo/own-model.2"), "{out}");
+    ok(&w.abot(&["ticket", "step", "demo/own-model.1", "--done", "--by", "demo 1234567"]));
+    let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
+    assert!(file.contains("answers a test question (") && file.contains("demo 1234567)") && file.contains("2. [todo] The desk shows"), "{file}");
+    assert!(fails(&w.abot(&["ticket", "step", "demo/own-model.9", "--done"])).contains("has 2 step(s), not 9"));
+
+    // retiring an open ticket, and recording an old one so its id stays taken
+    ok(&w.abot(&["ticket", "retire", "demo/own-model", "the desk is going away, Felix 10-15"]));
+    assert!(fails(&w.abot(&["ticket", "retire", "demo/old-epic", "gone"])).contains("--title"));
+    ok(&w.abot(&["ticket", "retire", "demo/old-epic", "four of six done; the rest has no detail, Felix 10-15", "--title", "Machines we can explain"]));
+    let file = w.git(&w.log_origin, &["show", "main:state/tickets/demo.md"]);
+    assert!(file.contains("## Retired\n- own-model: The demo answers from its own model — the desk is going away, Felix 10-15 ("), "{file}");
+    assert!(file.contains("- old-epic: Machines we can explain — four of six done; the rest has no detail, Felix 10-15 ("), "{file}");
+    let v: serde_json::Value = serde_json::from_str(&ok(&w.abot(&["ticket", "list", "--json"]))).unwrap();
+    assert_eq!(v["tickets"].as_array().unwrap().len(), 0);
+    assert_eq!(v["retired"].as_array().unwrap().len(), 2);
+    assert_eq!(v["retired"][1]["note"], "four of six done; the rest has no detail, Felix 10-15");
+    assert!(fails(&w.abot(&["ticket", "add", "demo", "again", "--id", "old-epic"])).contains("taken"));
+    assert!(ok(&w.abot(&["check"])).starts_with("ok:"));
+}
+
+#[test]
+fn ticket_commits_retry_on_top_of_someone_elses_push() {
+    let w = World::new();
+    fake_writer(&w, written("own-model", &["The model runs on our own machine and answers a test question"]), serde_json::json!({}));
+    // someone else lands on origin from another clone; ours is now behind
+    let other = w.root.join("other");
+    git(&w.root, &w.root, &["clone", "-q", w.log_origin.to_str().unwrap(), other.to_str().unwrap()]);
+    w.commit(&other, "state/org.md", "d-2. someone else's change\n", "someone else");
+    w.git(&other, &["push", "-q", "origin", "main"]);
+    ok(&w.abot(&["ticket", "add", "demo", "own model"]));
+    let log = w.git(&w.log_origin, &["log", "--format=%s", "-2", "main"]);
+    assert!(log.starts_with("Ticket demo/own-model") && log.contains("someone else"), "{log}");
 }
