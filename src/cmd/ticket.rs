@@ -212,7 +212,7 @@ pub fn ticket_block(t: &Ticket) -> String {
 }
 
 fn filing_message(p: &Pending, t: &Ticket, note: &str) -> String {
-    let mut m = format!("Ticket {}/{}: {}\n\n", p.draft.project, t.id, clip(&flatten(&t.why).trim_end_matches('.').to_string(), 100));
+    let mut m = format!("Ticket {}/{}: {}\n\n", p.draft.project, t.id, clip(flatten(&t.why).trim_end_matches('.'), 100));
     m.push_str(&ticket_block(t));
     m.push_str(&format!(
         "\nWritten with the ticket writer ({}, session {}, ${:.3}){}.\n",
@@ -356,7 +356,7 @@ pub fn apply_marks(project: &str, old: &str, marks: &[(Ref, String)], date: &str
             }
         }
     }
-    let finished = f.settle(date, &marks.first().map(|(_, b)| b.splitn(2, ", ").nth(1).unwrap_or("").to_string()).unwrap_or_default());
+    let finished = f.settle(date, &marks.first().map(|(_, b)| b.split_once(", ").map(|x| x.1).unwrap_or("").to_string()).unwrap_or_default());
     for id in finished {
         changed.push(format!("{project}/{id}: every step done, moved to Done"));
     }

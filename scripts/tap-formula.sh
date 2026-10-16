@@ -18,7 +18,7 @@ SHA_aarch64_unknown_linux_gnu=$(sha aarch64-unknown-linux-gnu)
 mkdir -p "$TAP/Formula"
 cat > "$TAP/Formula/abot.rb" <<FORMULA
 class Abot < Formula
-  desc "CLI for a git-based ecosystem log: orient, start, land, dead-end, park"
+  desc "CLI for a git-based ecosystem log: orient, start, land, dead-end, park, ticket"
   homepage "https://github.com/Dorky-Robot/abot"
   version "${VERSION}"
   license any_of: ["MIT", "Apache-2.0"]
