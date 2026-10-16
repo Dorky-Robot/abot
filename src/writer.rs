@@ -138,9 +138,19 @@ fn schema() -> Value {
                     "title": { "type": "string" },
                     "why": { "type": "string" },
                     "done_when": { "type": "string" },
-                    "steps": { "type": "array", "items": { "type": "string" } },
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": { "type": "string", "description": "a plain sentence: what will be true after it" },
+                                "done": { "type": "boolean", "description": "true only when the agent says it is already done" }
+                            },
+                            "required": ["text", "done"]
+                        }
+                    },
                     "waits_on_who": { "type": "string", "description": "empty when it waits on nobody" },
-                    "waits_on_what": { "type": "string" },
+                    "waits_on_what": { "type": "string", "description": "what they must do, said as the thing to do (\"grade the 20 insights\"), without their name" },
                     "detail": { "type": "string" }
                 },
                 "required": ["id", "title", "why", "done_when", "steps"]
@@ -154,7 +164,8 @@ fn schema() -> Value {
 fn system_prompt(rules: &str) -> String {
     format!(
         "{SYSTEM}{rules}\n\nAnswer only through the JSON schema: status \"file\" with the ticket, or status \"ask\" with \
-         questions. Keep steps in the agent's order; steps already marked done stay worded as they were."
+         questions. Keep steps in the agent's order. A step the agent says is already done is marked done: true \
+         and worded like the others (never start a step with \"Done:\" or any label)."
     )
 }
 
@@ -255,9 +266,16 @@ pub fn reply_of(v: &Value) -> Result<Reply> {
             let waits = (!who.is_empty() && !["nobody", "none", "no one", "n/a"].contains(&who.as_str()))
                 .then(|| Waits { who, what: s(&t["waits_on_what"]) });
             let detail = Some(s(&t["detail"])).filter(|d| !d.is_empty());
+            // A step is {text, done}; a bare string is taken as a step to do.
             let steps = t["steps"]
                 .as_array()
-                .map(|a| a.iter().map(s).filter(|x| !x.is_empty()).map(|text| Step { text, done: false, by: None }).collect())
+                .map(|a| {
+                    a.iter()
+                        .map(|x| if x.is_string() { (s(x), false) } else { (s(&x["text"]), x["done"].as_bool() == Some(true)) })
+                        .filter(|(text, _)| !text.is_empty())
+                        .map(|(text, done)| Step { text, done, by: done.then(|| format!("{}, done before it was filed", crate::cmd::today())) })
+                        .collect()
+                })
                 .unwrap_or_default();
             let raw = s(&t["id"]);
             let id = if crate::branch::valid_slug(&raw) && raw.len() <= 48 { raw } else { ticket::slug(&raw) };

@@ -344,6 +344,12 @@ fn label_re() -> &'static Regex {
     )
 }
 
+/// A step that opens with a one-word label: "Done: …", "Views: …".
+fn step_label_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    re(&R, r"^[A-Za-z][A-Za-z-]*:\s")
+}
+
 fn vague_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     re(
@@ -385,7 +391,7 @@ pub fn lint(t: &Ticket) -> Vec<String> {
         let x = s.text.trim();
         if words(x) < 4 {
             out.push(format!("step {} \"{x}\": write it as a plain sentence (four words or more)", i + 1));
-        } else if label_re().is_match(x) {
+        } else if label_re().is_match(x) || step_label_re().is_match(x) {
             out.push(format!("step {} \"{x}\" reads like a label; say what will be true after it", i + 1));
         }
         if x.chars().count() > 200 {
@@ -482,10 +488,14 @@ mod tests {
         t.title = "C: views".into();
         t.why = "views".into();
         t.done_when = "it works".into();
-        t.steps = vec![Step { text: "Docs pass 2".into(), done: false, by: None }, Step { text: "Phase 3: wire up the views to the store".into(), done: false, by: None }];
+        t.steps = vec![
+            Step { text: "Docs pass 2".into(), done: false, by: None },
+            Step { text: "Phase 3: wire up the views to the store".into(), done: false, by: None },
+            Step { text: "Done: the desk chat answers from dr1's model".into(), done: false, by: None },
+        ];
         t.waits = Some(Waits { who: "felix".into(), what: String::new() });
         let l = lint(&t).join("\n");
-        for want in ["title", "Why", "Done when", "step 1", "step 2", "Waits on felix"] {
+        for want in ["title", "Why", "Done when", "step 1", "step 2", "step 3", "Waits on felix"] {
             assert!(l.contains(want), "missing {want} in:\n{l}");
         }
     }
