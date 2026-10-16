@@ -194,10 +194,13 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
         }
     }
 
-    // 2. The generated map is current.
+    // 2. Tickets are written out: the same rules `abot ticket` files by.
+    problems.extend(super::ticket::check(ctx));
+
+    // 3. The generated map is current.
     map_current(ctx, &g, &mut problems, &mut notes);
 
-    // 3. Branches on origin: named <project>/<task>, have a project, not stale.
+    // 4. Branches on origin: named <project>/<task>, have a project, not stale.
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let refs = g
         .try_run(&["for-each-ref", "--format=%(refname:lstrip=3)\t%(committerdate:unix)\t%(committerdate:short)\t%(objectname)", "refs/remotes/origin/"])
@@ -234,7 +237,7 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
         }
     }
 
-    // 4. No secrets in what is tracked on main.
+    // 5. No secrets in what is tracked on main.
     let files = g.run(&["ls-tree", "-r", "--name-only", &base])?;
     let mut scanned = 0;
     for f in files.lines() {

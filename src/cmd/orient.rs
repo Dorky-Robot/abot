@@ -128,6 +128,19 @@ fn project(ctx: &Ctx, g: &Git, o: &mut Out, p: &str) {
         o.block(log.lines().map(String::from), 10, &format!("git log -- {f}"));
     }
 
+    o.header(&format!("tickets: {p} (abot ticket list {p})"));
+    let tf = crate::ticket::parse(p, &ctx.read_at(&base, &crate::ticket::path(p)).unwrap_or_default());
+    let rows: Vec<String> = tf
+        .open
+        .iter()
+        .map(|t| {
+            let n = t.steps.iter().filter(|s| s.done).count();
+            let waits = t.waits.as_ref().map(|w| format!(" · waits on {}", w.who)).unwrap_or_default();
+            format!("{p}/{}  {}  [{n}/{} steps done]{waits}", t.id, t.title, t.steps.len())
+        })
+        .collect();
+    o.block(rows, 10, &format!("abot ticket list {p}"));
+
     o.header(&format!("decisions about {p}"));
     let re = format!("^About: (.*, *)?{}( *,|$)", regex::escape(p));
     let dec = g
