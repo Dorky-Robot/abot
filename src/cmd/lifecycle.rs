@@ -234,7 +234,7 @@ fn remove_code_worktree(c: &Code, notes: &mut Vec<String>) {
 
 // ---------------------------------------------------------------- land
 
-pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Result<()> {
+pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>, ready: &[String]) -> Result<()> {
     let h = here(ctx)?;
     let bs = h.branch.to_string();
     if no_state_change.is_some_and(|w| w.trim().is_empty()) {
@@ -250,7 +250,20 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
     let base = h.wt.run(&["merge-base", "main", "HEAD"])?;
     let changed = h.wt.run(&["diff", "--name-only", &base, "HEAD"])?;
     let truth: Vec<&str> = changed.lines().filter(|f| TRUTH_DIRS.iter().any(|d| f.starts_with(d))).collect();
-    if truth.is_empty() && no_state_change.is_none() {
+    // Ticket steps this task finished: `Ready:` lines in its log commits and
+    // its code branch's commits, and --ready. They are a change to the
+    // truth too: the ticket file is updated on the branch before it lands.
+    let mut flagged: Vec<crate::ticket::Ref> = vec![];
+    for r in ready {
+        flagged.push(crate::ticket::parse_ref(r).ok_or_else(|| anyhow!("--ready {r}: say <project>/<id>.<n>, or <project>/<id> for all of it"))?);
+    }
+    let log_refs = refs_in(&h.wt, &format!("{base}..HEAD"));
+    let code_pre = code_side(ctx, &h.branch, repo)?
+        .map(|c| refs_in(&c.repo, &format!("{}..{bs}", c.trunk)))
+        .unwrap_or_default();
+    let named_ticket = ticket_named_by_branch(&h, &h.branch);
+    let ticket_work = !flagged.is_empty() || !log_refs.is_empty() || !code_pre.is_empty() || named_ticket;
+    if truth.is_empty() && no_state_change.is_none() && !ticket_work {
         bail!(
             "{bs} changes nothing under state/, ecosystem/, how/ or people/, so landing it tells the next \
              worker nothing. Edit the state file to say what is true now, or, if the truth really didn't \
@@ -306,6 +319,36 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
         landed_code = land_code(c, &bs, &mut notes)?;
     }
 
+    sync_main(&log, "main", "the log")?;
+    rebase_onto(&h.wt, &h.path, "main", &bs)?;
+
+    // The ticket steps, on the rebased branch so they sit on the newest main.
+    let date = today();
+    let mut marks: Vec<(crate::ticket::Ref, String)> = vec![];
+    for r in flagged {
+        marks.push((r, format!("{date}, {bs}")));
+    }
+    for (r, _) in &log_refs {
+        marks.push((r.clone(), format!("{date}, {bs}")));
+    }
+    if let (Some(c), Some(range)) = (&code, &landed_code) {
+        for (r, sha) in refs_in(&c.repo, &format!("{}..{}", range.from, range.to)) {
+            marks.push((r, format!("{date}, {} {sha}", range.repo)));
+        }
+    }
+    if marks.is_empty() && named_ticket {
+        if let Some(r) = single_open_step(&h, &h.branch) {
+            marks.push((r, format!("{date}, {bs}")));
+        }
+    } else if named_ticket && !marks.iter().any(|(r, _)| r.project == h.branch.project && r.id == h.branch.task) {
+        notes.push(format!(
+            "this branch is named for ticket {bs}, but nothing said which step it finished; mark it with abot ticket step {bs}.<n> --done"
+        ));
+    }
+    if !marks.is_empty() {
+        mark_tickets_on_branch(&h, &bs, &marks, &date, &mut notes)?;
+    }
+
     // Mark the outcome, unless the last commit already did. The Land commit
     // also records the code it carried (Code:), so the log's task opens onto
     // its exact commits; when there is code to record, it is always made.
@@ -327,8 +370,6 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
         notes.push(format!("no state change: {w} (not recorded: the last commit already says landed)"));
     }
 
-    sync_main(&log, "main", "the log")?;
-    rebase_onto(&h.wt, &h.path, "main", &bs)?;
     log.run(&["merge", "-q", "--ff-only", &bs])?;
     let head = log.run(&["rev-parse", "--short", "main"])?;
     if log.has_origin()
@@ -350,6 +391,75 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>) -> Re
     println!("removed {} and deleted {bs}", h.path.display());
     println!("the worktree you were in is gone; to continue:");
     println!("cd {}", ctx.log.display());
+    Ok(())
+}
+
+/// `Ready: <project>/<id>[.<n>]` lines in the commits of `range`, each with
+/// its commit's short sha.
+fn refs_in(g: &Git, range: &str) -> Vec<(crate::ticket::Ref, String)> {
+    let log = g.try_run(&["log", "--format=%h%x1f%B%x1e", range]).unwrap_or_default();
+    let mut out = vec![];
+    for c in log.split('\x1e') {
+        let Some((sha, msg)) = c.trim_start_matches('\n').split_once('\x1f') else { continue };
+        for r in crate::ticket::ready_refs(msg) {
+            if !out.iter().any(|(x, _): &(crate::ticket::Ref, String)| *x == r) {
+                out.push((r, sha.trim().to_string()));
+            }
+        }
+    }
+    out
+}
+
+fn ticket_text(h: &Here, project: &str) -> String {
+    std::fs::read_to_string(h.path.join(crate::ticket::path(project))).unwrap_or_default()
+}
+
+/// Whether the branch `<project>/<task>` is named for an open ticket.
+fn ticket_named_by_branch(h: &Here, b: &TaskBranch) -> bool {
+    crate::ticket::parse(&b.project, &ticket_text(h, &b.project)).find(&b.task).is_some()
+}
+
+/// The branch's ticket's one open step, when it has exactly one.
+fn single_open_step(h: &Here, b: &TaskBranch) -> Option<crate::ticket::Ref> {
+    let f = crate::ticket::parse(&b.project, &ticket_text(h, &b.project));
+    let t = f.find(&b.task)?;
+    let open: Vec<usize> = t.steps.iter().enumerate().filter(|(_, s)| !s.done).map(|(i, _)| i + 1).collect();
+    (open.len() == 1).then(|| crate::ticket::Ref { project: b.project.clone(), id: b.task.clone(), step: Some(open[0]) })
+}
+
+/// Mark the steps in the worktree's ticket files and commit them on the branch.
+fn mark_tickets_on_branch(h: &Here, bs: &str, marks: &[(crate::ticket::Ref, String)], date: &str, notes: &mut Vec<String>) -> Result<()> {
+    let mut projects: Vec<String> = marks.iter().map(|(r, _)| r.project.clone()).collect();
+    projects.sort();
+    projects.dedup();
+    let mut changed_all = vec![];
+    let mut files = vec![];
+    for p in projects {
+        let f = crate::ticket::path(&p);
+        let old = ticket_text(h, &p);
+        let (new, changed, missing) = super::ticket::apply_marks(&p, &old, marks, date);
+        for m in missing {
+            notes.push(format!("ticket not marked: {m}"));
+        }
+        if changed.is_empty() {
+            continue;
+        }
+        std::fs::write(h.path.join(&f), new)?;
+        h.wt.run(&["add", "--", &f])?;
+        files.push(f);
+        changed_all.extend(changed);
+    }
+    if changed_all.is_empty() {
+        return Ok(());
+    }
+    let mut msg = format!("Ticket steps done by {bs}\n\n");
+    for c in &changed_all {
+        msg.push_str(&format!("- {c}\n"));
+        notes.push(format!("ticket: {c}"));
+    }
+    let mut args = vec!["commit", "-q", "-m", msg.as_str(), "--"];
+    args.extend(files.iter().map(String::as_str));
+    h.wt.run(&args)?;
     Ok(())
 }
 
