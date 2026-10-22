@@ -39,7 +39,7 @@ abot park "waits on Felix's answer about X"
 | verb | does | refuses |
 |---|---|---|
 | `orient <p> [--cross p2 …]` | fetch, then read `origin/main`: ecosystem summary, state file, how it got here, decisions, dead ends, in-flight branches, diwa | a bad slug |
-| `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Session: session_…` from `$CLAUDE_CODE_BRIDGE_SESSION_ID` or `--session`, `Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
+| `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Session: session_…` from `$CLAUDE_CODE_BRIDGE_SESSION_ID` or `--session`; `Parent: …`, who started this session, from `$CLAUDE_PARENT_SESSION_ID` or `--parent`; `Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
 | `land [--ready <p>/<id>.<n>]` | marks the ticket steps the task finished (from `Ready:` lines, `--ready`, or a branch named for a one-step-left ticket); `Outcome: landed` commit if needed (with `Code: <org/repo> <from>..<to>`, the exact range it put on the code trunk), rebase on main, ff main, push, remove worktree, delete branch; code repo first | no change under state/ecosystem/how/people (unless `--no-state-change "<why>"`); secrets in the diff; uncommitted work |
 | `dead-end --tried --failed --instead` | lesson commit (`Dead end: <p>/<t>. …`, `Code:` the branch's own commits, `Outcome: dead-end`), `merge -s ours --no-ff`, a Traps line on main, push, clean up; code branch pushed and kept | any part missing |
 | `park "<why>"` | `Outcome: parked` commit (with `Code:` the kept branch), push the branch, a Parked line on main, remove the worktree, keep the branch | |
@@ -48,7 +48,7 @@ abot park "waits on Felix's answer about X"
 | `map [--json]` | every project: live, next, waits on Felix, in flight, dead ends, last change, uses/serves | |
 | `check [--json]` | state-file shape and length, tickets written out (the same rules as `ticket add`), map.md current, stale branches (>7 days), branches with no project, secrets | exits 1 on any problem |
 | `tree <p> [--json]` | `git log --graph` of main and `<p>/*` with outcomes | |
-| `sessions [--json]` | one row per `Session:` trailer on origin (main and task branches): session, outcome, branch, sha, date; land, dead-end and park carry the Start commit's `Session:` onto the commit that ends the task, so the session sweeper knows whose work is finished | |
+| `sessions [--json]` | one row per `Session:` trailer on origin (main and task branches): session, parent (from its Start commit's `Parent:`), outcome, branch, sha, date; land, dead-end and park carry the Start commit's `Session:` onto the commit that ends the task, so the session sweeper knows whose work is finished | |
 | `mirror` | decisions JSON → `decisions/<id>.md`, one commit each, idempotent, push | the main checkout off main |
 | `ticket add <p> "<title>" --why … --done-when … --step …` | hands the draft to the ticket writer (below); files it as one commit on origin's main, or prints the writer's questions and exits 2 | a project with no state file; a taken id; a ticket that fails the rules |
 | `ticket answer <session> "…"` | resumes the writer's session with the answers; files or asks again | no such conversation in this clone |
