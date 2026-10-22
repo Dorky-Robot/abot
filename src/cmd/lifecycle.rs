@@ -23,7 +23,7 @@ fn display(p: &Path) -> String {
 
 // ---------------------------------------------------------------- start
 
-pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>, session: Option<&str>) -> Result<()> {
+pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>, session: Option<&str>, parent: Option<&str>) -> Result<()> {
     let b = branch::parse(name).map_err(|e| anyhow!(e))?;
     if why.trim().is_empty() {
         bail!("missing WHY: abot start {b} \"<why>\" (one sentence on why this path is worth trying; it becomes the first commit)");
@@ -107,8 +107,15 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>, s
         msg.push_str(&format!("\n\nA new project: state/projects/{}.md is scaffolded from the template.", b.project));
     }
     msg.push_str("\n\n");
-    if let Some(id) = session.map(str::to_string).or_else(session_from_env) {
-        msg.push_str(&format!("Session: {}\n", session_id(&id)));
+    let me = session.map(str::to_string).or_else(session_from_env).map(|id| session_id(&id));
+    if let Some(id) = &me {
+        msg.push_str(&format!("Session: {id}\n"));
+    }
+    // who started this session: its spawner's id, never itself
+    if let Some(p) = parent.map(str::to_string).or_else(parent_from_env).map(|id| session_id(&id)) {
+        if me.as_deref() != Some(p.as_str()) {
+            msg.push_str(&format!("Parent: {p}\n"));
+        }
     }
     msg.push_str("Outcome: in-flight");
     wg.run(&["commit", "-q", "--allow-empty", "-m", &msg])?;
@@ -150,6 +157,12 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>, s
 /// Remote Control session exports it; anything else has none.
 fn session_from_env() -> Option<String> {
     std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID").ok().filter(|s| !s.trim().is_empty())
+}
+
+/// The session that started this one, as its spawner passed it in this session's settings
+/// (`--settings '{"env":{"CLAUDE_PARENT_SESSION_ID":"…"}}'`, which carries into a `--bg` session).
+fn parent_from_env() -> Option<String> {
+    std::env::var("CLAUDE_PARENT_SESSION_ID").ok().filter(|s| !s.trim().is_empty())
 }
 
 /// One spelling for an id: the sidebar's `session_…`. The bridge's own

@@ -83,6 +83,11 @@ everyone can see the path is taken. Refuses a bare <project>, a project with no 
         /// (default: $CLAUDE_CODE_BRIDGE_SESSION_ID, which Remote Control sessions have)
         #[arg(long)]
         session: Option<String>,
+        /// The session that started this one, recorded as a `Parent:` trailer, so the agent tree
+        /// knows who started a `claude --bg` worker (default: $CLAUDE_PARENT_SESSION_ID, which the
+        /// spawner passes with `--settings '{"env":{"CLAUDE_PARENT_SESSION_ID":"<its id>"}}'`)
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// Land the task you are standing in: rebase, fast-forward main, push, clean up
     #[command(long_about = "Run inside a log worktree. Refuses if nothing under state/, \
@@ -295,8 +300,8 @@ fn main() -> ExitCode {
             all.extend(cross);
             cmd::orient::run(&ctx, all).map(|_| true)
         }
-        Cmd::Start { branch, why, new, repo, session } => {
-            cmd::lifecycle::start(&ctx, &branch, why.as_deref().unwrap_or(""), new, repo.as_deref(), session.as_deref())
+        Cmd::Start { branch, why, new, repo, session, parent } => {
+            cmd::lifecycle::start(&ctx, &branch, why.as_deref().unwrap_or(""), new, repo.as_deref(), session.as_deref(), parent.as_deref())
                 .map(|_| true)
         }
         Cmd::Land { no_state_change, repo, ready } => {

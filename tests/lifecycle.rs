@@ -649,6 +649,39 @@ fn the_log_records_the_session_that_worked_each_task() {
     assert_eq!(rows.len(), 4, "{v}");
     let text = ok(&w.abot(&["sessions"]));
     assert!(text.contains("session_AAA  landed     demo/feat"), "{text}");
+    assert!(find("session_AAA")["parent"].is_null(), "no spawner passed one");
+}
+
+/// The Parent: trailer: a worker started with its spawner's id in its settings
+/// (CLAUDE_PARENT_SESSION_ID) or --parent records who started it on the Start commit,
+/// never itself, and `abot sessions --json` returns it even after the task landed.
+#[test]
+fn start_records_who_started_the_session() {
+    let w = World::new();
+    let run = |cwd: &Path, args: &[&str], envs: &[(&str, &str)]| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+        c.args(args).current_dir(cwd).env("ABOT_LOG", &w.log).env("ABOT_PROJECTS", w.root.join("Projects")).env("ABOT_DIWA", "");
+        for (k, v) in envs {
+            c.env(k, v);
+        }
+        git_env(&mut c, &w.root);
+        c.output().unwrap()
+    };
+    ok(&run(&w.log, &["start", "demo/kid", "a worker"], &[("CLAUDE_CODE_BRIDGE_SESSION_ID", "session_KID"), ("CLAUDE_PARENT_SESSION_ID", "cse_DAD")]));
+    let first = w.git(&w.wt("kid"), &["log", "-1", "--format=%B"]);
+    assert!(first.contains("Session: session_KID\nParent: session_DAD\n"), "{first}");
+    let state = std::fs::read_to_string(w.wt("kid").join("state/projects/demo.md")).unwrap();
+    w.commit(&w.wt("kid"), "state/projects/demo.md", &state.replace("- dr1, v1", "- dr1, v3"), "v3 is live");
+    ok(&run(&w.wt("kid"), &["land"], &[]));
+    // --parent wins over the env; a parent that is the session itself is not one
+    ok(&run(&w.log, &["start", "demo/flag", "by hand", "--parent", "8c1f0e2a-1111-4222-8333-944455556666"], &[("CLAUDE_CODE_BRIDGE_SESSION_ID", "session_FLAG"), ("CLAUDE_PARENT_SESSION_ID", "session_IGNORED")]));
+    ok(&run(&w.log, &["start", "demo/self", "loops"], &[("CLAUDE_CODE_BRIDGE_SESSION_ID", "session_SELF"), ("CLAUDE_PARENT_SESSION_ID", "session_SELF")]));
+    let v: serde_json::Value = serde_json::from_str(&ok(&w.abot(&["sessions", "--json"]))).unwrap();
+    let find = |s: &str| v.as_array().unwrap().iter().find(|r| r["session"] == s).cloned().unwrap_or_else(|| panic!("{s} in {v}"));
+    assert_eq!(find("session_KID")["parent"], "session_DAD", "still known after it landed");
+    assert_eq!(find("session_KID")["outcome"], "landed");
+    assert_eq!(find("session_FLAG")["parent"], "8c1f0e2a-1111-4222-8333-944455556666");
+    assert!(find("session_SELF")["parent"].is_null());
 }
 
 // ---------------------------------------------------------------- tickets

@@ -11,6 +11,8 @@ use serde_json::json;
 
 pub struct Row {
     pub session: String,
+    /// who started it: the `Parent:` trailer on the commit that names it, when its spawner passed one
+    pub parent: Option<String>,
     pub outcome: String,
     pub branch: String,
     pub sha: String,
@@ -39,12 +41,22 @@ pub fn rows(ctx: &Ctx) -> Result<(Vec<Row>, Option<String>)> {
         }
         let t = trailers::parse(f[3]);
         let outcome = t.iter().rev().find(|(k, _)| k.eq_ignore_ascii_case("Outcome")).map(|(_, v)| v.clone());
+        let parent = t.iter().find(|(k, _)| k.eq_ignore_ascii_case("Parent")).map(|(_, v)| v.clone());
         for (k, v) in &t {
-            if !k.eq_ignore_ascii_case("Session") || out.iter().any(|r| &r.session == v) {
+            if !k.eq_ignore_ascii_case("Session") {
+                continue;
+            }
+            // the newest commit naming a session says how it stands; its parent is on the Start
+            // commit, older, so it is filled in from whichever commit carries it
+            if let Some(r) = out.iter_mut().find(|r| &r.session == v) {
+                if r.parent.is_none() {
+                    r.parent = parent.clone();
+                }
                 continue;
             }
             out.push(Row {
                 session: v.clone(),
+                parent: parent.clone(),
                 outcome: outcome.clone().unwrap_or_else(|| "in-flight".into()),
                 branch: branch_of(f[2]),
                 sha: f[0].into(),
@@ -60,7 +72,7 @@ pub fn run(ctx: &Ctx, json_out: bool) -> Result<()> {
     if json_out {
         let v: Vec<_> = rows
             .iter()
-            .map(|r| json!({"session": r.session, "outcome": r.outcome, "branch": r.branch, "sha": r.sha, "date": r.date}))
+            .map(|r| json!({"session": r.session, "parent": r.parent, "outcome": r.outcome, "branch": r.branch, "sha": r.sha, "date": r.date}))
             .collect();
         println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
