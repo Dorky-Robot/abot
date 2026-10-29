@@ -103,6 +103,9 @@ Never force-pushes, never rewrites main.")]
         no_state_change: Option<String>,
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Leave this Claude session open; by default it closes once the task has ended
+        #[arg(long)]
+        keep_open: bool,
         /// A ticket step this task finished, as <project>/<id>.<n> (or <project>/<id> for all
         /// of it), when no commit says so with a `Ready:` line; repeatable
         #[arg(long = "ready", value_name = "REF")]
@@ -126,6 +129,9 @@ cleans up. A code branch is pushed and kept.")]
         instead: String,
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Leave this Claude session open; by default it closes once the task has ended
+        #[arg(long)]
+        keep_open: bool,
     },
     /// Park the task you are standing in: push the branch, note it under Parked on main
     #[command(long_about = "Run inside a log worktree. Adds an empty commit with `Outcome: \
@@ -137,6 +143,9 @@ what main reaches.")]
         why: String,
         #[arg(long)]
         repo: Option<PathBuf>,
+        /// Leave this Claude session open; by default it closes once the task has ended
+        #[arg(long)]
+        keep_open: bool,
     },
     /// Step into a commit: its message, its Refs: into other repos, then diwa show
     Dig {
@@ -304,13 +313,17 @@ fn main() -> ExitCode {
             cmd::lifecycle::start(&ctx, &branch, why.as_deref().unwrap_or(""), new, repo.as_deref(), session.as_deref(), parent.as_deref())
                 .map(|_| true)
         }
-        Cmd::Land { no_state_change, repo, ready } => {
-            cmd::lifecycle::land(&ctx, no_state_change.as_deref(), repo.as_deref(), &ready).map(|_| true)
+        Cmd::Land { no_state_change, repo, ready, keep_open } => cmd::lifecycle::land(&ctx, no_state_change.as_deref(), repo.as_deref(), &ready)
+            .map(|_| cmd::close::after_end(keep_open))
+            .map(|_| true),
+        Cmd::DeadEnd { tried, failed, instead, repo, keep_open } => {
+            cmd::lifecycle::dead_end(&ctx, &tried, &failed, &instead, repo.as_deref())
+                .map(|_| cmd::close::after_end(keep_open))
+                .map(|_| true)
         }
-        Cmd::DeadEnd { tried, failed, instead, repo } => {
-            cmd::lifecycle::dead_end(&ctx, &tried, &failed, &instead, repo.as_deref()).map(|_| true)
+        Cmd::Park { why, repo, keep_open } => {
+            cmd::lifecycle::park(&ctx, &why, repo.as_deref()).map(|_| cmd::close::after_end(keep_open)).map(|_| true)
         }
-        Cmd::Park { why, repo } => cmd::lifecycle::park(&ctx, &why, repo.as_deref()).map(|_| true),
         Cmd::Dig { sha } => cmd::dig::run(&ctx, &sha).map(|_| true),
         Cmd::Decide { text, why, about, by, json } => {
             cmd::decisions::decide(&ctx, &text, &why, &about, &by, json).map(|_| true)

@@ -15,6 +15,15 @@ struct World {
 
 const STATE: &str = "# demo\nUses: kita, pocket-id\nServes: Sara\n\n## What it is\nA demo project.\n\n## Live now\n- dr1, v1\n\n## Next\n1. ship\n\n## Waits on Felix\n- pick a name\n\n## Traps\n- 2026-01-01 old: an old trap\n\n## Parked\n";
 
+/// abot with nothing of the Claude session running the tests: land, dead-end
+/// and park would otherwise close that session (a `claude stop` on the job in
+/// $CLAUDE_JOB_DIR).
+fn abot_cmd() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+    c.env_remove("CLAUDE_JOB_DIR").env_remove("CLAUDECODE");
+    c
+}
+
 fn git_env(c: &mut Command, home: &Path) {
     c.env("HOME", home)
         .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -68,7 +77,11 @@ impl World {
     }
 
     fn abot_in(&self, cwd: &Path, args: &[&str]) -> Output {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+        self.abot_env(cwd, args, &[])
+    }
+
+    fn abot_env(&self, cwd: &Path, args: &[&str], extra: &[(&str, &str)]) -> Output {
+        let mut c = abot_cmd();
         c.args(args)
             .current_dir(cwd)
             .env("ABOT_LOG", &self.log)
@@ -81,6 +94,9 @@ impl World {
             .env_remove("ABOT_TICKET_MODEL")
             .env_remove("CLAUDE_CODE_BRIDGE_SESSION_ID");
         git_env(&mut c, &self.root);
+        for (k, v) in extra {
+            c.env(k, v);
+        }
         c.output().unwrap()
     }
 
@@ -507,7 +523,7 @@ fn start_branches_from_origin_main() {
 #[test]
 fn a_closed_pipe_ends_quietly() {
     let w = World::new();
-    let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+    let mut c = abot_cmd();
     c.args(["orient", "demo"])
         .current_dir(&w.log)
         .env("ABOT_LOG", &w.log)
@@ -598,7 +614,7 @@ fn the_log_records_the_code_each_task_carried() {
 fn the_log_records_the_session_that_worked_each_task() {
     let w = World::new();
     let with_env = |cwd: &Path, args: &[&str], id: &str| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+        let mut c = abot_cmd();
         c.args(args)
             .current_dir(cwd)
             .env("ABOT_LOG", &w.log)
@@ -659,7 +675,7 @@ fn the_log_records_the_session_that_worked_each_task() {
 fn start_records_who_started_the_session() {
     let w = World::new();
     let run = |cwd: &Path, args: &[&str], envs: &[(&str, &str)]| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
+        let mut c = abot_cmd();
         c.args(args).current_dir(cwd).env("ABOT_LOG", &w.log).env("ABOT_PROJECTS", w.root.join("Projects")).env("ABOT_DIWA", "");
         for (k, v) in envs {
             c.env(k, v);
@@ -875,4 +891,70 @@ fn ticket_commits_retry_on_top_of_someone_elses_push() {
     ok(&w.abot(&["ticket", "add", "demo", "own model"]));
     let log = w.git(&w.log_origin, &["log", "--format=%s", "-2", "main"]);
     assert!(log.starts_with("Ticket demo/own-model") && log.contains("someone else"), "{log}");
+}
+
+/// A fake `claude` that only records its arguments, one per line.
+fn fake_stopper(w: &World) {
+    let p = w.root.join("fake-claude");
+    std::fs::write(&p, "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$FAKE_DIR/args.log\"\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn stopped(w: &World) -> String {
+    for _ in 0..50 {
+        if let Ok(s) = std::fs::read_to_string(w.root.join("args.log")) {
+            return s;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    String::new()
+}
+
+fn land_one(w: &World, task: &str, extra: &[(&str, &str)], flags: &[&str]) -> Output {
+    ok(&w.abot(&["start", &format!("demo/{task}"), "try it"]));
+    let wt = w.wt(task);
+    let state = std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap();
+    w.commit(&wt, "state/projects/demo.md", &format!("{state}\n- {task}\n"), "the truth changed");
+    let mut args = vec!["land"];
+    args.extend(flags);
+    w.abot_env(&wt, &args, extra)
+}
+
+#[test]
+fn land_closes_the_background_session_it_ran_in() {
+    let w = World::new();
+    fake_stopper(&w);
+    let o = land_one(&w, "closes", &[("CLAUDE_JOB_DIR", "/tmp/jobs/abcd1234"), ("CLAUDECODE", "1"), ("ABOT_CLOSE_DELAY", "0")], &[]);
+    let out = ok(&o);
+    assert_eq!(out.lines().last().unwrap(), format!("cd {}", w.log.display()), "the last line stays runnable");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("closing this session in 0s: claude stop abcd1234"), "{err}");
+    assert_eq!(stopped(&w), "stop\nabcd1234\n");
+}
+
+#[test]
+fn keep_open_and_terminals_close_nothing() {
+    let w = World::new();
+    fake_stopper(&w);
+    let o = land_one(&w, "stays", &[("CLAUDE_JOB_DIR", "/tmp/jobs/abcd1234"), ("ABOT_CLOSE_DELAY", "0")], &["--keep-open"]);
+    ok(&o);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("stays open (--keep-open)"));
+    let o = land_one(&w, "terminal", &[("ABOT_CLOSE_DELAY", "0")], &[]);
+    ok(&o);
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("clos"), "a person at a terminal closes nothing");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!w.root.join("args.log").exists(), "nothing was stopped");
+}
+
+#[test]
+fn an_app_session_is_told_to_archive_itself() {
+    let w = World::new();
+    fake_stopper(&w);
+    let o = land_one(&w, "app", &[("CLAUDECODE", "1"), ("CLAUDE_CODE_BRIDGE_SESSION_ID", "cse_01ABC"), ("ABOT_CLOSE_DELAY", "0")], &[]);
+    ok(&o);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("ARCHIVE-SELF: session_01ABC"), "{err}");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!w.root.join("args.log").exists());
 }
