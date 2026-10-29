@@ -3,7 +3,7 @@
 //! and have done /abot-land"). Never on a timer: land, dead-end and park are
 //! the only triggers, and only once they have succeeded.
 //!
-//! A `claude --bg` job knows its short id from $CLAUDE_JOB_DIR, so abot
+//! A `claude --bg` job knows its short id (`crate::session`), so abot
 //! stops it itself: a detached `claude stop <short>` a little later, so the
 //! session's last message still gets out. Stopping a live Remote Control
 //! session archives its sidebar entry, and `claude attach <short>` brings it
@@ -12,31 +12,33 @@
 //!
 //! Everything here goes to stderr: land's last stdout line stays runnable.
 
-use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub fn after_end(keep_open: bool) {
     let in_claude = std::env::var_os("CLAUDECODE").is_some();
-    let job = std::env::var("CLAUDE_JOB_DIR").ok().filter(|s| !s.trim().is_empty());
-    let sid = std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| super::lifecycle::session_id(&s));
-    if !in_claude && job.is_none() {
+    let in_job = std::env::var("CLAUDE_JOB_DIR").is_ok_and(|s| !s.trim().is_empty());
+    if !in_claude && !in_job {
         return; // a person at a terminal: nothing to close
     }
     if keep_open {
         eprintln!("this session stays open (--keep-open)");
         return;
     }
-    let short = job.as_deref().and_then(|j| Path::new(j.trim_end_matches('/')).file_name()).and_then(|n| n.to_str()).map(str::to_string);
-    let Some(short) = short.filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric())) else {
-        eprintln!(
-            "ARCHIVE-SELF: {}: this session is not a claude --bg job, so abot can't close it. \
-             If you have an archive_session tool, call it on that id as your very last action; \
-             otherwise end your last message with one line asking Felix to archive this session.",
-            sid.as_deref().unwrap_or("(no session id)")
-        );
+    let me = crate::session::me();
+    let Some(short) = me.job else {
+        match me.session {
+            Some(sid) => eprintln!(
+                "ARCHIVE-SELF: {sid}: this session is not a claude --bg job, so abot can't close it. \
+                 If you have an archive_session tool, call it on that id as your very last action; \
+                 otherwise end your last message with one line asking Felix to archive this session."
+            ),
+            None => eprintln!(
+                "ARCHIVE-SELF: (this session's id is unknown to abot): it is not a claude --bg job, so abot can't close it. \
+                 If you have get_session and archive_session tools, call get_session with no id to learn yours, \
+                 then archive_session on it as your very last action; \
+                 otherwise end your last message with one line asking Felix to archive this session."
+            ),
+        }
         return;
     };
     let delay: u64 = std::env::var("ABOT_CLOSE_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(30);

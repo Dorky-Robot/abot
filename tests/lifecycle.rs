@@ -17,10 +17,12 @@ const STATE: &str = "# demo\nUses: kita, pocket-id\nServes: Sara\n\n## What it i
 
 /// abot with nothing of the Claude session running the tests: land, dead-end
 /// and park would otherwise close that session (a `claude stop` on the job in
-/// $CLAUDE_JOB_DIR).
+/// $CLAUDE_JOB_DIR, or on the job whose state.json names $CLAUDE_CODE_SESSION_ID).
 fn abot_cmd() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_abot"));
-    c.env_remove("CLAUDE_JOB_DIR").env_remove("CLAUDECODE");
+    for k in ["CLAUDE_JOB_DIR", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_PARENT_SESSION_ID", "CLAUDE_CONFIG_DIR"] {
+        c.env_remove(k);
+    }
     c
 }
 
@@ -955,6 +957,53 @@ fn an_app_session_is_told_to_archive_itself() {
     ok(&o);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("ARCHIVE-SELF: session_01ABC"), "{err}");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(!w.root.join("args.log").exists());
+}
+
+/// A session started from the desktop app or by overview has no
+/// $CLAUDE_CODE_BRIDGE_SESSION_ID and no $CLAUDE_JOB_DIR, only
+/// $CLAUDE_CODE_SESSION_ID: abot finds its job by that id, records its
+/// Session: and closes it.
+#[test]
+fn a_job_without_bridge_env_is_found_by_its_session_id() {
+    let w = World::new();
+    fake_stopper(&w);
+    let job = w.root.join(".claude/jobs/ab12cd34");
+    std::fs::create_dir_all(&job).unwrap();
+    std::fs::write(
+        job.join("state.json"),
+        r#"{"sessionId":"11111111-2222-4333-8444-555555555555","daemonShort":"ab12cd34","bridgeSessionId":"cse_01JOB"}"#,
+    )
+    .unwrap();
+    let other = w.root.join(".claude/jobs/ffff0000");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("state.json"), r#"{"sessionId":"someone-else","daemonShort":"ffff0000","bridgeSessionId":"cse_01NOPE"}"#).unwrap();
+    let env = [("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "11111111-2222-4333-8444-555555555555"), ("ABOT_CLOSE_DELAY", "0")];
+    ok(&w.abot_env(&w.log, &["start", "demo/nobridge", "try it"], &env));
+    let wt = w.wt("nobridge");
+    let start = w.git(&wt, &["log", "-1", "--format=%B"]);
+    assert!(start.contains("Session: session_01JOB"), "{start}");
+    let state = std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap();
+    w.commit(&wt, "state/projects/demo.md", &format!("{state}\n- nobridge\n"), "the truth changed");
+    let o = w.abot_env(&wt, &["land"], &env);
+    ok(&o);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("claude stop ab12cd34"), "{err}");
+    assert_eq!(stopped(&w), "stop\nab12cd34\n");
+    let main = w.git(&w.log_origin, &["log", "-1", "--format=%B", "main"]);
+    assert!(main.contains("Session: session_01JOB"), "{main}");
+}
+
+/// No job and no bridge id: still something the session can act on.
+#[test]
+fn an_app_session_with_no_id_is_told_how_to_find_it() {
+    let w = World::new();
+    fake_stopper(&w);
+    let o = land_one(&w, "noid", &[("CLAUDECODE", "1"), ("CLAUDE_CODE_SESSION_ID", "99999999-0000-4000-8000-000000000000"), ("ABOT_CLOSE_DELAY", "0")], &[]);
+    ok(&o);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("ARCHIVE-SELF:") && err.contains("get_session with no id"), "{err}");
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(!w.root.join("args.log").exists());
 }

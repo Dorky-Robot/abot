@@ -40,7 +40,7 @@ fn rules(ctx: &Ctx) -> String {
 }
 
 fn session_env() -> Option<String> {
-    std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID").ok().filter(|s| !s.trim().is_empty()).map(|s| super::lifecycle::session_id(&s))
+    crate::session::me().session
 }
 
 // ---------------------------------------------------------------- add / answer

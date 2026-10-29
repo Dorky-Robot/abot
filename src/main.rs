@@ -13,6 +13,7 @@ mod onmain;
 mod out;
 mod repos;
 mod secrets;
+mod session;
 mod statefile;
 mod ticket;
 mod trailers;

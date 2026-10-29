@@ -153,10 +153,10 @@ pub fn start(ctx: &Ctx, name: &str, why: &str, new: bool, repo: Option<&Path>, s
 
 // ---------------------------------------------------------------- sessions
 
-/// The Claude Code session this shell runs in, as the sidebar knows it. A
-/// Remote Control session exports it; anything else has none.
+/// The Claude Code session this shell runs in, as the sidebar knows it
+/// (`crate::session`); a person at a terminal has none.
 fn session_from_env() -> Option<String> {
-    std::env::var("CLAUDE_CODE_BRIDGE_SESSION_ID").ok().filter(|s| !s.trim().is_empty())
+    crate::session::me().session
 }
 
 /// The session that started this one, as its spawner passed it in this session's settings
