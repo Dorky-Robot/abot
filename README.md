@@ -38,18 +38,21 @@ abot park "waits on Felix's answer about X"
 
 Land, dead-end and park end by closing the Claude session they ran in, once
 they have succeeded (never on a timer; Felix, 10-28). In a `claude --bg` job
-($CLAUDE_JOB_DIR) a detached `claude stop <short>` runs 30 s later
+($CLAUDE_JOB_DIR, or the job in `~/.claude/jobs/*/state.json` whose
+`sessionId` is $CLAUDE_CODE_SESSION_ID, for jobs started without Remote
+Control's env) a detached `claude stop <short>` runs 30 s later
 (`ABOT_CLOSE_DELAY`), so the session's last message still gets out; stopping
 a live Remote Control session archives its sidebar entry, and `claude attach
 <short>` brings it back. A session with no job (desktop app, claude.ai) gets
 `ARCHIVE-SELF: <session id>` on stderr: no CLI archives those, so it calls
-its own archive_session tool if it has one, or asks Felix. `--keep-open`
+its own archive_session tool if it has one, or asks Felix. When abot can't
+tell the id either, the line says to call get_session with no id first. `--keep-open`
 stays. Run from a plain terminal, nothing closes.
 
 | verb | does | refuses |
 |---|---|---|
 | `orient <p> [--cross p2 …]` | fetch, then read `origin/main`: ecosystem summary, state file, how it got here, decisions, dead ends, in-flight branches, diwa | a bad slug |
-| `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Session: session_…` from `$CLAUDE_CODE_BRIDGE_SESSION_ID` or `--session`; `Parent: …`, who started this session, from `$CLAUDE_PARENT_SESSION_ID` or `--parent`; `Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
+| `start <p>/<t> "<why>"` | log + code worktrees, first empty commit with the why (`Session: session_…` from `$CLAUDE_CODE_BRIDGE_SESSION_ID`, else the job's state.json, or `--session`; `Parent: …`, who started this session, from `$CLAUDE_PARENT_SESSION_ID` or `--parent`; `Outcome: in-flight`), push | a bare `<p>`; no state file (unless `--new`, which scaffolds one); a branch already on origin |
 | `land [--ready <p>/<id>.<n>]` | marks the ticket steps the task finished (from `Ready:` lines, `--ready`, or a branch named for a one-step-left ticket); `Outcome: landed` commit if needed (with `Code: <org/repo> <from>..<to>`, the exact range it put on the code trunk), rebase on main, ff main, push, remove worktree, delete branch; code repo first | no change under state/ecosystem/how/people (unless `--no-state-change "<why>"`); secrets in the diff; uncommitted work |
 | `dead-end --tried --failed --instead` | lesson commit (`Dead end: <p>/<t>. …`, `Code:` the branch's own commits, `Outcome: dead-end`), `merge -s ours --no-ff`, a Traps line on main, push, clean up; code branch pushed and kept | any part missing |
 | `park "<why>"` | `Outcome: parked` commit (with `Code:` the kept branch), push the branch, a Parked line on main, remove the worktree, keep the branch | |
