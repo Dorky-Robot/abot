@@ -196,6 +196,57 @@ pub fn include(pages: &Pages, spec: &str) -> Result<(String, String)> {
     Ok((joined.trim_matches('\n').trim_end().to_string(), path.to_string()))
 }
 
+/// The level of the last heading in `text` (0 when there is none), so an
+/// included page can sit under it.
+fn last_heading_level(text: &str) -> usize {
+    let mut fenced = false;
+    let mut level = 0;
+    for l in text.lines() {
+        if l.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced {
+            if let Some((n, _)) = heading(l) {
+                level = n;
+            }
+        }
+    }
+    level
+}
+
+/// Push an included text's headings down so the highest of them is one
+/// level below `under`; the words stay as they are.
+fn nest(text: &str, under: usize) -> String {
+    let mut fenced = false;
+    let mut top = 7;
+    for l in text.lines() {
+        if l.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced {
+            if let Some((n, _)) = heading(l) {
+                top = top.min(n);
+            }
+        }
+    }
+    if top == 7 || top > under {
+        return text.to_string();
+    }
+    let by = under + 1 - top;
+    let mut fenced = false;
+    let mut out = Vec::new();
+    for l in text.lines() {
+        if l.trim_start().starts_with("```") {
+            fenced = !fenced;
+            out.push(l.to_string());
+        } else if !fenced && heading(l).is_some() {
+            let n = heading(l).unwrap().0;
+            out.push(format!("{}{}", "#".repeat((n + by).min(6)), &l[n..]));
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    out.join("\n")
+}
+
 /// Fill one layout. Returns the text, the nodes it shows and the pages it
 /// includes.
 pub fn fill(g: &Graph, pages: &Pages, body: &str) -> Result<(String, Vec<String>, Vec<String>)> {
@@ -209,7 +260,8 @@ pub fn fill(g: &Graph, pages: &Pages, body: &str) -> Result<(String, Vec<String>
             "clashes" => Ok(open_clash_lines(g, id)),
             "include" => include(pages, id).map(|(t, p)| {
                 included.push(p);
-                t
+                let under = last_heading_level(&body[..c.get(0).unwrap().start()]);
+                nest(&t, under)
             }),
             _ if g.kind(id).is_none() => Err(anyhow!("{{{{{what} {id}}}}}: no node {id} in the graph")),
             "rule" => Ok(g.rule(id).unwrap_or_default()),

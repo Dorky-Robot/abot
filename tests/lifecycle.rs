@@ -1133,6 +1133,13 @@ fn rules_graph_includes_pages_word_for_word_and_land_rebuilds_after_rebase() {
     let topic = std::fs::read_to_string(wt.join("knowledge/demo/ssh.md")).unwrap();
     assert!(topic.contains("Go in by another path before a restart. (Felix, 11-22: \"never cut the path you are on\")"), "{topic}");
     assert!(topic.contains("Three ways in: tailnet, lan, cloudflare.\nKnow your path. Go in by another.\n\n### Detail\n\nkickstart, never reload."), "{topic}");
+    // Under a heading, an included page's headings sit one level below it.
+    std::fs::write(wt.join("graph/layouts/knowledge/demo/whole.md"), "# Whole\n\n## The page\n\n{{include how/ssh.md}}\n").unwrap();
+    ok(&w.abot_in(&wt, &["rules", "build", "--no-model"]));
+    let whole = std::fs::read_to_string(wt.join("knowledge/demo/whole.md")).unwrap();
+    assert!(whole.contains("## The page\n\n### Paths\n") && whole.contains("#### Detail") && !whole.contains("# Reaching a box"), "{whole}");
+    std::fs::remove_file(wt.join("graph/layouts/knowledge/demo/whole.md")).unwrap();
+    std::fs::remove_file(wt.join("knowledge/demo/whole.md")).unwrap();
     assert!(!topic.contains("## Before a restart") && !topic.contains("Check it came back"), "a section stops at its next sibling: {topic}");
     let readme = std::fs::read_to_string(wt.join("knowledge/demo/README.md")).unwrap();
     assert!(readme.contains("## Files\n\n- [ssh.md](ssh.md) — how to reach a box, and restart what carries connections"), "{readme}");
