@@ -87,6 +87,9 @@ fn open_clash_lines(g: &Graph, project: &str) -> String {
         s.push_str(&clash_line(c));
         s.push('\n');
     }
+    if s.is_empty() {
+        return "None open.".into();
+    }
     s.trim_end().to_string()
 }
 
@@ -107,10 +110,16 @@ pub fn fill(g: &Graph, body: &str) -> Result<(String, Vec<String>)> {
             "rule" => Ok(g.rule(id).unwrap_or_default()),
             "said" => said(g, id),
             _ => {
-                let rule = g.rule(id).unwrap_or_default();
-                let mut s = rule;
-                if g.roots.contains_key(id) {
-                    s.push_str(&format!(" ({})", said(g, id).unwrap_or_default()));
+                let mut s = g.rule(id).unwrap_or_default();
+                if let Some(e) = g.roots.get(id).and_then(|r| g.entry(&r.from_entry)) {
+                    match e.kind {
+                        Kind::Said => s.push_str(&format!(" ({})", e.quote())),
+                        Kind::Seen => s.push_str(&format!(
+                            " (seen {}; proof: {})",
+                            entry::short_date(&e.date),
+                            e.proof.as_deref().unwrap_or("")
+                        )),
+                    }
                 }
                 Ok(s)
             }
