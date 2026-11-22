@@ -1108,3 +1108,93 @@ fn rules_graph_entry_outside_a_task_lands_on_main_in_one_commit() {
     assert!(ok(&w.abot(&["check"])).len() > 0);
     assert_eq!(calls(&w), 0);
 }
+
+const SSH_PAGE: &str = "# Reaching a box\n\n## Paths\n\nThree ways in: tailnet, lan, cloudflare.\n\n## Why three\n\nOne breaks, two remain.\nA second line.\nA third line.\nA fourth line.\n\n## Before a restart\n\nKnow your path. Go in by another.\n\n### Detail\n\nkickstart, never reload.\n\n## After\n\nCheck it came back.\n";
+
+#[test]
+fn rules_graph_includes_pages_word_for_word_and_land_rebuilds_after_rebase() {
+    let w = World::new();
+    fake_model(&w, serde_json::json!({ "status": "current", "rule": "r" }));
+    ok(&w.abot(&["start", "demo/inc", "procedures as compiled files"]));
+    let wt = w.wt("inc");
+    add(&w, &wt, &["--said", "never cut the path you are on", "--about", "demo.ssh", "--rule", "Go in by another path before a restart.", "--date", "2026-11-22"]);
+    std::fs::create_dir_all(wt.join("how")).unwrap();
+    std::fs::write(wt.join("how/ssh.md"), SSH_PAGE).unwrap();
+    std::fs::create_dir_all(wt.join("graph/layouts/knowledge/demo")).unwrap();
+    std::fs::create_dir_all(wt.join("graph/layouts/claude")).unwrap();
+    std::fs::write(
+        wt.join("graph/layouts/knowledge/demo/ssh.md"),
+        "---\nabout: how to reach a box, and restart what carries connections\n---\n# Reaching a box\n\n- {{node demo.ssh}}\n\n{{include how/ssh.md#paths}}\n{{include how/ssh.md#before-a-restart}}\n",
+    )
+    .unwrap();
+    std::fs::write(wt.join("graph/layouts/claude/global.md"), "# The entry point\n\n{{include how/ssh.md#paths}}\n\nThe rest: `knowledge/demo/README.md`.\n").unwrap();
+    ok(&w.abot_in(&wt, &["rules", "build", "--no-model"]));
+
+    let topic = std::fs::read_to_string(wt.join("knowledge/demo/ssh.md")).unwrap();
+    assert!(topic.contains("Go in by another path before a restart. (Felix, 11-22: \"never cut the path you are on\")"), "{topic}");
+    assert!(topic.contains("Three ways in: tailnet, lan, cloudflare.\nKnow your path. Go in by another.\n\n### Detail\n\nkickstart, never reload."), "{topic}");
+    assert!(!topic.contains("## Before a restart") && !topic.contains("Check it came back"), "a section stops at its next sibling: {topic}");
+    let readme = std::fs::read_to_string(wt.join("knowledge/demo/README.md")).unwrap();
+    assert!(readme.contains("## Files\n\n- [ssh.md](ssh.md) — how to reach a box, and restart what carries connections"), "{readme}");
+    let global = std::fs::read_to_string(wt.join("claude/global.md")).unwrap();
+    assert!(global.starts_with("<!-- compiled by abot") && global.contains("Three ways in"), "{global}");
+    let index: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(wt.join("graph/index.json")).unwrap()).unwrap();
+    let f = index["files"].as_array().unwrap().iter().find(|f| f["path"] == "claude/global.md").unwrap().clone();
+    assert_eq!(f["includes"], serde_json::json!(["how/ssh.md"]));
+
+    // A page may quote Felix only with an entry's words.
+    std::fs::write(wt.join("how/ssh.md"), SSH_PAGE.replace("Three ways in", "Felix, 11-22: \"three ways in, always and forever\". Three ways in")).unwrap();
+    ok(&w.abot_in(&wt, &["rules", "build", "--no-model"]));
+    let o = w.abot_in(&wt, &["rules", "check"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("words no entry holds: \"three ways in, always and forever\""));
+    std::fs::write(wt.join("how/ssh.md"), SSH_PAGE.replace("Three ways in", "Felix, 11-22: \"never cut the path you are on\". Three ways in")).unwrap();
+    // A page that is itself compiled can't be included.
+    std::fs::write(wt.join("graph/layouts/knowledge/demo/bad.md"), "{{include claude/global.md}}\n").unwrap();
+    assert!(fails(&w.abot_in(&wt, &["rules", "build", "--no-model"])).contains("is compiled"));
+    std::fs::remove_file(wt.join("graph/layouts/knowledge/demo/bad.md")).unwrap();
+    // A page edited without a build is named in the refusal.
+    w.git(&wt, &["add", "-A"]);
+    w.git(&wt, &["commit", "-q", "-m", "include pages"]);
+    let o = w.abot_in(&wt, &["rules", "check"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("after a change to how/ssh.md"), "{}", String::from_utf8_lossy(&o.stdout));
+    ok(&w.abot_in(&wt, &["rules", "build", "--no-model"]));
+    w.git(&wt, &["add", "-A"]);
+    w.git(&wt, &["commit", "-q", "-m", "build"]);
+    ok(&w.abot_in(&wt, &["land"]));
+
+    // A hand edit to the compiled global.md is refused.
+    ok(&w.abot(&["start", "demo/hand", "edit global by hand"]));
+    let h = w.wt("hand");
+    let g = std::fs::read_to_string(h.join("claude/global.md")).unwrap();
+    w.commit(&h, "claude/global.md", &(g + "Always do X.\n"), "hand edit");
+    w.commit(&h, "state/projects/demo.md", &(STATE.to_string() + "- x\n"), "state");
+    assert!(fails(&w.abot_in(&h, &["land"])).contains("claude/global.md: differs from a fresh compile"));
+    ok(&w.abot_in(&h, &["dead-end", "--tried", "a hand edit", "--failed", "refused", "--instead", "edit the page"]));
+
+    // Two tasks edit two sections of one page; each builds; the second to
+    // land is rebased and its compiled files rebuilt to hold both edits.
+    ok(&w.abot(&["start", "demo/a", "edit paths"]));
+    ok(&w.abot(&["start", "demo/b", "edit restart"]));
+    let (a, b) = (w.wt("a"), w.wt("b"));
+    // Each says what is true in a file of its own, so the only overlap is the page.
+    for (dir, from, to, file, text) in [
+        (&a, "tailnet, lan", "tailnet (default), lan", "state/org.md", "d-1. the org\n- a\n".to_string()),
+        (&b, "Go in by another.", "Go in by a different one.", "state/projects/demo.md", STATE.to_string() + "- b\n"),
+    ] {
+        let page = std::fs::read_to_string(dir.join("how/ssh.md")).unwrap();
+        std::fs::write(dir.join("how/ssh.md"), page.replace(from, to)).unwrap();
+        std::fs::write(dir.join(file), text).unwrap();
+        ok(&w.abot_in(dir, &["rules", "build", "--no-model"]));
+        w.git(dir, &["add", "-A"]);
+        w.git(dir, &["commit", "-q", "-m", "edit the page"]);
+    }
+    ok(&w.abot_in(&b, &["land"]));
+    let out = ok(&w.abot_in(&a, &["land"]));
+    assert!(out.contains("rebuilt knowledge/demo/ssh.md after the rebase"), "{out}");
+    let topic = w.git(&w.log_origin, &["show", "main:knowledge/demo/ssh.md"]);
+    assert!(topic.contains("tailnet (default), lan") && topic.contains("Go in by a different one."), "{topic}");
+    assert!(ok(&w.abot(&["check"])).len() > 0);
+    let o = w.abot(&["rules", "check"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains("rules graph: ok"), "{}", String::from_utf8_lossy(&o.stdout));
+}
