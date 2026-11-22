@@ -116,7 +116,12 @@ includes a hand-written page of the log, or one section of it, word for
 word (`{{include how/x.md}}`, `{{include how/x.md#<heading anchor>}}`), its
 headings placed under the layout's own; a quote of Felix in such a page must
 be an entry's words. A layout's `about:` line lists the file in its folder's
-README.
+README. A layout under `knowledge/<project>/` with an `export: <path>` line
+is also that project's code repo's `<path>` (its `CLAUDE.md`): its stamp
+carries the sha256 of the text below it, so the repo's own check refuses a
+hand edit with `tail -n +2 CLAUDE.md | shasum -a 256` and no log at hand,
+and `abot rules export <project> --into <worktree>` writes it into a worktree
+of that repo and commits it there.
 
     abot entry add --said "<his words>" --about <subject> --rule "<rule>" [--replaces <entry>]
     abot entry add --seen "<what>" --proof "<proof>" --about <subject>
@@ -124,13 +129,18 @@ README.
     abot fact add <id> --asks "<question>" --from <parent>,<parent>
     abot rules build [--no-model] [--as-of <date> --out <dir>]
     abot rules check
+    abot rules export <project> --into <a worktree of its repo> [--no-commit]
     abot why <node>  ·  abot affects <entry>
 
 `abot land` and `abot check` refuse an entry changed after it landed, a fact
 with no stored answer for its inputs, a compiled file that differs from a
 fresh compile (a hand edit, or a page it includes changed with no build),
 prose in a layout that quotes Felix or states a rule outside a slot, and an
-included page that quotes him with words no entry holds. After its rebase,
+included page that quotes him with words no entry holds. A compiled file the
+branch never touched but left stale (a project's Traps or a `how/` page
+edited with no build) is built before that check, with no model, and
+committed; one the branch changed itself is checked as it stands. Both note
+an exported file whose copy on its repo's trunk is not the compile. After its rebase,
 `abot land` rebuilds the compiled files with no model (a conflict only in
 compiled files is rebuilt, not resolved by hand), commits what changed and
 checks again. The design: `docs/rules-graph.md` in the log.
