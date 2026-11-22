@@ -11,7 +11,14 @@ pub mod ticket;
 use crate::git::Git;
 use anyhow::{Result, bail};
 
+/// Today, or ABOT_TODAY (a replay of the rules graph's history dates each
+/// step's model answers and clashes on the day of its entry).
 pub fn today() -> String {
+    if let Ok(d) = std::env::var("ABOT_TODAY") {
+        if crate::rules::entry::valid_date(&d) {
+            return d;
+        }
+    }
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
