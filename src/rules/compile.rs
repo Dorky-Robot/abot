@@ -13,8 +13,8 @@
 //!                          the same filesystem without a second copy
 //!
 //! A layout may start with a header between `---` lines; `to: <path>` sends
-//! it somewhere other than its own path, and `about: <one line>` is what the
-//! folder's README says the file is for.
+//! it somewhere other than its own path, and `about: <one line>` lists the
+//! file in its folder's README with what it is for.
 //!
 //! Code also writes, for every project with nodes, knowledge/<p>/README.md
 //! (an index) and knowledge/<p>/rules/<node>.md (one note per node), and
@@ -407,26 +407,23 @@ fn readme(g: &Graph, project: &str, layouts: &[Layout]) -> String {
     s.push_str(&format!("# {project}: what the rules graph knows\n\n"));
     s.push_str(
         "Every file here is compiled from the rules graph in `graph/` and is rebuilt by \
-`abot rules build`. The files below are written for one need each (how to do a thing, \
-with the rules it rests on); each note in `rules/` is one node: a root (one subject, its \
-rule and every entry behind it), a fact (a rule built from other nodes) or a clash (a \
-question for Felix). `abot why <node>` walks up to his words; `abot affects <entry>` \
-walks down to the files.\n\n",
+`abot rules build`. Each note in `rules/` is one node: a root (one subject, its rule and \
+every entry behind it), a fact (a rule built from other nodes) or a clash (a question \
+for Felix). `abot why <node>` walks up to his words; `abot affects <entry>` walks down \
+to the files.\n\n",
     );
     let prefix = format!("knowledge/{project}/");
-    let mut mine: Vec<&Layout> = layouts
+    // A file is listed by what its layout's about: line says it is for.
+    let mut mine: Vec<(&str, &str)> = layouts
         .iter()
         .filter(|l| l.to.starts_with(&prefix) && l.to != format!("{prefix}README.md"))
+        .filter_map(|l| Some((&l.to[prefix.len()..], l.about.as_deref()?)))
         .collect();
-    mine.sort_by(|a, b| a.to.cmp(&b.to));
+    mine.sort();
     if !mine.is_empty() {
-        s.push_str("## Files\n\n");
-        for l in mine {
-            let rel = &l.to[prefix.len()..];
-            match &l.about {
-                Some(a) => s.push_str(&format!("- [{rel}]({rel}) — {a}\n")),
-                None => s.push_str(&format!("- [{rel}]({rel})\n")),
-            }
+        s.push_str("## Files\n\nOne file per need: how to do a thing, with the rules it rests on.\n\n");
+        for (rel, about) in mine {
+            s.push_str(&format!("- [{rel}]({rel}) — {about}\n"));
         }
         s.push('\n');
     }

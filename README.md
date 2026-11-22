@@ -110,7 +110,13 @@ clashes (two that can't both hold, with the question for Felix) from their
 parents only, and every answer is kept under a fingerprint of its inputs, so
 only what a new entry touches is asked again and a replay asks nothing. The
 files agents read (`knowledge/<project>/`, whatever `graph/layouts/` names,
-and `graph/index.json`) are compiled, node text word for word.
+the log's `claude/global.md` among them, and `graph/index.json`) are
+compiled, node text word for word. Procedures are not entries: a layout
+includes a hand-written page of the log, or one section of it, word for
+word (`{{include how/x.md}}`, `{{include how/x.md#<heading anchor>}}`), its
+headings placed under the layout's own; a quote of Felix in such a page must
+be an entry's words. A layout's `about:` line lists the file in its folder's
+README.
 
     abot entry add --said "<his words>" --about <subject> --rule "<rule>" [--replaces <entry>]
     abot entry add --seen "<what>" --proof "<proof>" --about <subject>
@@ -122,8 +128,12 @@ and `graph/index.json`) are compiled, node text word for word.
 
 `abot land` and `abot check` refuse an entry changed after it landed, a fact
 with no stored answer for its inputs, a compiled file that differs from a
-fresh compile (a hand edit), and prose in a layout that quotes Felix or
-states a rule outside a slot. The design: `docs/rules-graph.md` in the log.
+fresh compile (a hand edit, or a page it includes changed with no build),
+prose in a layout that quotes Felix or states a rule outside a slot, and an
+included page that quotes him with words no entry holds. After its rebase,
+`abot land` rebuilds the compiled files with no model (a conflict only in
+compiled files is rebuilt, not resolved by hand), commits what changed and
+checks again. The design: `docs/rules-graph.md` in the log.
 
 ## Where things are
 

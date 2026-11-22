@@ -1142,7 +1142,7 @@ fn rules_graph_includes_pages_word_for_word_and_land_rebuilds_after_rebase() {
     std::fs::remove_file(wt.join("knowledge/demo/whole.md")).unwrap();
     assert!(!topic.contains("## Before a restart") && !topic.contains("Check it came back"), "a section stops at its next sibling: {topic}");
     let readme = std::fs::read_to_string(wt.join("knowledge/demo/README.md")).unwrap();
-    assert!(readme.contains("## Files\n\n- [ssh.md](ssh.md) — how to reach a box, and restart what carries connections"), "{readme}");
+    assert!(readme.contains("## Files\n\nOne file per need: how to do a thing, with the rules it rests on.\n\n- [ssh.md](ssh.md) — how to reach a box, and restart what carries connections"), "{readme}");
     let global = std::fs::read_to_string(wt.join("claude/global.md")).unwrap();
     assert!(global.starts_with("<!-- compiled by abot") && global.contains("Three ways in"), "{global}");
     let index: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(wt.join("graph/index.json")).unwrap()).unwrap();
