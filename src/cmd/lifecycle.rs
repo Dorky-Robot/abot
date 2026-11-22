@@ -293,6 +293,12 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>, ready
             list.join("\n")
         );
     }
+    // A compiled file this branch never touched but that no longer matches
+    // a fresh compile is a stale view of a page the branch edited (a
+    // project's Traps, a how/ page): build it, rather than refuse every
+    // session that writes a trap. One the branch did touch is checked as is,
+    // so a hand edit is still refused.
+    let rebuilt = rebuild_untouched_views(&h, &changed)?;
     // The rules graph: entries only added, every fact answered for its
     // inputs, every compiled file equal to a fresh compile, no rule stated
     // outside a slot.
@@ -339,6 +345,7 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>, ready
     }
 
     let mut notes = vec![];
+    notes.extend(rebuilt);
     let mut landed_code = None;
     if let Some(c) = &code {
         landed_code = land_code(c, &bs, &mut notes)?;
@@ -525,6 +532,39 @@ fn is_compiled(path: &Path, f: &str) -> bool {
     }
     let src = crate::rules::source::Source::Dir(path.to_path_buf());
     crate::rules::compile::load_layouts(&src).map(|ls| ls.iter().any(|l| l.to == f)).unwrap_or(false)
+}
+
+/// Before land checks the graph: when every compiled file that differs
+/// from a fresh compile is one the branch didn't change itself, build with
+/// no model and commit the result. Returns what it says it did.
+fn rebuild_untouched_views(h: &Here, changed: &str) -> Result<Option<String>> {
+    use crate::rules::{compile, graph, source::Source};
+    if !h.path.join("graph").is_dir() {
+        return Ok(None);
+    }
+    let src = Source::Dir(h.path.clone());
+    let Ok(mut g) = graph::load(&src, None) else { return Ok(None) };
+    match graph::resolve(&mut g, None, "", "") {
+        Ok(r) if r.stale.is_empty() => {}
+        _ => return Ok(None),
+    }
+    let Ok(layouts) = compile::load_layouts(&src) else { return Ok(None) };
+    let Ok(out) = compile::compile(&g, &src, &layouts, &crate::rules::state_projects(&src)) else { return Ok(None) };
+    let stale: Vec<&String> = out.files.iter().filter(|(p, t)| src.read(p).as_deref() != Some(t.as_str())).map(|(p, _)| p).collect();
+    let touched: std::collections::BTreeSet<&str> = changed.lines().collect();
+    if stale.is_empty() || stale.iter().any(|p| touched.contains(p.as_str())) {
+        return Ok(None);
+    }
+    let paths = recompile_and_stage(h, &[])?;
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let msg = format!(
+        "Rebuild {}, because they show pages this branch changed and nothing had built them",
+        paths.join(", ")
+    );
+    h.wt.run(&["commit", "-q", "-m", &msg])?;
+    Ok(Some(format!("rebuilt {} compiled file(s) the branch had left stale: {}", paths.len(), paths.join(", "))))
 }
 
 /// Rebuild the compiled files with no model and stage what changed, plus

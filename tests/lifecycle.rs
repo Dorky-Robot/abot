@@ -1268,3 +1268,35 @@ fn rules_graph_exports_a_repo_claude_md_in_that_repos_own_commit() {
     let o = ok(&w.abot_in(&w.log, &["rules", "check"]));
     assert!(!o.contains("note: CLAUDE.md"), "{o}");
 }
+
+#[test]
+fn land_rebuilds_a_view_the_branch_left_stale_but_refuses_one_it_edited() {
+    let w = World::new();
+    fake_model(&w, serde_json::json!({ "status": "current", "rule": "r" }));
+    ok(&w.abot(&["start", "demo/traps", "traps compile"]));
+    let wt = w.wt("traps");
+    std::fs::create_dir_all(wt.join("graph/layouts/knowledge/demo")).unwrap();
+    std::fs::write(wt.join("graph/layouts/knowledge/demo/traps.md"), "---\nabout: what bit us\n---\n# Traps\n\n{{include state/projects/demo.md#traps}}\n").unwrap();
+    ok(&w.abot_in(&wt, &["rules", "build", "--no-model"]));
+    w.git(&wt, &["add", "-A"]);
+    w.git(&wt, &["commit", "-q", "-m", "traps layout"]);
+    w.commit(&wt, "state/projects/demo.md", &(STATE.to_string() + "- x\n"), "state");
+    ok(&w.abot_in(&wt, &["land"]));
+
+    // A later session writes a trap and never builds: land builds for it.
+    ok(&w.abot(&["start", "demo/newtrap", "a new trap"]));
+    let t = w.wt("newtrap");
+    let state = std::fs::read_to_string(t.join("state/projects/demo.md")).unwrap();
+    w.commit(&t, "state/projects/demo.md", &state.replace("- 2026-01-01 old: an old trap", "- 2026-01-01 old: an old trap\n- 2026-11-22 new: a new trap"), "trap");
+    let o = ok(&w.abot_in(&t, &["land"]));
+    assert!(o.contains("rebuilt 1 compiled file(s) the branch had left stale: knowledge/demo/traps.md") || o.contains("knowledge/demo/traps.md"), "{o}");
+    assert!(std::fs::read_to_string(w.log.join("knowledge/demo/traps.md")).unwrap().contains("a new trap"));
+
+    // One it edited by hand is still refused.
+    ok(&w.abot(&["start", "demo/hand2", "hand edit"]));
+    let h = w.wt("hand2");
+    let k = std::fs::read_to_string(h.join("knowledge/demo/traps.md")).unwrap();
+    w.commit(&h, "knowledge/demo/traps.md", &(k + "- my own trap\n"), "hand");
+    w.commit(&h, "state/org.md", "d-1. the org\n- y\n", "state");
+    assert!(fails(&w.abot_in(&h, &["land"])).contains("knowledge/demo/traps.md: differs from a fresh compile"));
+}
