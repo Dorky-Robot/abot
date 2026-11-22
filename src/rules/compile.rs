@@ -14,7 +14,12 @@
 //!
 //! A layout may start with a header between `---` lines; `to: <path>` sends
 //! it somewhere other than its own path, and `about: <one line>` lists the
-//! file in its folder's README with what it is for.
+//! file in its folder's README with what it is for. `export: <path>` (only
+//! under knowledge/<project>/) says the same file is also the project's code
+//! repo's <path>, a repo's CLAUDE.md say: its stamp then carries a sha256 of
+//! the text below it, so that repo's own check can refuse a hand edit with
+//! no log at hand, and `abot rules export <project> --into <worktree>`
+//! writes it there in that repo's own commit.
 //!
 //! Code also writes, for every project with nodes, knowledge/<p>/README.md
 //! (an index) and knowledge/<p>/rules/<node>.md (one note per node), and
@@ -34,7 +39,17 @@ pub struct Layout {
     pub path: String,
     pub to: String,
     pub about: Option<String>,
+    /// The path in the project's code repo this file is also compiled to.
+    pub export: Option<String>,
     pub body: String,
+}
+
+impl Layout {
+    /// The project whose folder an exported layout compiles into.
+    pub fn export_project(&self) -> Option<&str> {
+        self.export.as_ref()?;
+        self.to.strip_prefix("knowledge/")?.split('/').next()
+    }
 }
 
 pub struct Output {
@@ -58,31 +73,70 @@ pub fn load_layouts(src: &Source) -> Result<Vec<Layout>> {
         }
         let text = src.read(&p).unwrap_or_default();
         let natural = p.trim_start_matches("graph/layouts/").to_string();
-        let (to, about, body) = match text.strip_prefix("---\n").and_then(|r| r.split_once("\n---\n")) {
+        let (to, about, export, body) = match text.strip_prefix("---\n").and_then(|r| r.split_once("\n---\n")) {
             Some((head, body)) => {
                 let mut to = natural.clone();
                 let mut about = None;
+                let mut export = None;
                 for line in head.lines() {
                     if let Some(x) = line.strip_prefix("to:") {
                         to = x.trim().to_string();
                     } else if let Some(x) = line.strip_prefix("about:") {
                         about = Some(x.trim().to_string());
+                    } else if let Some(x) = line.strip_prefix("export:") {
+                        export = Some(x.trim().to_string());
                     }
                 }
-                (to, about, body.to_string())
+                (to, about, export, body.to_string())
             }
-            None => (natural, None, text),
+            None => (natural, None, None, text),
         };
         if to.starts_with("graph/") || to.starts_with('/') || to.contains("..") {
             bail!("{p}: a layout can't compile into {to}");
         }
-        v.push(Layout { path: p, to, about, body });
+        if let Some(x) = &export {
+            let in_project = to.strip_prefix("knowledge/").map(|r| r.contains('/')).unwrap_or(false);
+            if !in_project {
+                bail!("{p}: only a layout under knowledge/<project>/ can export (into that project's repo); this one compiles into {to}");
+            }
+            if x.is_empty() || x.starts_with('/') || x.contains("..") || x.starts_with(".git/") {
+                bail!("{p}: export: {x} is not a path inside the repo");
+            }
+        }
+        v.push(Layout { path: p, to, about, export, body });
     }
     Ok(v)
 }
 
 fn stamp(from: &str) -> String {
     format!("{STAMP} ({from}); change the graph, never this file -->\n")
+}
+
+pub const BODY_HASH: &str = "body sha256 ";
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The stamp of a file that also lives in a code repo: it names where it
+/// comes from and the sha256 of everything after this first line, which
+/// `tail -n +2 <file> | shasum -a 256` gives back in that repo's check.
+pub fn export_stamp(from: &str, project: &str, body: &str) -> String {
+    format!(
+        "{STAMP} in the ecosystem log ({from}); change the graph and run `abot rules export {project}`, never this file; {BODY_HASH}{} -->\n",
+        sha256_hex(body)
+    )
+}
+
+#[cfg(test)]
+/// For an exported file: Some(true) when its body still has the hash its
+/// stamp says, Some(false) when it was edited by hand, None with no stamp.
+pub fn body_hash_ok(text: &str) -> Option<bool> {
+    let (first, body) = text.split_once('\n')?;
+    let at = first.find(BODY_HASH)? + BODY_HASH.len();
+    let want: String = first[at..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    Some(want == sha256_hex(body))
 }
 
 /// The words a root's rule comes from, as a quote line.
@@ -480,7 +534,11 @@ pub fn compile(g: &Graph, src: &Source, layouts: &[Layout], projects_with_state:
             includes.insert(l.to.clone(), inc);
         }
         let text = collapse_blank(&text);
-        let stamped = if l.to.ends_with(".md") { format!("{}{}", stamp(&l.path), text) } else { text };
+        let stamped = match l.export_project() {
+            Some(p) => format!("{}{}", export_stamp(&l.path, p, &text), text),
+            None if l.to.ends_with(".md") => format!("{}{}", stamp(&l.path), text),
+            None => text,
+        };
         if files.insert(l.to.clone(), stamped).is_some() {
             bail!("two layouts compile into {}", l.to);
         }
