@@ -13,6 +13,7 @@ clap = { version = "4", features = ["derive"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
