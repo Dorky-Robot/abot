@@ -1007,3 +1007,104 @@ fn an_app_session_with_no_id_is_told_how_to_find_it() {
     std::thread::sleep(std::time::Duration::from_millis(500));
     assert!(!w.root.join("args.log").exists());
 }
+
+// ------------------------------------------------------------ rules graph
+
+/// A stand-in for the rules model: it logs one line per call and answers
+/// with answer.json, in the shape `claude --output-format json` prints.
+fn fake_model(w: &World, answer: serde_json::Value) {
+    let wrap = serde_json::json!({ "type": "result", "is_error": false, "session_id": "s", "structured_output": answer }).to_string();
+    std::fs::write(w.root.join("answer.json"), wrap).unwrap();
+    let script = "#!/bin/sh\necho call >> \"$FAKE_DIR/calls.log\"\ncat \"$FAKE_DIR/answer.json\"\n";
+    let p = w.root.join("fake-claude");
+    std::fs::write(&p, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn calls(w: &World) -> usize {
+    std::fs::read_to_string(w.root.join("calls.log")).map(|s| s.lines().count()).unwrap_or(0)
+}
+
+fn add(w: &World, wt: &Path, args: &[&str]) -> serde_json::Value {
+    let mut a = vec!["entry", "add", "--json"];
+    a.extend_from_slice(args);
+    serde_json::from_str(&ok(&w.abot_in(wt, &a))).unwrap()
+}
+
+#[test]
+fn rules_graph_folds_entries_answers_facts_once_and_land_refuses_hand_edits() {
+    let w = World::new();
+    fake_model(&w, serde_json::json!({ "status": "current", "rule": "Keep a waiting session open." }));
+    ok(&w.abot(&["start", "demo/rules", "try the rules graph"]));
+    let wt = w.wt("rules");
+
+    // Two of his words on one subject: the later replaces the earlier.
+    let e1 = add(&w, &wt, &["--said", "dont archive it", "--about", "demo.waiting", "--rule", "A waiting session is not archived.", "--date", "2026-11-04"]);
+    let e1 = e1["id"].as_str().unwrap().to_string();
+    assert!(e1.starts_with("20261104-"), "{e1}");
+    add(&w, &wt, &["--said", "stay open until answered", "--about", "demo.waiting", "--rule", "A waiting session stays open until answered.", "--replaces", &e1, "--date", "2026-11-22"]);
+    let note = std::fs::read_to_string(wt.join("knowledge/demo/rules/demo.waiting.md")).unwrap();
+    assert!(note.contains("**Rule:** A waiting session stays open until answered."), "{note}");
+    assert!(note.contains(&format!("**replaced by")) && note.contains("> dont archive it"), "{note}");
+    assert_eq!(calls(&w), 0, "every field given: no model");
+
+    // A fact is worked out once; a replay asks nothing.
+    ok(&w.abot_in(&wt, &["fact", "add", "demo.wait", "--asks", "What does a waiting session do?", "--from", "demo.waiting"]));
+    assert_eq!(calls(&w), 1);
+    let out = ok(&w.abot_in(&wt, &["rules", "build"]));
+    assert!(out.contains("model calls: 0"), "{out}");
+    // An entry on another subject touches nothing below demo.waiting.
+    add(&w, &wt, &["--seen", "the sweep is unloaded", "--proof", "launchctl list", "--about", "demo.sweep", "--date", "2026-11-22"]);
+    assert_eq!(calls(&w), 1, "only descendants are worked out again");
+    w.git(&wt, &["add", "-A"]);
+    w.git(&wt, &["commit", "-q", "-m", "fact"]);
+    assert!(ok(&w.abot_in(&wt, &["rules", "check"])).contains("rules graph: ok"));
+
+    // A clash: the model says two parents can't both hold.
+    fake_model(&w, serde_json::json!({ "status": "open", "rule": "Follow his word; say the risk.", "clash": { "name": "waiting-vs-sweep", "a": "demo.waiting", "b": "demo.sweep", "question": "Keep it or sweep it?" } }));
+    ok(&w.abot_in(&wt, &["fact", "add", "demo.wait", "--asks", "", "--from", "demo.sweep"]));
+    let state = std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap();
+    assert!(state.contains("- Rules graph clash/waiting-vs-sweep: Keep it or sweep it?"), "{state}");
+    // His answer settles it, and it leaves Waits on Felix.
+    fake_model(&w, serde_json::json!({ "status": "current", "rule": "Keep it open; nothing sweeps." }));
+    add(&w, &wt, &["--said", "keep it", "--about", "demo.waiting", "--rule", "Keep it.", "--settles", "clash/waiting-vs-sweep", "--date", "2026-11-23"]);
+    let state = std::fs::read_to_string(wt.join("state/projects/demo.md")).unwrap();
+    assert!(!state.contains("Rules graph clash/"), "{state}");
+    let index: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(wt.join("graph/index.json")).unwrap()).unwrap();
+    assert_eq!(index["clashes"][0]["status"], "settled");
+    assert_eq!(index["clashes"][0]["sides"], serde_json::json!(["demo.waiting", "demo.sweep"]));
+    w.git(&wt, &["add", "-A"]);
+    w.git(&wt, &["commit", "-q", "-m", "clash settled"]);
+
+    // A hand edit under knowledge/ is refused at land, and so is an edited entry.
+    let n = wt.join("knowledge/demo/rules/demo.waiting.md");
+    let good = std::fs::read_to_string(&n).unwrap();
+    w.commit(&wt, "knowledge/demo/rules/demo.waiting.md", &(good.clone() + "Always ask first.\n"), "hand edit");
+    assert!(fails(&w.abot_in(&wt, &["land"])).contains("differs from a fresh compile"));
+    w.commit(&wt, "knowledge/demo/rules/demo.waiting.md", &good, "undo the hand edit");
+    let ep = format!("graph/entries/demo/2026-11/{e1}.md");
+    let et = std::fs::read_to_string(wt.join(&ep)).unwrap();
+    ok(&w.abot_in(&wt, &["land"]));
+    // Landed; now on a new task, editing a landed entry is refused.
+    ok(&w.abot(&["start", "demo/edit", "edit an entry"]));
+    let wt2 = w.wt("edit");
+    w.commit(&wt2, &ep, &et.replace("dont archive it", "do not archive it"), "edit an entry");
+    let err = fails(&w.abot_in(&wt2, &["land"]));
+    assert!(err.contains("written once"), "{err}");
+}
+
+#[test]
+fn rules_graph_entry_outside_a_task_lands_on_main_in_one_commit() {
+    let w = World::new();
+    fake_model(&w, serde_json::json!({ "status": "current", "rule": "r" }));
+    let v = add(&w, &w.log, &["--said", "use the studio", "--about", "demo.boxes", "--rule", "Workers start on the Studio.", "--by", "Felix", "--date", "2026-11-22"]);
+    assert!(v["commit"].is_string(), "{v}");
+    let files = w.git(&w.log_origin, &["show", "--name-only", "--format=", "main"]);
+    assert!(files.contains("graph/entries/demo/2026-11/") && files.contains("graph/index.json") && files.contains("knowledge/demo/rules/demo.boxes.md"), "{files}");
+    // A correction of that node, as overview's tap sends it.
+    let v = add(&w, &w.log, &["--said", "no, the mini", "--about", "demo.boxes", "--rule", "Workers start on the mini.", "--corrects", "demo.boxes", "--by", "Felix", "--date", "2026-11-22"]);
+    assert!(v["id"].as_str().unwrap().starts_with("20261122-"));
+    assert!(ok(&w.abot(&["check"])).len() > 0);
+    assert_eq!(calls(&w), 0);
+}

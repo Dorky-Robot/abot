@@ -218,7 +218,22 @@ fn commit_subject(e: &Entry) -> String {
 }
 
 fn commit_all(wt: &Git, msg: &str, e: &Entry, built: Option<&rules::Built>) -> Result<()> {
-    wt.run(&["add", "-A", "--", "graph", "knowledge", "state", "claude", "how", "people", "decisions"])?;
+    // Exactly what this entry wrote: the entry, fact definitions, and what
+    // the build wrote or removed; nothing else in the worktree.
+    let mut paths: Vec<String> = vec![e.path.clone(), "graph/facts".into()];
+    if let Some(b) = built {
+        paths.extend(b.report.writes.iter().map(|(p, _)| p.clone()));
+        paths.extend(b.rewrote.iter().cloned());
+        paths.extend(b.removed.iter().cloned());
+        paths.extend(b.state_files.iter().cloned());
+    }
+    paths.sort();
+    paths.dedup();
+    let top = wt.toplevel().unwrap_or_else(|| wt.dir.clone());
+    let mut args: Vec<&str> = vec!["add", "-A", "--"];
+    let keep: Vec<&String> = paths.iter().filter(|p| top.join(p).exists() || wt.ok(&["ls-files", "--error-unmatch", p])).collect();
+    args.extend(keep.iter().map(|p| p.as_str()));
+    wt.run(&args)?;
     let mut body = format!("{msg}\n\nEntry {} ({}):\n", e.id, e.path);
     for line in e.body.lines() {
         body.push_str(&format!("> {line}\n"));
