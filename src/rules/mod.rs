@@ -258,3 +258,33 @@ mod tests {
         assert_eq!(with_waits(&s, &[]), "# p\n\n## Waits on Felix\n- old ask\n\n## Traps\n- t\n");
     }
 }
+
+#[cfg(test)]
+mod bench {
+    /// `ABOT_BENCH_LOG=<log dir> cargo test --release time_replay -- --ignored --nocapture`:
+    /// the replay the engine was chosen on (docs/rules-graph.md).
+    #[test]
+    #[ignore]
+    fn time_replay() {
+        let dir = std::path::PathBuf::from(std::env::var("ABOT_BENCH_LOG").expect("ABOT_BENCH_LOG"));
+        let src = super::Source::Dir(dir);
+        let n = 200;
+        let t = std::time::Instant::now();
+        let mut roots = 0;
+        let mut entries = 0;
+        for _ in 0..n {
+            let g = super::graph::load(&src, None).unwrap();
+            roots = g.roots.len();
+            entries = g.entries.len();
+        }
+        let load = t.elapsed() / n;
+        let mut g = super::graph::load(&src, None).unwrap();
+        let t = std::time::Instant::now();
+        super::graph::resolve(&mut g, None, "", "").unwrap();
+        let resolve = t.elapsed();
+        let t = std::time::Instant::now();
+        let p = super::check(&src);
+        let check = t.elapsed();
+        println!("abot fold: {entries} entries read and folded to {roots} roots: {load:?} per run; facts from stored answers: {resolve:?}; full land check: {check:?} ({} problems)", p.len());
+    }
+}
