@@ -342,7 +342,7 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>, ready
     }
 
     sync_main(&log, "main", "the log")?;
-    rebase_onto(&h.wt, &h.path, "main", &bs)?;
+    rebase_log(&h, &bs, &mut notes)?;
 
     // The ticket steps, on the rebased branch so they sit on the newest main.
     let date = today();
@@ -512,6 +512,94 @@ fn land_code(c: &Code, bs: &str, notes: &mut Vec<String>) -> Result<Option<trail
         cwt.display()
     ));
     Ok((before != head).then(|| trailers::CodeRange { repo: code_name(c), from: before, to: head }))
+}
+
+/// A compiled file: what a rebase conflict in it means is "build again",
+/// never a choice between two sides.
+fn is_compiled(path: &Path, f: &str) -> bool {
+    if f.starts_with("knowledge/") || f == "graph/index.json" {
+        return true;
+    }
+    let src = crate::rules::source::Source::Dir(path.to_path_buf());
+    crate::rules::compile::load_layouts(&src).map(|ls| ls.iter().any(|l| l.to == f)).unwrap_or(false)
+}
+
+/// Rebuild the compiled files with no model and stage what changed, plus
+/// `also` (conflicted files the build may not produce any more).
+fn recompile_and_stage(h: &Here, also: &[&str]) -> Result<Vec<String>> {
+    let b = crate::rules::build(&h.path, None, &today(), "abot land, after its rebase")?;
+    let mut paths: Vec<String> = also.iter().map(|s| s.to_string()).collect();
+    paths.extend(b.rewrote);
+    paths.extend(b.removed);
+    paths.extend(b.state_files);
+    paths.sort();
+    paths.dedup();
+    if !paths.is_empty() {
+        let mut args = vec!["add", "-A", "--"];
+        args.extend(paths.iter().map(String::as_str));
+        h.wt.run(&args)?;
+    }
+    Ok(paths)
+}
+
+/// Rebase the log branch on main. Compiled files are views of the graph
+/// and the pages layouts include, so the two sides of a rebase can each be
+/// right and still leave them stale (or in conflict): rebuild them on the
+/// rebased tree, with no model, rather than ask anyone to pick a side.
+fn rebase_log(h: &Here, bs: &str, notes: &mut Vec<String>) -> Result<()> {
+    let graph = h.path.join("graph").is_dir();
+    if let Err(e) = h.wt.run(&["rebase", "-q", "main"]) {
+        let mut err = e;
+        loop {
+            let conflicts = h.wt.try_run(&["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+            let files: Vec<&str> = conflicts.lines().filter(|l| !l.trim().is_empty()).collect();
+            if !graph || files.is_empty() || !files.iter().all(|f| is_compiled(&h.path, f)) {
+                let _ = h.wt.run(&["rebase", "--abort"]);
+                bail!(
+                    "{bs} doesn't rebase cleanly on main{}: {err:#}. Resolve it by hand in {}: \
+                     git rebase main, keep what is true now (not what is newer), git rebase --continue, then land again",
+                    if files.is_empty() { String::new() } else { format!(" (conflicts in {})", files.join(", ")) },
+                    h.path.display()
+                );
+            }
+            for f in &files {
+                let _ = std::fs::remove_file(h.path.join(f));
+            }
+            if let Err(e) = recompile_and_stage(h, &files) {
+                let _ = h.wt.run(&["rebase", "--abort"]);
+                bail!("{bs} conflicts with main only in compiled files ({}), but rebuilding them failed: {e:#}. Rebase by hand, run `abot rules build`, then land again", files.join(", "));
+            }
+            notes.push(format!("rebuilt {} after the rebase, where main and {bs} both changed them", files.join(", ")));
+            match h.wt.run_env(&["rebase", "--continue"], &[("GIT_EDITOR", "true")]) {
+                Ok(_) => break,
+                Err(e) => err = e,
+            }
+        }
+    }
+    if !graph {
+        return Ok(());
+    }
+    let changed = recompile_and_stage(h, &[]).map_err(|e| {
+        anyhow!("{bs} rebased on main, but its compiled files don't build there: {e:#}. Run `abot rules build` in {}, commit, and land again", h.path.display())
+    })?;
+    if !changed.is_empty() {
+        h.wt.run(&[
+            "commit",
+            "-q",
+            "-m",
+            &format!(
+                "Recompile after rebasing {bs} on main, because main changed what these files show\n\n{}",
+                changed.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
+            ),
+        ])?;
+        notes.push(format!("recompiled {} file(s) after the rebase: {}", changed.len(), changed.join(", ")));
+    }
+    let problems = crate::rules::check(&crate::rules::source::Source::Dir(h.path.clone()));
+    if !problems.is_empty() {
+        let list: Vec<String> = problems.iter().map(|x| format!("  {x}")).collect();
+        bail!("{bs} rebased on main, but the rules graph doesn't check there:\n{}", list.join("\n"));
+    }
+    Ok(())
 }
 
 fn rebase_onto(wt: &Git, path: &Path, onto: &str, bs: &str) -> Result<()> {
