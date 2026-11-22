@@ -44,7 +44,7 @@ pub fn build(dir: &std::path::Path, model: Option<&mut dyn Model>, today: &str, 
         );
     }
     let layouts = compile::load_layouts(&src)?;
-    let out = compile::compile(&g, &layouts)?;
+    let out = compile::compile(&g, &layouts, &state_projects(&src))?;
     let mut rewrote = vec![];
     for (p, text) in &out.files {
         if src.read(p).as_deref() != Some(text.as_str()) {
@@ -65,6 +65,15 @@ pub fn build(dir: &std::path::Path, model: Option<&mut dyn Model>, today: &str, 
     }
     let state_files = waits_on_felix(&src, &g)?;
     Ok(Built { graph: g, report, rewrote, removed, state_files })
+}
+
+/// The projects that have a state file: each gets a knowledge/ folder.
+pub fn state_projects(src: &Source) -> Vec<String> {
+    src.list("state/projects")
+        .iter()
+        .filter_map(|p| p.strip_prefix("state/projects/")?.strip_suffix(".md").map(String::from))
+        .filter(|p| !p.contains('/'))
+        .collect()
 }
 
 /// Put each project's open clashes under its Waits on Felix, replacing the
@@ -183,7 +192,7 @@ pub fn check(src: &Source) -> Vec<String> {
     if !p.is_empty() {
         return p;
     }
-    let out = match compile::compile(&g, &layouts) {
+    let out = match compile::compile(&g, &layouts, &state_projects(src)) {
         Ok(o) => o,
         Err(e) => return vec![format!("rules graph: {e:#}")],
     };

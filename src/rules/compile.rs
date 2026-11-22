@@ -261,6 +261,9 @@ to the files.\n\n",
         }
         s.push('\n');
     }
+    if !g.roots.values().any(|r| r.project == project) {
+        s.push_str("Nothing in the graph is about this project yet. Its rules are still in its state file's Traps, its how/ pages and its repo's CLAUDE.md, until they are entries.\n\n");
+    }
     let roots: Vec<_> = g.roots.values().filter(|r| r.project == project).collect();
     if !roots.is_empty() {
         s.push_str("## Roots\n\n");
@@ -289,7 +292,8 @@ to the files.\n\n",
     s.trim_end().to_string() + "\n"
 }
 
-pub fn compile(g: &Graph, layouts: &[Layout]) -> Result<Output> {
+/// Every project with a state file gets a folder, nodes or not.
+pub fn compile(g: &Graph, layouts: &[Layout], projects_with_state: &[String]) -> Result<Output> {
     let mut files = BTreeMap::new();
     let mut shows = BTreeMap::new();
     let mut layout_of = BTreeMap::new();
@@ -307,7 +311,7 @@ pub fn compile(g: &Graph, layouts: &[Layout]) -> Result<Output> {
         shows.insert(l.to.clone(), nodes);
         layout_of.insert(l.to.clone(), l.path.clone());
     }
-    let mut projects = BTreeSet::new();
+    let mut projects: BTreeSet<String> = projects_with_state.iter().cloned().collect();
     let ids: Vec<String> = g.roots.keys().chain(g.facts.keys()).chain(g.clashes.keys()).cloned().collect();
     for id in &ids {
         if g.facts.get(id).map(|f| f.status() == "gone").unwrap_or(false) {
