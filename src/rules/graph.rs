@@ -315,20 +315,25 @@ pub fn load(src: &Source, as_of: Option<&str>) -> Result<Graph> {
         }
     }
     let mut g = Graph { as_of: as_of.map(String::from), entries, roots, facts, clashes, order: vec![] };
-    // A fact whose parents are not there yet (as of a past day) is not there either.
+    // As of a past day, a fact has the parents that existed then (so its
+    // inputs, and its stored answer, are that day's), and a fact none of
+    // whose parents existed yet isn't there either.
     if as_of.is_some() {
         loop {
-            let gone: Vec<String> = g
-                .facts
-                .values()
-                .filter(|f| f.from.iter().any(|p| g.kind(p).is_none()))
-                .map(|f| f.id.clone())
-                .collect();
-            if gone.is_empty() {
-                break;
+            let ids: BTreeSet<String> = g.roots.keys().chain(g.facts.keys()).cloned().collect();
+            let mut changed = false;
+            for f in g.facts.values_mut() {
+                let before = f.from.len();
+                f.from.retain(|p| ids.contains(p));
+                changed |= f.from.len() != before;
             }
+            let gone: Vec<String> = g.facts.values().filter(|f| f.from.is_empty()).map(|f| f.id.clone()).collect();
+            changed |= !gone.is_empty();
             for id in gone {
                 g.facts.remove(&id);
+            }
+            if !changed {
+                break;
             }
         }
         let keep: BTreeSet<String> = g.facts.keys().cloned().collect();
@@ -664,10 +669,15 @@ pub struct Answer {
     pub rule: String,
     pub exception: Option<String>,
     pub clash: Option<(String, String, String, String)>, // (name, a, b, question)
+    /// The clash is the previous answer's, by id.
+    pub keep_clash: bool,
 }
 
 pub trait Model {
-    fn fact(&mut self, input: &Value) -> Result<Answer>;
+    /// `previous` is the fact's last answer, for inputs that have since
+    /// changed; it is not part of the fingerprint. The model keeps it word
+    /// for word when it still holds, which is what lets the work stop there.
+    fn fact(&mut self, input: &Value, previous: Option<&Version>) -> Result<Answer>;
 }
 
 #[derive(Default, Debug)]
@@ -735,11 +745,12 @@ pub fn resolve(g: &mut Graph, mut model: Option<&mut dyn Model>, today: &str, wh
             continue;
         };
         rep.calls += 1;
-        let ans = m.fact(&input)?;
-        let prev = g.facts[&id].versions.last().map(|v| (v.rule.clone(), v.status.clone()));
+        let last = g.facts[&id].versions.last().cloned();
+        let ans = m.fact(&input, last.as_ref())?;
+        let prev = last.as_ref().map(|v| (v.rule.clone(), v.status.clone()));
         let mut clash_id = None;
         if let Some((name, a, b, q)) = &ans.clash {
-            clash_id = Some(open_clash(g, &id, name, a, b, q, today, where_, &mut rep)?);
+            clash_id = Some(if ans.keep_clash { name.clone() } else { open_clash(g, &id, name, a, b, q, today, where_, &mut rep)? });
         }
         let status = if clash_id.is_some() && !["open", "gone"].contains(&ans.status.as_str()) {
             "open".to_string()
@@ -839,24 +850,34 @@ parents don't give.
 
 Status:
 - current: the parents give a clear answer.
-- open: two parents can't both hold. First ask whether one is a narrower
-  exception to the other (the specific beats the general): if so, it is not a
-  clash; answer `current` and say the exception in `exception`. If not, it is a
-  clash: name the two parents in clash.a and clash.b, ask Felix one short
-  question that settles it, and write as `rule` what agents do until he answers
-  (follow his word, and say the risk).
+- open: two parents can't both hold. That includes a rule of Felix's that a
+  fact about the machines or tools makes impossible to keep in a case that will
+  really happen (the machine does the opposite whatever the rule says), and a
+  rule that relies on something another rule forbids. First ask whether one is
+  a narrower exception to the other (the specific beats the general): it is one
+  only when the narrow rule can be followed fully inside its own scope and the
+  general rule still holds everywhere else, so agents can obey both. Then answer
+  `current` and say it in `exception`. Otherwise it is a clash: name the two
+  parents in clash.a and clash.b, give it a short name (two subjects joined by
+  -vs-), ask Felix one short question that settles it, and write as `rule` what
+  agents do until he answers (follow his word, and say the risk).
 - gone: the parents no longer give this fact anything to say.
 A root whose status is `lags` is Felix's word that the machines have not caught
 up with: the rule is his word.
+`previous`, when given, is this fact's last answer, for parents that have since
+changed. If it still holds, completely, for the parents now, answer same: true and
+it is kept word for word (nothing below it is worked out again). Write a new answer
+only when the parents now say something it doesn't.
 When `settled` lists Felix's answer to a clash between these parents, follow
 it; that clash is not raised again.
-Write `rule` as one to three plain sentences an agent can follow, in plain
-English, no dates or quotes of Felix (those live in the roots).";
+Write `rule` as one or two short plain sentences an agent can follow, no dates
+or quotes of Felix (those live in the roots). Say only what the parents give.";
 
 fn fact_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "same": {"type": "boolean"},
             "status": {"type": "string", "enum": ["current", "open", "gone"]},
             "rule": {"type": "string"},
             "exception": {"type": "string"},
@@ -920,9 +941,20 @@ pub fn ask_json(model: &str, system: &str, schema: &Value, prompt: &str) -> Resu
 }
 
 impl Model for Claude {
-    fn fact(&mut self, input: &Value) -> Result<Answer> {
-        let prompt = format!("The fact and its parents:\n{}", serde_json::to_string_pretty(input)?);
+    fn fact(&mut self, input: &Value, previous: Option<&Version>) -> Result<Answer> {
+        let mut prompt = format!("The fact and its parents:\n{}", serde_json::to_string_pretty(input)?);
+        if let Some(p) = previous {
+            let pv = json!({"status": p.status, "rule": p.rule, "exception": p.exception, "clash": p.clash});
+            prompt.push_str(&format!("\n\nprevious:\n{}", serde_json::to_string_pretty(&pv)?));
+        }
         let v = ask_json(&self.model, FACT_SYSTEM, &fact_schema(), &prompt)?;
+        if v["same"].as_bool() == Some(true) {
+            if let Some(p) = previous {
+                // Kept as it was, unless its clash is no longer between two of the parents.
+                let clash = p.clash.as_ref().map(|c| (c.clone(), String::new(), String::new(), String::new()));
+                return Ok(Answer { status: p.status.clone(), rule: p.rule.clone(), exception: p.exception.clone(), clash, keep_clash: true });
+            }
+        }
         answer_of(&v, input)
     }
 }
@@ -945,5 +977,5 @@ pub fn answer_of(v: &Value, input: &Value) -> Result<Answer> {
         None
     };
     let exception = Some(s(&v["exception"])).filter(|x| !x.is_empty());
-    Ok(Answer { status, rule: s(&v["rule"]), exception, clash })
+    Ok(Answer { status, rule: s(&v["rule"]), exception, clash, keep_clash: false })
 }
