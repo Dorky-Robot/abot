@@ -302,6 +302,9 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>, ready
         let list: Vec<String> = rg.iter().map(|x| format!("  {x}")).collect();
         bail!("refusing to land {bs}: the rules graph doesn't check.\n{}", list.join("\n"));
     }
+    for x in crate::cmd::rules::export_drift(ctx, &crate::rules::source::Source::Dir(h.path.clone())) {
+        eprintln!("note: {x}");
+    }
     for f in &truth {
         if f.starts_with("state/projects/") && h.path.join(f).exists() {
             let text = std::fs::read_to_string(h.path.join(f)).unwrap_or_default();

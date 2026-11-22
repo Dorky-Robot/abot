@@ -393,6 +393,17 @@ enum RulesCmd {
     },
     /// What abot land refuses: changed entries, stale facts, hand edits, rules outside slots
     Check,
+    /// Write a project's exported files (a layout's `export:`, its repo's CLAUDE.md) into a worktree of its repo, and commit them there
+    Export {
+        /// The project (its layouts under graph/layouts/knowledge/<project>/)
+        project: String,
+        /// A worktree of the project's code repo, on a branch (never its main checkout)
+        #[arg(long)]
+        into: PathBuf,
+        /// Write the files but don't commit them
+        #[arg(long)]
+        no_commit: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -511,6 +522,7 @@ fn main() -> ExitCode {
         Cmd::Rules { verb } => match verb {
             RulesCmd::Build { no_model, as_of, out } => cmd::rules::build(&ctx, no_model, as_of.as_deref(), out.as_deref()),
             RulesCmd::Check => cmd::rules::check(&ctx),
+            RulesCmd::Export { project, into, no_commit } => cmd::rules::export(&ctx, &project, &into, no_commit),
         },
         Cmd::Why { node, json } => cmd::rules::why(&ctx, &node, json),
         Cmd::Affects { entry, json } => cmd::rules::affects(&ctx, &entry, json),

@@ -1205,3 +1205,66 @@ fn rules_graph_includes_pages_word_for_word_and_land_rebuilds_after_rebase() {
     let o = w.abot(&["rules", "check"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains("rules graph: ok"), "{}", String::from_utf8_lossy(&o.stdout));
 }
+
+/// The `tail -n +2 <file> | shasum -a 256` a repo's own check runs.
+fn body_sha(path: &Path) -> String {
+    let o = Command::new("sh").arg("-c").arg("tail -n +2 \"$1\" | shasum -a 256 | cut -d' ' -f1").arg("sh").arg(path).output().unwrap();
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+#[test]
+fn rules_graph_exports_a_repo_claude_md_in_that_repos_own_commit() {
+    let w = World::new();
+    fake_model(&w, serde_json::json!({ "status": "current", "rule": "r" }));
+    ok(&w.abot(&["start", "demo/exp", "compile the repo's CLAUDE.md"]));
+    let wt = w.wt("exp");
+    let cwt = w.code_wt("exp");
+    add(&w, &wt, &["--said", "never cut the path you are on", "--about", "demo.ssh", "--rule", "Go in by another path before a restart.", "--date", "2026-11-22"]);
+    std::fs::create_dir_all(wt.join("graph/layouts/knowledge/demo")).unwrap();
+    std::fs::write(
+        wt.join("graph/layouts/knowledge/demo/entry-point.md"),
+        "---\nabout: the demo repo's CLAUDE.md\nexport: CLAUDE.md\n---\n# Working on demo\n\n- {{node demo.ssh}}\n",
+    )
+    .unwrap();
+    ok(&w.abot_in(&wt, &["rules", "build", "--no-model"]));
+    let file = wt.join("knowledge/demo/entry-point.md");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let first = text.lines().next().unwrap();
+    assert!(first.starts_with("<!-- compiled by abot") && first.contains("abot rules export demo"), "{first}");
+    assert!(first.contains(&format!("body sha256 {} -->", body_sha(&file))), "the stamp's hash is what shasum gives: {first}");
+
+    // Never into the main checkout, never into another repo.
+    assert!(fails(&w.abot_in(&wt, &["rules", "export", "demo", "--into", w.code.to_str().unwrap()])).contains("main checkout"));
+    assert!(fails(&w.abot_in(&wt, &["rules", "export", "demo", "--into", wt.to_str().unwrap()])).contains("is not a worktree of demo's repo"));
+    // Before the repo has it, check says so (a note, not a refusal).
+    let o = ok(&w.abot_in(&wt, &["rules", "check"]));
+    assert!(o.contains("note: CLAUDE.md on") && o.contains("is not the compile of knowledge/demo/entry-point.md"), "{o}");
+
+    let o = ok(&w.abot_in(&wt, &["rules", "export", "demo", "--into", cwt.to_str().unwrap()]));
+    assert!(o.contains("CLAUDE.md: written from knowledge/demo/entry-point.md"), "{o}");
+    assert_eq!(std::fs::read_to_string(cwt.join("CLAUDE.md")).unwrap(), text);
+    let msg = w.git(&cwt, &["log", "-1", "--format=%s"]);
+    assert!(msg.starts_with("Compile CLAUDE.md from the rules graph at ecosystem-log "), "{msg}");
+    assert_eq!(w.git(&cwt, &["show", "--name-only", "--format=", "HEAD"]), "CLAUDE.md");
+    assert!(ok(&w.abot_in(&wt, &["rules", "export", "demo", "--into", cwt.to_str().unwrap()])).contains("up to date"));
+
+    // A hand edit in the repo no longer matches its stamp's hash.
+    std::fs::write(cwt.join("CLAUDE.md"), text.clone() + "Always do X.\n").unwrap();
+    assert!(!first.contains(&body_sha(&cwt.join("CLAUDE.md"))));
+    std::fs::write(cwt.join("CLAUDE.md"), &text).unwrap();
+
+    // Only a layout in a project's folder can export.
+    std::fs::create_dir_all(wt.join("graph/layouts/claude")).unwrap();
+    std::fs::write(wt.join("graph/layouts/claude/global.md"), "---\nexport: CLAUDE.md\n---\n# x\n").unwrap();
+    assert!(fails(&w.abot_in(&wt, &["rules", "build", "--no-model"])).contains("only a layout under knowledge/<project>/ can export"));
+    std::fs::remove_file(wt.join("graph/layouts/claude/global.md")).unwrap();
+
+    // Landing both: the code branch carries the file, and then check is quiet.
+    w.git(&wt, &["add", "-A"]);
+    w.git(&wt, &["commit", "-q", "-m", "export"]);
+    w.commit(&wt, "state/projects/demo.md", &(STATE.to_string() + "- exported\n"), "state");
+    ok(&w.abot_in(&wt, &["land"]));
+    assert_eq!(std::fs::read_to_string(w.code.join("CLAUDE.md")).unwrap(), text);
+    let o = ok(&w.abot_in(&w.log, &["rules", "check"]));
+    assert!(!o.contains("note: CLAUDE.md"), "{o}");
+}

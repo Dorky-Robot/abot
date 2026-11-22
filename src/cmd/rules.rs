@@ -501,6 +501,9 @@ pub fn check(ctx: &Ctx) -> Result<bool> {
     } else {
         p.extend(rules::entries_never_changed(&ctx.log_git(), &ctx.base()));
     }
+    for x in export_drift(ctx, &src) {
+        println!("note: {x}");
+    }
     if p.is_empty() {
         println!("rules graph: ok");
         return Ok(true);
@@ -639,4 +642,124 @@ where
         }
     }
     bail!("could not push the entry to origin's main after 4 tries: {last}")
+}
+
+// ---------------------------------------------------------------- export
+
+/// The log commit a source reads at, for a commit message.
+fn log_rev(src: &Source) -> String {
+    match src {
+        Source::Dir(p) => Git::new(p).try_run(&["rev-parse", "--short", "HEAD"]),
+        Source::Rev(g, r) => g.try_run(&["rev-parse", "--short", r]),
+    }
+    .unwrap_or_else(|| "?".into())
+    .trim()
+    .to_string()
+}
+
+/// Compile the graph and give back the exported layouts of `project` with
+/// their text, refusing a graph with a fact that has no stored answer.
+fn exported(src: &Source, project: &str) -> Result<Vec<(compile::Layout, String)>> {
+    let mut g = graph::load(src, None)?;
+    let r = graph::resolve(&mut g, None, "", "")?;
+    if !r.stale.is_empty() {
+        bail!("fact(s) with no stored answer for their inputs: {}; run `abot rules build` first", r.stale.join(", "));
+    }
+    let layouts = compile::load_layouts(src)?;
+    let out = compile::compile(&g, src, &layouts, &rules::state_projects(src))?;
+    Ok(layouts
+        .into_iter()
+        .filter(|l| l.export_project() == Some(project))
+        .map(|l| {
+            let t = out.files.get(&l.to).cloned().unwrap_or_default();
+            (l, t)
+        })
+        .collect())
+}
+
+/// Write a project's exported files (its repo's CLAUDE.md, say) into a
+/// worktree of its code repo, and commit them there: the compiled file
+/// lands in that repo's own commit, and the repo's check refuses a hand
+/// edit by the hash in its stamp.
+pub fn export(ctx: &Ctx, project: &str, into: &Path, no_commit: bool) -> Result<bool> {
+    let src = read_source(ctx)?;
+    let files = exported(&src, project)?;
+    if files.is_empty() {
+        bail!("no layout under graph/layouts/knowledge/{project}/ has an `export:` line, so nothing compiles into {project}'s repo");
+    }
+    let Some(repo) = ctx.code_repo(project, None)? else {
+        bail!("{project} has no code repo here (a `Repo:` line in its state file names it)");
+    };
+    let wt = Git::new(into);
+    let Some(top) = wt.toplevel() else {
+        bail!("{} is not inside a git worktree", into.display());
+    };
+    if wt.common_dir() != Git::new(&repo).common_dir() {
+        bail!("{} is not a worktree of {project}'s repo ({})", top.display(), repo.display());
+    }
+    if crate::git::canon(&top) == crate::git::canon(&repo) {
+        bail!(
+            "{} is {project}'s main checkout, where landing happens; export into a worktree of a branch and land it",
+            top.display()
+        );
+    }
+    let mut changed = vec![];
+    for (l, text) in &files {
+        let rel = l.export.as_deref().unwrap_or_default();
+        let dest = top.join(rel);
+        if std::fs::read_to_string(&dest).ok().as_deref() == Some(text.as_str()) {
+            println!("{rel}: up to date with {}", l.to);
+            continue;
+        }
+        if let Some(d) = dest.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(&dest, text)?;
+        println!("{rel}: written from {}", l.to);
+        changed.push(rel.to_string());
+    }
+    if changed.is_empty() || no_commit {
+        return Ok(true);
+    }
+    let mut add = vec!["add", "--"];
+    add.extend(changed.iter().map(String::as_str));
+    wt.run(&add)?;
+    let msg = format!(
+        "Compile {} from the rules graph at ecosystem-log {}, because this file is a view of the graph and a hand edit here would drift from it",
+        changed.join(", "),
+        log_rev(&src)
+    );
+    let mut commit = vec!["commit", "-q", "-m", &msg, "--"];
+    commit.extend(changed.iter().map(String::as_str));
+    wt.run(&commit)?;
+    println!("committed in {}: {msg}", top.display());
+    Ok(true)
+}
+
+/// Exported files whose copy on their repo's trunk (as this box has it)
+/// is not the log's compile: a note for `abot rules check` and land, never
+/// a refusal, since the repo lands on its own and may not be on this box.
+pub fn export_drift(ctx: &Ctx, src: &Source) -> Vec<String> {
+    let mut out = vec![];
+    let Ok(layouts) = compile::load_layouts(src) else { return out };
+    let projects: std::collections::BTreeSet<String> =
+        layouts.iter().filter_map(|l| l.export_project().map(String::from)).collect();
+    for p in projects {
+        let Ok(Some(repo)) = ctx.code_repo(&p, None) else { continue };
+        let Ok(files) = exported(src, &p) else { continue };
+        let g = Git::new(&repo);
+        let trunk = g.trunk();
+        for (l, text) in files {
+            let rel = l.export.unwrap_or_default();
+            let have = g.try_raw(&["show", &format!("{trunk}:{rel}")]);
+            if have.as_deref() != Some(text.as_str()) {
+                out.push(format!(
+                    "{rel} on {}'s {trunk} is not the compile of {}; run `abot rules export {p} --into <a worktree of it>` and land it there",
+                    repo.display(),
+                    l.to
+                ));
+            }
+        }
+    }
+    out
 }
