@@ -4,6 +4,7 @@ pub mod dig;
 pub mod lifecycle;
 pub mod map;
 pub mod orient;
+pub mod rules;
 pub mod sessions;
 pub mod ticket;
 

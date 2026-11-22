@@ -15,7 +15,7 @@ use crate::trailers;
 use anyhow::{Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 
-const TRUTH_DIRS: [&str; 4] = ["state/", "ecosystem/", "how/", "people/"];
+const TRUTH_DIRS: [&str; 5] = ["state/", "ecosystem/", "how/", "people/", "graph/entries/"];
 
 fn display(p: &Path) -> String {
     p.display().to_string()
@@ -292,6 +292,15 @@ pub fn land(ctx: &Ctx, no_state_change: Option<&str>, repo: Option<&Path>, ready
              not secrets: move them out, commit, and land again.\n{}",
             list.join("\n")
         );
+    }
+    // The rules graph: entries only added, every fact answered for its
+    // inputs, every compiled file equal to a fresh compile, no rule stated
+    // outside a slot.
+    let mut rg = crate::rules::check(&crate::rules::source::Source::Dir(h.path.clone()));
+    rg.extend(crate::rules::entries_only_added(&h.wt, &base, "HEAD"));
+    if !rg.is_empty() {
+        let list: Vec<String> = rg.iter().map(|x| format!("  {x}")).collect();
+        bail!("refusing to land {bs}: the rules graph doesn't check.\n{}", list.join("\n"));
     }
     for f in &truth {
         if f.starts_with("state/projects/") && h.path.join(f).exists() {

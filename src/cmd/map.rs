@@ -197,6 +197,11 @@ pub fn check(ctx: &Ctx, json_out: bool) -> Result<bool> {
     // 2. Tickets are written out: the same rules `abot ticket` files by.
     problems.extend(super::ticket::check(ctx));
 
+    // 2b. The rules graph checks on main, and no landed entry ever changed.
+    let src = crate::rules::source::Source::Rev(g.clone(), base.clone());
+    problems.extend(crate::rules::check(&src));
+    problems.extend(crate::rules::entries_never_changed(&g, &base));
+
     // 3. The generated map is current.
     map_current(ctx, &g, &mut problems, &mut notes);
 

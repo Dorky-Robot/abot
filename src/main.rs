@@ -12,6 +12,7 @@ mod git;
 mod onmain;
 mod out;
 mod repos;
+mod rules;
 mod secrets;
 mod session;
 mod statefile;
@@ -198,6 +199,34 @@ outcome (in-flight, landed, dead-end, parked), branch, sha, date. The session sw
         #[arg(long)]
         json: bool,
     },
+    /// Add one entry to the rules graph: Felix's words (--said) or what is seen (--seen)
+    #[command(long_about = ENTRY_ABOUT)]
+    Entry {
+        #[command(subcommand)]
+        verb: EntryCmd,
+    },
+    /// Define a fact: a rule built from roots and other facts (its answer comes from the model)
+    Fact {
+        #[command(subcommand)]
+        verb: FactCmd,
+    },
+    /// Build or check the rules graph and everything compiled from it
+    Rules {
+        #[command(subcommand)]
+        verb: RulesCmd,
+    },
+    /// The entries a rule rests on, up to Felix's words
+    Why {
+        node: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The nodes and files a change to an entry would rebuild
+    Affects {
+        entry: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Tickets: the work a project has ready, written so anyone can pick one up
     #[command(long_about = TICKET_ABOUT)]
     Ticket {
@@ -230,6 +259,135 @@ into the filing commit's body. The rules are also checked by abot itself, here a
 `abot land` marks steps done from `Ready: <project>/<id>.<n>` lines in the task's
 commits (log and code), from --ready, or, on a branch named <project>/<id> whose
 ticket has one open step, that step.";
+
+const ENTRY_ABOUT: &str = "\
+The rules graph (docs/rules-graph.md in the log) keeps Felix's rules as entries,
+written once: his words verbatim (--said) or what is seen on the boxes (--seen, with
+--proof). Each is about one subject; code folds a subject's entries into one root
+with one current rule; facts and clashes are worked out by a model from their parents
+only and kept under a fingerprint of their inputs; the files agents read are compiled.
+
+  abot entry add --said \"<his words>\" --about <subject> --rule \"<rule>\" [--replaces <entry>]
+  abot entry add --seen \"<what>\" --proof \"<command, commit, issue>\" --about <subject>
+  abot entry add --said \"…\" --about … --rule … --corrects <node>   his correction of a node
+  abot entry add --said \"…\" --settles clash/<name> …                 his answer to a clash
+
+Leave out --about or --rule and a cheap model proposes them (and what the entry
+replaces, and which facts take it as a parent); nothing is written until you run it
+again with --accept or give them yourself (exit 2 means: proposed, not written).
+Inside a log task worktree the entry and its rebuild are committed there; anywhere
+else they land on origin's main in one commit. ABOT_RULES_MODEL picks the model
+(default sonnet).";
+
+#[derive(Subcommand)]
+enum EntryCmd {
+    /// Add an entry, rebuild what it touches, and commit
+    Add {
+        /// His words, verbatim
+        #[arg(long, conflicts_with = "seen")]
+        said: Option<String>,
+        /// What is on the boxes
+        #[arg(long)]
+        seen: Option<String>,
+        /// For --seen: the command, commit or issue that shows it
+        #[arg(long)]
+        proof: Option<String>,
+        /// The subject (a root), e.g. session.waiting or everyday-vet.ship
+        #[arg(long)]
+        about: Option<String>,
+        /// For --said: the rule his words give, one sentence
+        #[arg(long)]
+        rule: Option<String>,
+        #[arg(long)]
+        by: Option<String>,
+        /// When it was said or seen (default today)
+        #[arg(long)]
+        date: Option<String>,
+        /// When it is in force, if not the same day
+        #[arg(long = "in-force")]
+        in_force: Option<String>,
+        /// The project whose graph it goes in (default: the subject's)
+        #[arg(long)]
+        project: Option<String>,
+        /// The entry it replaces (a later word on the same subject)
+        #[arg(long)]
+        replaces: Option<String>,
+        /// The entry it contradicts (his word against what is seen)
+        #[arg(long)]
+        contradicts: Option<String>,
+        /// A node his words correct (a fact he says is false)
+        #[arg(long)]
+        corrects: Option<String>,
+        /// A clash his words answer
+        #[arg(long)]
+        settles: Option<String>,
+        /// For a new subject: rarely, sometimes or often
+        #[arg(long)]
+        changes: Option<String>,
+        #[arg(long)]
+        why: Option<String>,
+        /// Where it was said or seen (default: this session's name)
+        #[arg(long = "where")]
+        where_: Option<String>,
+        /// The entry's id (default: date and a hash; imported decisions keep d-<n>)
+        #[arg(long)]
+        id: Option<String>,
+        /// Write what the model proposed
+        #[arg(long)]
+        accept: bool,
+        /// Write the entry only; build later with `abot rules build`
+        #[arg(long)]
+        no_build: bool,
+        /// In a task worktree: write and build, but don't commit
+        #[arg(long)]
+        no_commit: bool,
+        /// Never ask the model (facts with no stored answer then refuse the build)
+        #[arg(long)]
+        no_model: bool,
+        #[arg(long)]
+        json: bool,
+        /// The commit subject (default: who, when, subject and rule)
+        #[arg(long)]
+        message: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum FactCmd {
+    /// Define (or add parents to) a fact, then build
+    Add {
+        id: String,
+        /// The question the fact answers
+        #[arg(long)]
+        asks: String,
+        /// Its parents, comma-separated roots or facts
+        #[arg(long, value_delimiter = ',', required = true)]
+        from: Vec<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        no_build: bool,
+        #[arg(long)]
+        no_model: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// Work out stale facts, compile knowledge/, the layouts' files and graph/index.json
+    Build {
+        /// Never ask the model; refuse if a fact has no stored answer
+        #[arg(long)]
+        no_model: bool,
+        /// Compile the rules as they stood on a day, into --out (default a temp dir)
+        #[arg(long = "as-of")]
+        as_of: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// What abot land refuses: changed entries, stale facts, hand edits, rules outside slots
+    Check,
+}
 
 #[derive(Subcommand)]
 enum TicketCmd {
@@ -334,6 +492,22 @@ fn main() -> ExitCode {
         Cmd::Tree { project, limit, json } => cmd::map::tree(&ctx, &project, limit, json).map(|_| true),
         Cmd::Mirror => cmd::decisions::mirror(&ctx).map(|_| true),
         Cmd::Sessions { json } => cmd::sessions::run(&ctx, json).map(|_| true),
+        Cmd::Entry { verb: EntryCmd::Add { said, seen, proof, about, rule, by, date, in_force, project, replaces, contradicts, corrects, settles, changes, why, where_, id, accept, no_build, no_commit, no_model, json, message } } => {
+            let a = cmd::rules::EntryArgs { said, seen, proof, about, rule, by, date, in_force, project, replaces, contradicts, corrects, settles, changes, why, where_, id, accept, no_build, no_commit, no_model, json, message };
+            match cmd::rules::entry_add(&ctx, a) {
+                Ok(false) => return ExitCode::from(cmd::rules::NOT_YET),
+                r => r,
+            }
+        }
+        Cmd::Fact { verb: FactCmd::Add { id, asks, from, project, no_build, no_model } } => {
+            cmd::rules::fact_add(&ctx, &id, &asks, &from, project.as_deref(), no_build, no_model)
+        }
+        Cmd::Rules { verb } => match verb {
+            RulesCmd::Build { no_model, as_of, out } => cmd::rules::build(&ctx, no_model, as_of.as_deref(), out.as_deref()),
+            RulesCmd::Check => cmd::rules::check(&ctx),
+        },
+        Cmd::Why { node, json } => cmd::rules::why(&ctx, &node, json),
+        Cmd::Affects { entry, json } => cmd::rules::affects(&ctx, &entry, json),
         Cmd::Ticket { verb } => {
             let r = match verb {
                 TicketCmd::Add { project, title, why, done_when, steps, waits_on, detail, id } => cmd::ticket::add(
