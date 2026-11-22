@@ -44,7 +44,7 @@ pub fn build(dir: &std::path::Path, model: Option<&mut dyn Model>, today: &str, 
         );
     }
     let layouts = compile::load_layouts(&src)?;
-    let out = compile::compile(&g, &layouts, &state_projects(&src))?;
+    let out = compile::compile(&g, &src, &layouts, &state_projects(&src))?;
     let mut rewrote = vec![];
     for (p, text) in &out.files {
         if src.read(p).as_deref() != Some(text.as_str()) {
@@ -186,22 +186,30 @@ pub fn check(src: &Source) -> Vec<String> {
             return p;
         }
     };
+    let pages = compile::Pages::new(src, &layouts);
     for l in &layouts {
         p.extend(compile::prose_problems(l));
+        p.extend(compile::include_quote_problems(&g, &pages, l));
     }
     if !p.is_empty() {
         return p;
     }
-    let out = match compile::compile(&g, &layouts, &state_projects(src)) {
+    let out = match compile::compile(&g, src, &layouts, &state_projects(src)) {
         Ok(o) => o,
         Err(e) => return vec![format!("rules graph: {e:#}")],
     };
     for (path, text) in &out.files {
         match src.read(path) {
             None => p.push(format!("{path}: missing; run `abot rules build`")),
-            Some(t) if &t != text => p.push(format!(
-                "{path}: differs from a fresh compile of the graph (a hand edit, or a build not run); change the graph and run `abot rules build`"
-            )),
+            Some(t) if &t != text => p.push(match out.includes.get(path) {
+                Some(inc) => format!(
+                    "{path}: differs from a fresh compile (a hand edit, or a build not run after a change to {}); change the graph or that page, never this file, and run `abot rules build --no-model`",
+                    inc.join(", ")
+                ),
+                None => format!(
+                    "{path}: differs from a fresh compile of the graph (a hand edit, or a build not run); change the graph and run `abot rules build`"
+                ),
+            }),
             _ => {}
         }
     }

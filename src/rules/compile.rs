@@ -6,10 +6,15 @@
 //!     {{said <root>}}      Felix's words the root's rule comes from, quoted and dated
 //!     {{node <node>}}      the rule, then the words or proof it rests on
 //!     {{clashes <project>}} the project's open clashes, one line each
+//!     {{include <path>}}   a hand-written page of the log (how/, people/,
+//!     {{include <path>#<heading>}}  ecosystem/, docs/…), or one section of it,
+//!                          word for word: procedures are compiled files, not
+//!                          entries (Felix, 11-22), so they reach agents through
+//!                          the same filesystem without a second copy
 //!
 //! A layout may start with a header between `---` lines; `to: <path>` sends
-//! it somewhere other than its own path (to compile a file beside the one
-//! in use, as claude/global.md is until it loses nothing).
+//! it somewhere other than its own path, and `about: <one line>` is what the
+//! folder's README says the file is for.
 //!
 //! Code also writes, for every project with nodes, knowledge/<p>/README.md
 //! (an index) and knowledge/<p>/rules/<node>.md (one note per node), and
@@ -28,6 +33,7 @@ pub const STAMP: &str = "<!-- compiled by abot from the rules graph";
 pub struct Layout {
     pub path: String,
     pub to: String,
+    pub about: Option<String>,
     pub body: String,
 }
 
@@ -36,10 +42,12 @@ pub struct Output {
     pub files: BTreeMap<String, String>,
     /// compiled path -> the nodes it shows
     pub shows: BTreeMap<String, Vec<String>>,
+    /// compiled path -> the hand-written pages it includes
+    pub includes: BTreeMap<String, Vec<String>>,
 }
 
 pub fn slot_re() -> Regex {
-    Regex::new(r"\{\{\s*(rule|said|node|clashes)\s+([A-Za-z0-9_./-]+)\s*\}\}").unwrap()
+    Regex::new(r"\{\{\s*(rule|said|node|clashes|include)\s+([A-Za-z0-9_./#~-]+)\s*\}\}").unwrap()
 }
 
 pub fn load_layouts(src: &Source) -> Result<Vec<Layout>> {
@@ -50,22 +58,25 @@ pub fn load_layouts(src: &Source) -> Result<Vec<Layout>> {
         }
         let text = src.read(&p).unwrap_or_default();
         let natural = p.trim_start_matches("graph/layouts/").to_string();
-        let (to, body) = match text.strip_prefix("---\n").and_then(|r| r.split_once("\n---\n")) {
+        let (to, about, body) = match text.strip_prefix("---\n").and_then(|r| r.split_once("\n---\n")) {
             Some((head, body)) => {
                 let mut to = natural.clone();
+                let mut about = None;
                 for line in head.lines() {
                     if let Some(x) = line.strip_prefix("to:") {
                         to = x.trim().to_string();
+                    } else if let Some(x) = line.strip_prefix("about:") {
+                        about = Some(x.trim().to_string());
                     }
                 }
-                (to, body.to_string())
+                (to, about, body.to_string())
             }
-            None => (natural, text),
+            None => (natural, None, text),
         };
         if to.starts_with("graph/") || to.starts_with('/') || to.contains("..") {
             bail!("{p}: a layout can't compile into {to}");
         }
-        v.push(Layout { path: p, to, body });
+        v.push(Layout { path: p, to, about, body });
     }
     Ok(v)
 }
@@ -97,15 +108,109 @@ pub fn clash_line(c: &super::graph::Clash) -> String {
     format!("- Rules graph {}: {} (between {} and {}; asked {})", c.id, entry::one_para(&c.question), c.a, c.b, c.asked)
 }
 
-/// Fill one layout. Returns the text and the nodes it shows.
-pub fn fill(g: &Graph, body: &str) -> Result<(String, Vec<String>)> {
+/// What a layout's slots read besides the graph: the hand-written pages
+/// it may include, and the files no layout may include (compiled ones).
+pub struct Pages<'a> {
+    pub src: &'a Source,
+    pub compiled: BTreeSet<String>,
+}
+
+impl<'a> Pages<'a> {
+    pub fn new(src: &'a Source, layouts: &[Layout]) -> Self {
+        Pages { src, compiled: layouts.iter().map(|l| l.to.clone()).collect() }
+    }
+}
+
+/// A heading's anchor, the way GitHub makes one: lower case, letters and
+/// digits kept, spaces and dashes as one dash, the rest dropped.
+pub fn anchor(heading: &str) -> String {
+    let mut s = String::new();
+    for ch in heading.trim().chars() {
+        if ch.is_alphanumeric() {
+            s.extend(ch.to_lowercase());
+        } else if (ch == ' ' || ch == '-') && !s.ends_with('-') {
+            s.push('-');
+        }
+    }
+    s.trim_matches('-').to_string()
+}
+
+fn heading(line: &str) -> Option<(usize, &str)> {
+    let n = line.chars().take_while(|&c| c == '#').count();
+    (n > 0 && n <= 6 && line[n..].starts_with(' ')).then(|| (n, line[n..].trim()))
+}
+
+/// The text `{{include <spec>}}` stands for, and the page it came from.
+/// A whole page drops its `# title` (the layout gives the file its own);
+/// a section is everything under its heading, down to the next heading of
+/// the same or a higher level, without the heading itself.
+pub fn include(pages: &Pages, spec: &str) -> Result<(String, String)> {
+    let (path, sect) = match spec.split_once('#') {
+        Some((p, s)) => (p, Some(s)),
+        None => (spec, None),
+    };
+    if path.starts_with('/') || path.contains("..") || path.starts_with('~') {
+        bail!("{{{{include {spec}}}}}: say a path inside the log");
+    }
+    if path.starts_with("graph/") || path.starts_with("knowledge/") || pages.compiled.contains(path) {
+        bail!("{{{{include {spec}}}}}: {path} is compiled; include the hand-written page it comes from");
+    }
+    let text = pages.src.read(path).ok_or_else(|| anyhow!("{{{{include {spec}}}}}: no file {path} in the log"))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let body: Vec<&str> = match sect {
+        None => {
+            let mut v = lines.as_slice();
+            if v.first().and_then(|l| heading(l)).is_some_and(|(n, _)| n == 1) {
+                v = &v[1..];
+            }
+            v.to_vec()
+        }
+        Some(want) => {
+            let mut fenced = false;
+            let mut start = None;
+            let mut out = vec![];
+            for (i, l) in lines.iter().enumerate() {
+                if l.trim_start().starts_with("```") {
+                    fenced = !fenced;
+                }
+                let h = if fenced { None } else { heading(l) };
+                match (start, h) {
+                    (None, Some((n, t))) if anchor(t) == want => start = Some((i, n)),
+                    (Some((_, n0)), Some((n, _))) if n <= n0 => break,
+                    (Some(_), _) => out.push(*l),
+                    _ => {}
+                }
+            }
+            if start.is_none() {
+                let have: Vec<String> = lines
+                    .iter()
+                    .filter_map(|l| heading(l))
+                    .map(|(_, t)| anchor(t))
+                    .collect();
+                bail!("{{{{include {spec}}}}}: {path} has no heading #{want} (it has: {})", have.join(", "));
+            }
+            out
+        }
+    };
+    let joined = body.join("\n");
+    Ok((joined.trim_matches('\n').trim_end().to_string(), path.to_string()))
+}
+
+/// Fill one layout. Returns the text, the nodes it shows and the pages it
+/// includes.
+pub fn fill(g: &Graph, pages: &Pages, body: &str) -> Result<(String, Vec<String>, Vec<String>)> {
     let re = slot_re();
     let mut shows = Vec::new();
+    let mut included = Vec::new();
     let mut err = None;
     let out = re.replace_all(body, |c: &regex::Captures| {
         let (what, id) = (&c[1], &c[2]);
         let r: Result<String> = match what {
             "clashes" => Ok(open_clash_lines(g, id)),
+            "include" => include(pages, id).map(|(t, p)| {
+                included.push(p);
+                t
+            }),
             _ if g.kind(id).is_none() => Err(anyhow!("{{{{{what} {id}}}}}: no node {id} in the graph")),
             "rule" => Ok(g.rule(id).unwrap_or_default()),
             "said" => said(g, id),
@@ -124,7 +229,7 @@ pub fn fill(g: &Graph, body: &str) -> Result<(String, Vec<String>)> {
                 Ok(s)
             }
         };
-        if what != "clashes" {
+        if what != "clashes" && what != "include" {
             shows.push(id.to_string());
         }
         match r {
@@ -140,7 +245,9 @@ pub fn fill(g: &Graph, body: &str) -> Result<(String, Vec<String>)> {
     }
     shows.sort();
     shows.dedup();
-    Ok((out.into_owned(), shows))
+    included.sort();
+    included.dedup();
+    Ok((out.into_owned(), shows, included))
 }
 
 pub fn note_path(project: &str, id: &str) -> String {
@@ -243,16 +350,34 @@ fn note(g: &Graph, id: &str, shown_in: &[String]) -> String {
     s.trim_end().to_string() + "\n"
 }
 
-fn readme(g: &Graph, project: &str) -> String {
+fn readme(g: &Graph, project: &str, layouts: &[Layout]) -> String {
     let mut s = stamp("code, the index of this folder");
     s.push_str(&format!("# {project}: what the rules graph knows\n\n"));
     s.push_str(
         "Every file here is compiled from the rules graph in `graph/` and is rebuilt by \
-`abot rules build`. Each note in `rules/` is one node: a root (one subject, its rule and \
-every entry behind it), a fact (a rule built from other nodes) or a clash (a question \
-for Felix). `abot why <node>` walks up to his words; `abot affects <entry>` walks down \
-to the files.\n\n",
+`abot rules build`. The files below are written for one need each (how to do a thing, \
+with the rules it rests on); each note in `rules/` is one node: a root (one subject, its \
+rule and every entry behind it), a fact (a rule built from other nodes) or a clash (a \
+question for Felix). `abot why <node>` walks up to his words; `abot affects <entry>` \
+walks down to the files.\n\n",
     );
+    let prefix = format!("knowledge/{project}/");
+    let mut mine: Vec<&Layout> = layouts
+        .iter()
+        .filter(|l| l.to.starts_with(&prefix) && l.to != format!("{prefix}README.md"))
+        .collect();
+    mine.sort_by(|a, b| a.to.cmp(&b.to));
+    if !mine.is_empty() {
+        s.push_str("## Files\n\n");
+        for l in mine {
+            let rel = &l.to[prefix.len()..];
+            match &l.about {
+                Some(a) => s.push_str(&format!("- [{rel}]({rel}) — {a}\n")),
+                None => s.push_str(&format!("- [{rel}]({rel})\n")),
+            }
+        }
+        s.push('\n');
+    }
     let open: Vec<_> = g.clashes.values().filter(|c| c.project == project && c.status == "open").collect();
     if !open.is_empty() {
         s.push_str("## Open clashes\n\n");
@@ -293,13 +418,18 @@ to the files.\n\n",
 }
 
 /// Every project with a state file gets a folder, nodes or not.
-pub fn compile(g: &Graph, layouts: &[Layout], projects_with_state: &[String]) -> Result<Output> {
+pub fn compile(g: &Graph, src: &Source, layouts: &[Layout], projects_with_state: &[String]) -> Result<Output> {
+    let pages = Pages::new(src, layouts);
     let mut files = BTreeMap::new();
     let mut shows = BTreeMap::new();
+    let mut includes = BTreeMap::new();
     let mut layout_of = BTreeMap::new();
     let mut shown_in: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for l in layouts {
-        let (text, nodes) = fill(g, &l.body).map_err(|e| anyhow!("{}: {e:#}", l.path))?;
+        let (text, nodes, inc) = fill(g, &pages, &l.body).map_err(|e| anyhow!("{}: {e:#}", l.path))?;
+        if !inc.is_empty() {
+            includes.insert(l.to.clone(), inc);
+        }
         let text = collapse_blank(&text);
         let stamped = if l.to.ends_with(".md") { format!("{}{}", stamp(&l.path), text) } else { text };
         if files.insert(l.to.clone(), stamped).is_some() {
@@ -326,13 +456,13 @@ pub fn compile(g: &Graph, layouts: &[Layout], projects_with_state: &[String]) ->
     for p in &projects {
         let path = format!("knowledge/{p}/README.md");
         if !files.contains_key(&path) {
-            files.insert(path.clone(), readme(g, p));
+            files.insert(path.clone(), readme(g, p, layouts));
             shows.insert(path, ids.iter().filter(|i| g.project_of(i).as_deref() == Some(p)).cloned().collect());
         }
     }
-    let index = index_json(g, &shows, &layout_of);
+    let index = index_json(g, &shows, &layout_of, &includes);
     files.insert("graph/index.json".into(), serde_json::to_string_pretty(&index)? + "\n");
-    Ok(Output { files, shows })
+    Ok(Output { files, shows, includes })
 }
 
 fn collapse_blank(s: &str) -> String {
@@ -354,7 +484,12 @@ fn collapse_blank(s: &str) -> String {
 }
 
 /// The whole graph in one file, the shape overview's /try/rules reads.
-pub fn index_json(g: &Graph, shows: &BTreeMap<String, Vec<String>>, layout_of: &BTreeMap<String, String>) -> Value {
+pub fn index_json(
+    g: &Graph,
+    shows: &BTreeMap<String, Vec<String>>,
+    layout_of: &BTreeMap<String, String>,
+    includes: &BTreeMap<String, Vec<String>>,
+) -> Value {
     let built = g
         .entries
         .iter()
@@ -438,7 +573,13 @@ pub fn index_json(g: &Graph, shows: &BTreeMap<String, Vec<String>>, layout_of: &
         .collect();
     let files: Vec<Value> = shows
         .iter()
-        .map(|(p, n)| json!({"path": p, "layout": layout_of.get(p), "shows": n}))
+        .map(|(p, n)| {
+            let mut v = json!({"path": p, "layout": layout_of.get(p), "shows": n});
+            if let Some(inc) = includes.get(p) {
+                v["includes"] = json!(inc);
+            }
+            v
+        })
         .collect();
     json!({
         "version": 1,
@@ -470,6 +611,39 @@ pub fn prose_problems(layout: &Layout) -> Vec<String> {
             out.push(format!("{}:{}: quotes Felix outside a slot: {}", layout.path, i + 1, line.trim()));
         } else if rule.is_match(&bare) {
             out.push(format!("{}:{}: states a rule outside a slot: {}", layout.path, i + 1, line.trim()));
+        }
+    }
+    out
+}
+
+fn norm_quotes(s: &str) -> String {
+    let s = s.replace(['\u{201c}', '\u{201d}'], "\"");
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Felix's words are entries, so a page a layout includes may quote him
+/// only with words an entry already holds: otherwise his word would live
+/// in a hand-written page with nothing in the graph behind it. Returns one
+/// line per quote that is no entry's words.
+pub fn include_quote_problems(g: &Graph, pages: &Pages, layout: &Layout) -> Vec<String> {
+    let said: Vec<String> = g.entries.iter().filter(|e| e.kind == Kind::Said).map(|e| norm_quotes(&e.body)).collect();
+    let quote = Regex::new(r#"Felix[^."]{0,80}?:\s*"([^"]{15,})""#).unwrap();
+    let mut out = Vec::new();
+    for c in slot_re().captures_iter(&layout.body) {
+        if &c[1] != "include" {
+            continue;
+        }
+        let Ok((text, _)) = include(pages, &c[2]) else { continue };
+        for q in quote.captures_iter(&norm_quotes(&text)) {
+            let words = q[1].trim_end_matches(['.', ',', ' ']);
+            if !said.iter().any(|b| b.contains(words)) {
+                out.push(format!(
+                    "{}: {{{{include {}}}}} quotes Felix with words no entry holds: \"{}\"; add them with `abot entry add --said \"…\"`, or quote the entry's words",
+                    layout.path,
+                    &c[2],
+                    entry::one_para(words)
+                ));
+            }
         }
     }
     out

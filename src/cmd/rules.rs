@@ -467,7 +467,7 @@ pub fn build(ctx: &Ctx, no_model: bool, as_of: Option<&str>, out: Option<&Path>)
             }
         }
         let layouts = compile::load_layouts(&src)?;
-        let o = compile::compile(&g, &layouts, &rules::state_projects(&src))?;
+        let o = compile::compile(&g, &src, &layouts, &rules::state_projects(&src))?;
         let dir = out.map(PathBuf::from).unwrap_or_else(|| std::env::temp_dir().join(format!("abot-rules-as-of-{d}")));
         for (p, t) in &o.files {
             let f = dir.join(p);
@@ -572,7 +572,7 @@ pub fn affects(ctx: &Ctx, entry_id: &str, json_out: bool) -> Result<bool> {
     nodes.sort();
     nodes.dedup();
     let layouts = compile::load_layouts(&src)?;
-    let out = compile::compile(&g, &layouts, &rules::state_projects(&src))?;
+    let out = compile::compile(&g, &src, &layouts, &rules::state_projects(&src))?;
     let files: Vec<String> = out
         .shows
         .iter()
