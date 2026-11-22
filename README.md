@@ -100,6 +100,31 @@ Reads (`orient`, `map`, `tree`, `dig`, `check`) fetch and read `origin/main`, th
 
 Never force-pushes; never rewrites main. Run `abot <verb> --help` for details.
 
+## The rules graph
+
+Felix's rules are an append-only log of entries in the log's `graph/entries/`:
+his words verbatim (`said`) or what is seen on the boxes, with its proof
+(`seen`), each written once. Code folds a subject's entries into one root
+with one current rule; a model works out facts (rules from other rules) and
+clashes (two that can't both hold, with the question for Felix) from their
+parents only, and every answer is kept under a fingerprint of its inputs, so
+only what a new entry touches is asked again and a replay asks nothing. The
+files agents read (`knowledge/<project>/`, whatever `graph/layouts/` names,
+and `graph/index.json`) are compiled, node text word for word.
+
+    abot entry add --said "<his words>" --about <subject> --rule "<rule>" [--replaces <entry>]
+    abot entry add --seen "<what>" --proof "<proof>" --about <subject>
+    abot entry add … --corrects <node> | --settles clash/<name>
+    abot fact add <id> --asks "<question>" --from <parent>,<parent>
+    abot rules build [--no-model] [--as-of <date> --out <dir>]
+    abot rules check
+    abot why <node>  ·  abot affects <entry>
+
+`abot land` and `abot check` refuse an entry changed after it landed, a fact
+with no stored answer for its inputs, a compiled file that differs from a
+fresh compile (a hand edit), and prose in a layout that quotes Felix or
+states a rule outside a slot. The design: `docs/rules-graph.md` in the log.
+
 ## Where things are
 
 | | default | override |
@@ -109,6 +134,7 @@ Never force-pushes; never rewrites main. Run `abot <verb> --help` for details.
 | decisions | `~/Projects/ceo/felix-decisions.json` | `ABOT_DECISIONS` |
 | diwa | `diwa` on PATH | `ABOT_DIWA` (empty skips it) |
 | the ticket writer | `claude` on PATH, model `sonnet` | `ABOT_CLAUDE`, `ABOT_TICKET_MODEL` |
+| the rules model | `claude` on PATH, model `sonnet` | `ABOT_CLAUDE`, `ABOT_RULES_MODEL` |
 | writer conversations waiting on answers | the log clone's git dir, `abot-tickets/` | |
 
 A project's code repo is the one named by a `Repo:` line in its state file
