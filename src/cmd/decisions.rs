@@ -9,7 +9,7 @@ use std::path::Path;
 
 // ---------------------------------------------------------------- decide
 
-pub fn decide(ctx: &Ctx, text: &str, why: &str, about: &[String], by: &str, json_out: bool) -> Result<()> {
+pub fn decide(ctx: &Ctx, text: &str, why: &str, about: &[String], by: &str, json_out: bool, subject: Option<&str>, rule: Option<&str>) -> Result<()> {
     if text.trim().is_empty() || why.trim().is_empty() {
         bail!("a decision needs its text and --why");
     }
@@ -42,7 +42,7 @@ pub fn decide(ctx: &Ctx, text: &str, why: &str, about: &[String], by: &str, json
     entry.insert("by".into(), Value::from(by));
     entry.insert("text".into(), Value::from(text.trim()));
     entry.insert("why".into(), Value::from(why.trim()));
-    entry.insert("about".into(), Value::from(about));
+    entry.insert("about".into(), Value::from(about.clone()));
     let entry = Value::Object(entry);
     list.push(entry.clone());
 
@@ -51,6 +51,27 @@ pub fn decide(ctx: &Ctx, text: &str, why: &str, about: &[String], by: &str, json
         out.push('\n');
     }
     write_atomic(path, &out)?;
+    // The decision is also a said entry in the rules graph, under the same
+    // id, so the graph has it the moment it is made. The JSON stays while
+    // overview and org-kita read it; the mirror still lands decisions/.
+    let added = super::rules::entry_add(
+        ctx,
+        super::rules::EntryArgs {
+            said: Some(text.trim().to_string()),
+            about: subject.map(String::from),
+            rule: rule.map(String::from),
+            by: Some(by.to_string()),
+            why: Some(why.trim().to_string()),
+            where_: Some(format!("abot decide (felix-decisions.json, about {})", about.join(", "))),
+            id: Some(format!("d-{next}")),
+            accept: true,
+            json: false,
+            ..Default::default()
+        },
+    );
+    if let Err(e) = added {
+        eprintln!("warning: d-{next} is in {} but not in the rules graph yet ({e:#}); add it with abot entry add --id d-{next} …", path.display());
+    }
     if json_out {
         println!("{}", serde_json::to_string_pretty(&entry)?);
     } else {

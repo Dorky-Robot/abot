@@ -154,7 +154,7 @@ what main reaches.")]
         /// A commit in the log, or in any code repo under ~/Projects
         sha: String,
     },
-    /// Record one of Felix's decisions in felix-decisions.json (the mirror lands it)
+    /// Record one of Felix's decisions: felix-decisions.json (the mirror lands it) and a said entry in the rules graph
     Decide {
         /// The decision, in Felix's words where possible
         text: String,
@@ -167,6 +167,12 @@ what main reaches.")]
         by: String,
         #[arg(long)]
         json: bool,
+        /// Its subject in the rules graph (default: the model proposes one)
+        #[arg(long)]
+        subject: Option<String>,
+        /// The rule it gives, one sentence (default: the model proposes one)
+        #[arg(long)]
+        rule: Option<String>,
     },
     /// Every project: live, next, waits on Felix, in flight, dead ends, uses/serves
     Map {
@@ -484,8 +490,8 @@ fn main() -> ExitCode {
             cmd::lifecycle::park(&ctx, &why, repo.as_deref()).map(|_| cmd::close::after_end(keep_open)).map(|_| true)
         }
         Cmd::Dig { sha } => cmd::dig::run(&ctx, &sha).map(|_| true),
-        Cmd::Decide { text, why, about, by, json } => {
-            cmd::decisions::decide(&ctx, &text, &why, &about, &by, json).map(|_| true)
+        Cmd::Decide { text, why, about, by, json, subject, rule } => {
+            cmd::decisions::decide(&ctx, &text, &why, &about, &by, json, subject.as_deref(), rule.as_deref()).map(|_| true)
         }
         Cmd::Map { json } => cmd::map::map(&ctx, json).map(|_| true),
         Cmd::Check { json } => cmd::map::check(&ctx, json),
